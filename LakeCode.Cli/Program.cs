@@ -24,7 +24,7 @@ windowSystem.RegisterGlobalShortcut(ConsoleModifiers.Control, ConsoleKey.C, () =
 var header = new HeaderComponent("LakeCode", "Coding agent");
 var mainContent = new MainContentComponent();
 var input = new InputComponent();
-var footer = new FooterComponent(windowSystem, modelStore, statisticsStore, "./LakeCode");
+var footer = new FooterComponent(windowSystem, modelStore, statisticsStore, Environment.CurrentDirectory);
 
 var window = new WindowBuilder(windowSystem)
     .WithTitle("LakeCode")

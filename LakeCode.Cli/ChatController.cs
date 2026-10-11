@@ -61,9 +61,12 @@ internal sealed class ChatController
     private async Task SendAsync(
         string message, AssistantMessageComponent response, ModelInfo model, string reasoningEffort)
     {
+        void OnToolCall(ToolCallUpdate update) =>
+            _windowSystem.EnqueueOnUIThread(() => response.UpdateToolCall(update));
         try
         {
             _agent ??= new AgentLoop();
+            _agent.ToolCallUpdated += OnToolCall;
             long? firstTokenTimestamp = null;
             long? outputTokens = null;
             await foreach (var update in _agent.RunAsync(message, model, reasoningEffort, _cancellationToken))
@@ -112,6 +115,8 @@ internal sealed class ChatController
         }
         finally
         {
+            if (_agent is not null)
+                _agent.ToolCallUpdated -= OnToolCall;
             _windowSystem.EnqueueOnUIThread(() =>
             {
                 _statistics.SetGenerating(false);
