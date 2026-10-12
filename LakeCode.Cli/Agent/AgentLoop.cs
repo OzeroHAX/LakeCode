@@ -22,11 +22,12 @@ public sealed class AgentLoop
 {
     private readonly AIAgent _agent;
     private readonly string _cacheSessionId = Guid.NewGuid().ToString("D");
+    private readonly AsyncLocal<Action<FileChange>?> _fileChangeObserver = new();
     private AgentSession? _session;
 
     public event Action<ToolCallUpdate>? ToolCallUpdated;
 
-    public AgentLoop()
+    public AgentLoop(string? workspaceRoot = null)
     {
         var apiKey = Environment.GetEnvironmentVariable("WIKIVIBE_API_KEY");
         if (string.IsNullOrWhiteSpace(apiKey))
@@ -38,7 +39,7 @@ public sealed class AgentLoop
         clientOptions.AddPolicy(new CodexSessionHeadersPolicy(_cacheSessionId), PipelinePosition.PerCall);
         var client = new OpenAIClient(new ApiKeyCredential(apiKey), clientOptions);
 
-        var files = new WorkspaceFiles();
+        var files = new WorkspaceFiles(workspaceRoot);
         var promptContext = new SystemPromptContext(
             files.Root,
             RuntimeInformation.OSDescription,
@@ -48,8 +49,8 @@ public sealed class AgentLoop
         var listDirectory = new ListDirectoryTool(files);
         var grep = new GrepTool(files);
         var bash = new BashTool(files);
-        var writeFile = new WriteFileTool(files);
-        var editFile = new EditFileTool(files);
+        var writeFile = new WriteFileTool(files, change => _fileChangeObserver.Value?.Invoke(change));
+        var editFile = new EditFileTool(files, change => _fileChangeObserver.Value?.Invoke(change));
 
         // The OpenAI SDK requires explicit opt-in for its Responses API.
 #pragma warning disable OPENAI001
@@ -78,15 +79,24 @@ public sealed class AgentLoop
         var call = new ToolCallUpdate(context.CallContent.CallId, context.Function.Name,
             JsonSerializer.Serialize(context.Arguments), ToolCallStatus.Running);
         ToolCallUpdated?.Invoke(call);
+        FileChange? fileChange = null;
+        var previousObserver = _fileChangeObserver.Value;
+        _fileChangeObserver.Value = change => fileChange = change;
         try
         {
             var result = await next(context, cancellationToken);
-            var text = result as string ?? JsonSerializer.Serialize(result);
+            var text = result switch
+            {
+                string value => value,
+                JsonElement { ValueKind: JsonValueKind.String } value => value.GetString()!,
+                _ => JsonSerializer.Serialize(result)
+            };
             ToolCallUpdated?.Invoke(call with
             {
                 Status = text.StartsWith("Error:", StringComparison.Ordinal)
                     ? ToolCallStatus.Failed : ToolCallStatus.Completed,
-                Result = text
+                Result = text,
+                FileChange = fileChange
             });
             return result;
         }
@@ -99,6 +109,10 @@ public sealed class AgentLoop
         {
             ToolCallUpdated?.Invoke(call with { Status = ToolCallStatus.Failed, Result = error.Message });
             throw;
+        }
+        finally
+        {
+            _fileChangeObserver.Value = previousObserver;
         }
     }
 

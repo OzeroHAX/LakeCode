@@ -1,12 +1,14 @@
 ﻿using LakeCode.Cli.Components;
 using LakeCode.Cli;
 using LakeCode.Cli.Agent;
+using LakeCode.Cli.Agent.Tools;
 using LakeCode.Cli.State;
 using SharpConsoleUI;
 using SharpConsoleUI.Builders;
 using SharpConsoleUI.Drivers;
 using SharpConsoleUI.Configuration;
 
+var workspaceRoot = WorkspaceFiles.ResolveRoot();
 var shutdown = new CancellationTokenSource();
 var modelStore = new ModelStore(ModelCatalog.Models, "gpt-6.1-sol");
 var statisticsStore = new StatisticsStore(ModelCatalog.Models["gpt-6.1-sol"]);
@@ -24,7 +26,7 @@ windowSystem.RegisterGlobalShortcut(ConsoleModifiers.Control, ConsoleKey.C, () =
 var header = new HeaderComponent("LakeCode", "Coding agent");
 var mainContent = new MainContentComponent();
 var input = new InputComponent();
-var footer = new FooterComponent(windowSystem, modelStore, statisticsStore, Environment.CurrentDirectory);
+var footer = new FooterComponent(windowSystem, modelStore, statisticsStore, workspaceRoot);
 
 var window = new WindowBuilder(windowSystem)
     .WithTitle("LakeCode")
@@ -46,7 +48,7 @@ window.PreviewKeyPressed += (_, e) =>
 };
 var chat = new ChatController(
     windowSystem, mainContent, input, statisticsStore, modelStore,
-    () => window.FocusControl(input.Editor), shutdown.Token);
+    () => window.FocusControl(input.Editor), workspaceRoot, shutdown.Token);
 
 windowSystem.AddWindow(window);
 using var slashCommands = new SlashCommandsComponent(window, input,

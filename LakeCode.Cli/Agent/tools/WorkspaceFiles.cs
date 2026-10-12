@@ -6,7 +6,25 @@ internal sealed class WorkspaceFiles
 {
     public const int MaxOutputCharacters = 32_000;
     public const int MaxFileBytes = 1_048_576;
-    public string Root { get; } = Path.GetFullPath(Environment.CurrentDirectory);
+    public string Root { get; }
+
+    public WorkspaceFiles(string? workspaceRoot = null)
+    {
+        Root = workspaceRoot is null ? ResolveRoot() : Path.GetFullPath(workspaceRoot);
+        if (!Directory.Exists(Root))
+            throw new DirectoryNotFoundException($"Workspace directory does not exist: {Root}");
+    }
+
+    public static string ResolveRoot()
+    {
+        var configuredRoot = Environment.GetEnvironmentVariable("LAKECODE_WORKSPACE_ROOT");
+        var root = Path.GetFullPath(string.IsNullOrWhiteSpace(configuredRoot)
+            ? Environment.CurrentDirectory
+            : configuredRoot);
+        if (!Directory.Exists(root))
+            throw new DirectoryNotFoundException($"Workspace directory does not exist: {root}");
+        return root;
+    }
 
     public string Resolve(string path, bool allowMissing = false)
     {

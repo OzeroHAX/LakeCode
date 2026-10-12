@@ -16,6 +16,7 @@ internal sealed class ChatController
     private readonly Action _focusInput;
     private readonly StatisticsStore _statistics;
     private readonly ModelStore _models;
+    private readonly string _workspaceRoot;
     private AgentLoop? _agent;
     private bool _sending;
 
@@ -26,6 +27,7 @@ internal sealed class ChatController
         StatisticsStore statistics,
         ModelStore models,
         Action focusInput,
+        string workspaceRoot,
         CancellationToken cancellationToken)
     {
         _windowSystem = windowSystem;
@@ -35,6 +37,7 @@ internal sealed class ChatController
         _focusInput = focusInput;
         _statistics = statistics;
         _models = models;
+        _workspaceRoot = workspaceRoot;
         _input.Editor.Entered += (_, _) => SendMessage();
     }
 
@@ -77,7 +80,7 @@ internal sealed class ChatController
             _windowSystem.EnqueueOnUIThread(() => response.UpdateToolCall(update));
         try
         {
-            _agent ??= new AgentLoop();
+            _agent ??= new AgentLoop(_workspaceRoot);
             _agent.ToolCallUpdated += OnToolCall;
             long? firstTokenTimestamp = null;
             long? outputTokens = null;

@@ -72,13 +72,15 @@ internal sealed class ToolCallGroupComponent : CollapsiblePanel
             viewport.AddControl(body);
             panel.AddControl(viewport);
             var summary = _alwaysVisible ? $"{ToolName}: {Summarize(update)}" : Summarize(update);
-            entry = new Entry(summary, update.Arguments, panel, body);
+            entry = new Entry(summary, FormatArguments(update), panel, body);
             _calls.Add(update.CallId, entry);
             AddControl(panel);
         }
         entry.Status = update.Status;
         entry.Panel.Title = MarkupParser.Escape($"{entry.Summary} · {StatusLabel(update.Status)}");
-        entry.Body.Text = MarkupParser.Escape($"Arguments: {entry.Arguments}\n\n{update.Result ?? "Running…"}");
+        entry.Body.Text = update.Status == ToolCallStatus.Completed && update.FileChange is { } change
+            ? FileDiffPreview.Format(change)
+            : MarkupParser.Escape(FormatBody(entry.Arguments, update.Result ?? "Running…"));
         UpdateTitle();
     }
 
@@ -89,7 +91,7 @@ internal sealed class ToolCallGroupComponent : CollapsiblePanel
             if (entry.Status != ToolCallStatus.Running) continue;
             entry.Status = ToolCallStatus.Cancelled;
             entry.Panel.Title = MarkupParser.Escape($"{entry.Summary} · interrupted");
-            entry.Body.Text = MarkupParser.Escape($"Arguments: {entry.Arguments}\n\nThe request ended before a result was received.");
+            entry.Body.Text = MarkupParser.Escape(FormatBody(entry.Arguments, "The request ended before a result was received."));
         }
         UpdateTitle();
     }
@@ -124,6 +126,19 @@ internal sealed class ToolCallGroupComponent : CollapsiblePanel
         ToolCallStatus.Cancelled => "cancelled",
         _ => throw new ArgumentOutOfRangeException(nameof(status))
     };
+
+    private static string FormatArguments(ToolCallUpdate update)
+    {
+        using var arguments = JsonDocument.Parse(update.Arguments);
+        return string.Join("\n", arguments.RootElement.EnumerateObject()
+            .Where(property => update.Name != "bash" || property.Name != "command")
+            .Where(property => update.Name is not ("edit_file" or "write_file") ||
+                               property.Name is not ("oldText" or "newText" or "content"))
+            .Select(property => $"{property.Name}: {property.Value}"));
+    }
+
+    private static string FormatBody(string arguments, string result) =>
+        string.IsNullOrEmpty(arguments) ? result : $"{arguments}\n\n{result}";
 
     private static string Summarize(ToolCallUpdate update)
     {
