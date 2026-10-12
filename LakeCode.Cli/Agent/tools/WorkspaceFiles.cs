@@ -7,12 +7,15 @@ internal sealed class WorkspaceFiles
     public const int MaxOutputCharacters = 32_000;
     public const int MaxFileBytes = 1_048_576;
     public string Root { get; }
+    private readonly ExternalReadPermissions _externalReads;
 
-    public WorkspaceFiles(string? workspaceRoot = null)
+    public WorkspaceFiles(string? workspaceRoot = null,
+        Func<ExternalReadRequest, CancellationToken, Task<ExternalReadDecision>>? confirmExternalRead = null)
     {
         Root = workspaceRoot is null ? ResolveRoot() : Path.GetFullPath(workspaceRoot);
         if (!Directory.Exists(Root))
             throw new DirectoryNotFoundException($"Workspace directory does not exist: {Root}");
+        _externalReads = new ExternalReadPermissions(confirmExternalRead);
     }
 
     public static string ResolveRoot()
@@ -30,12 +33,42 @@ internal sealed class WorkspaceFiles
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
         var fullPath = Path.GetFullPath(path, Root);
-        var relative = Path.GetRelativePath(Root, fullPath);
-        if (Path.IsPathRooted(relative) || relative == ".." || relative.StartsWith(".." + Path.DirectorySeparatorChar))
+        if (!ExternalReadPermissions.Contains(Root, fullPath))
             throw new UnauthorizedAccessException("Paths outside the workspace are not allowed.");
+        ValidateLinks(fullPath, Root, allowMissing);
+        return fullPath;
+    }
+
+    public async Task AuthorizeReadAsync(string path, string toolName, string callId,
+        CancellationToken cancellationToken)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(path);
+        var fullPath = Path.GetFullPath(path, Root);
+        if (ExternalReadPermissions.Contains(Root, fullPath)) return;
+        ValidateLinks(fullPath, Path.GetPathRoot(fullPath)!, allowMissing: false);
+        var directory = Directory.Exists(fullPath) ? fullPath : Path.GetDirectoryName(fullPath)!;
+        directory = Path.TrimEndingDirectorySeparator(directory);
+        await _externalReads.AuthorizeAsync(new ExternalReadRequest(callId, toolName, fullPath, directory),
+            cancellationToken);
+    }
+
+    public string ResolveRead(string path)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(path);
+        var fullPath = Path.GetFullPath(path, Root);
+        if (ExternalReadPermissions.Contains(Root, fullPath)) return Resolve(path);
+        if (!_externalReads.IsAllowed(fullPath))
+            throw new UnauthorizedAccessException("External read access has not been granted.");
+        ValidateLinks(fullPath, Path.GetPathRoot(fullPath)!, allowMissing: false);
+        return fullPath;
+    }
+
+    private static void ValidateLinks(string fullPath, string root, bool allowMissing)
+    {
+        var relative = Path.GetRelativePath(root, fullPath);
 
         // Reject links rather than allowing a checked path to traverse outside the workspace.
-        var current = Root;
+        var current = root;
         foreach (var part in relative.Split(Path.DirectorySeparatorChar))
         {
             if (part == ".") continue;
@@ -48,16 +81,17 @@ internal sealed class WorkspaceFiles
             catch (FileNotFoundException) when (allowMissing) { }
             catch (DirectoryNotFoundException) when (allowMissing) { }
         }
-        return fullPath;
     }
 
     public string Relative(string path) => Path.GetRelativePath(Root, path);
 
     public static bool SkipDirectory(string path) => Path.GetFileName(path) is ".git" or "bin" or "obj";
 
-    public async Task<string> ReadTextAsync(string path, CancellationToken cancellationToken, bool preserveBom = false)
+    public async Task<string> ReadTextAsync(string path, CancellationToken cancellationToken,
+        bool preserveBom = false, bool allowExternalRead = false)
     {
-        await using var stream = new FileStream(Resolve(path), FileMode.Open, FileAccess.Read, FileShare.Read,
+        await using var stream = new FileStream(allowExternalRead ? ResolveRead(path) : Resolve(path),
+            FileMode.Open, FileAccess.Read, FileShare.Read,
             4096, FileOptions.Asynchronous | FileOptions.SequentialScan);
         if (stream.Length > MaxFileBytes)
             throw new IOException($"File exceeds the {MaxFileBytes}-byte text file limit.");

@@ -42,8 +42,12 @@ internal static class SystemPromptBuilder
     private const string ToolUse = """
         # Using the available tools
         You have read_file, list_directory, grep, write_file, edit_file, and bash.
-        Their supplied schemas define the accepted arguments. File tools use workspace-relative
-        paths, stay within the configured workspace root, and do not follow symbolic links.
+        Their supplied schemas define the accepted arguments. File tools accept workspace-relative
+        paths and do not follow symbolic links. read_file, list_directory, and grep also accept
+        external absolute paths: the application asks the user for read-only access to the
+        containing directory and its descendants, remembering allow or deny for this session.
+        Invoke the appropriate read tool to request access; respect denial and do not retry to
+        bypass it. write_file and edit_file must stay within the configured workspace root.
         Bash starts in a workspace directory but is not an OS sandbox: commands have the
         application's permissions. Do not use it to bypass file-tool restrictions.
 

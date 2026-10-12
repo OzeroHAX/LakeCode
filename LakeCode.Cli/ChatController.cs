@@ -4,6 +4,7 @@ using LakeCode.Cli.Components;
 using LakeCode.Cli.State;
 using Microsoft.Extensions.AI;
 using SharpConsoleUI;
+using SharpConsoleUI.Extensions;
 
 namespace LakeCode.Cli;
 
@@ -18,6 +19,7 @@ internal sealed class ChatController
     private readonly ModelStore _models;
     private readonly string _workspaceRoot;
     private AgentLoop? _agent;
+    private AssistantMessageComponent? _activeResponse;
     private bool _sending;
 
     public ChatController(
@@ -67,10 +69,42 @@ internal sealed class ChatController
         _statistics.SetGenerating(true);
         _input.Editor.IsEnabled = false;
         var response = new AssistantMessageComponent(_windowSystem);
+        _activeResponse = response;
         _mainContent.AddControl(response);
         var model = _models.SelectedModel;
         var reasoningEffort = _models.SelectedReasoningEffort;
         _ = Task.Run(() => SendAsync(message, response, model, reasoningEffort));
+    }
+
+    private async Task<ExternalReadDecision> ConfirmExternalReadAsync(
+        ExternalReadRequest request, CancellationToken cancellationToken)
+    {
+        var response = _activeResponse ?? throw new InvalidOperationException("No active response for permission request.");
+        var completion = new TaskCompletionSource<ExternalReadDecision>(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var registration = cancellationToken.Register(() => completion.TrySetCanceled(cancellationToken));
+        _windowSystem.EnqueueOnUIThread(() =>
+        {
+            if (completion.Task.IsCompleted) return;
+            try
+            {
+                var window = response.GetParentWindow()
+                    ?? throw new InvalidOperationException("No active window for permission request.");
+                response.ShowReadPermission(request, decision => completion.TrySetResult(decision), window);
+                _mainContent.ScrollToBottom();
+            }
+            catch (Exception error)
+            {
+                completion.TrySetException(error);
+            }
+        });
+        try
+        {
+            return await completion.Task;
+        }
+        finally
+        {
+            _windowSystem.EnqueueOnUIThread(() => response.CancelReadPermission(request.CallId));
+        }
     }
 
     private async Task SendAsync(
@@ -80,7 +114,7 @@ internal sealed class ChatController
             _windowSystem.EnqueueOnUIThread(() => response.UpdateToolCall(update));
         try
         {
-            _agent ??= new AgentLoop(_workspaceRoot);
+            _agent ??= new AgentLoop(_workspaceRoot, ConfirmExternalReadAsync);
             _agent.ToolCallUpdated += OnToolCall;
             long? firstTokenTimestamp = null;
             long? outputTokens = null;
@@ -135,6 +169,7 @@ internal sealed class ChatController
             _windowSystem.EnqueueOnUIThread(() =>
             {
                 _statistics.SetGenerating(false);
+                _activeResponse = null;
                 response.FinishThinking();
             });
             if (!_cancellationToken.IsCancellationRequested)

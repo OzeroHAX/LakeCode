@@ -5,14 +5,14 @@ namespace LakeCode.Cli.Agent.Tools.ListDirectory;
 
 internal sealed class ListDirectoryTool(WorkspaceFiles files)
 {
-    [Description("List immediate files and directories in a workspace directory. Does not recurse or follow symbolic links. Skips .git, bin and obj directories.")]
+    [Description("List immediate files and directories. External paths require user confirmation for read-only session access. Does not recurse or follow symbolic links. Skips .git, bin and obj directories.")]
     public Task<string> ListAsync(
-        [Description("Directory path relative to the workspace root.")] string path = ".",
+        [Description("Directory path relative to the workspace root, or an absolute path requiring confirmation outside it.")] string path = ".",
         [Description("Number of entries to skip to retrieve the next page.")] int offset = 0,
         CancellationToken cancellationToken = default) => WorkspaceFiles.ExecuteAsync(() =>
     {
         if (offset < 0) throw new ArgumentException("offset must be nonnegative.");
-        var directory = files.Resolve(path);
+        var directory = files.ResolveRead(path);
         var output = new StringBuilder();
         var entries = Directory.EnumerateFileSystemEntries(directory).Order(StringComparer.Ordinal);
         var skipped = 0;

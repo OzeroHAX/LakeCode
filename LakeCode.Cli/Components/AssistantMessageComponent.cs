@@ -88,6 +88,14 @@ internal sealed class AssistantMessageComponent : CollapsiblePanel
         _activeToolGroup.Update(update);
     }
 
+    public void ShowReadPermission(ExternalReadRequest request, Action<ExternalReadDecision> complete,
+        Window window) => _toolCalls[request.CallId].ShowReadPermission(request, complete, window);
+
+    public void CancelReadPermission(string callId)
+    {
+        if (_toolCalls.TryGetValue(callId, out var group)) group.CancelReadPermission(callId);
+    }
+
     public void FinishThinking()
     {
         _thinking.Complete();

@@ -7,10 +7,10 @@ namespace LakeCode.Cli.Agent.Tools.Grep;
 
 internal sealed class GrepTool(WorkspaceFiles files)
 {
-    [Description("Search UTF-8 text files in the workspace. Directories are searched recursively, excluding .git, bin, obj and symbolic links. Reports skipped unreadable, binary or oversized files. Results include paths and line numbers.")]
+    [Description("Search UTF-8 text files. External paths require user confirmation for read-only session access. Directories are searched recursively, excluding .git, bin, obj and symbolic links. Reports skipped unreadable, binary or oversized files. Results include paths and line numbers.")]
     public Task<string> SearchAsync(
         [Description("Text or regular expression to search for.")] string pattern,
-        [Description("Workspace-relative file or directory path.")] string path = ".",
+        [Description("Workspace-relative or absolute file or directory path; external paths require confirmation.")] string path = ".",
         [Description("Filename wildcard, for example *.cs.")] string filePattern = "*",
         [Description("Interpret pattern as a regular expression instead of literal text.")] bool useRegex = false,
         [Description("Match without regard to case.")] bool ignoreCase = false,
@@ -22,7 +22,7 @@ internal sealed class GrepTool(WorkspaceFiles files)
         if (maxResults is < 1 or > 500) throw new ArgumentException("maxResults must be between 1 and 500.");
         var regex = useRegex ? new Regex(pattern, RegexOptions.CultureInvariant |
             (ignoreCase ? RegexOptions.IgnoreCase : RegexOptions.None), TimeSpan.FromMilliseconds(250)) : null;
-        var target = files.Resolve(path);
+        var target = files.ResolveRead(path);
         var output = new StringBuilder();
         var results = 0;
         var skipped = 0;
@@ -31,7 +31,7 @@ internal sealed class GrepTool(WorkspaceFiles files)
             cancellationToken.ThrowIfCancellationRequested();
             if (!FileSystemName.MatchesSimpleExpression(filePattern, Path.GetFileName(file), ignoreCase)) continue;
             string text;
-            try { text = await files.ReadTextAsync(file, cancellationToken); }
+            try { text = await files.ReadTextAsync(file, cancellationToken, allowExternalRead: true); }
             catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or DecoderFallbackException)
             {
                 skipped++;
@@ -76,7 +76,7 @@ internal sealed class GrepTool(WorkspaceFiles files)
         while (directories.TryPop(out var directory))
         {
             cancellationToken.ThrowIfCancellationRequested();
-            foreach (var entry in Directory.EnumerateFileSystemEntries(files.Resolve(directory)))
+            foreach (var entry in Directory.EnumerateFileSystemEntries(files.ResolveRead(directory)))
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 var attributes = File.GetAttributes(entry);

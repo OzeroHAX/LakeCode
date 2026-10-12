@@ -17,6 +17,7 @@ internal sealed class ToolCallGroupComponent : CollapsiblePanel
         public CollapsiblePanel Panel { get; } = panel;
         public MarkupControl Body { get; } = body;
         public ToolCallStatus Status { get; set; } = ToolCallStatus.Running;
+        public ExternalReadPermissionComponent? Permission { get; set; }
     }
 
     private readonly Dictionary<string, Entry> _calls = new(StringComparer.Ordinal);
@@ -77,6 +78,11 @@ internal sealed class ToolCallGroupComponent : CollapsiblePanel
             AddControl(panel);
         }
         entry.Status = update.Status;
+        if (update.Status != ToolCallStatus.Running)
+        {
+            entry.Permission?.Cancel();
+            entry.Body.Visible = true;
+        }
         entry.Panel.Title = MarkupParser.Escape($"{entry.Summary} · {StatusLabel(update.Status)}");
         entry.Body.Text = update.Status == ToolCallStatus.Completed && update.FileChange is { } change
             ? FileDiffPreview.Format(change)
@@ -84,11 +90,32 @@ internal sealed class ToolCallGroupComponent : CollapsiblePanel
         UpdateTitle();
     }
 
+    public void ShowReadPermission(ExternalReadRequest request, Action<ExternalReadDecision> complete,
+        Window window)
+    {
+        var entry = _calls[request.CallId];
+        IsExpanded = true;
+        entry.Panel.IsExpanded = true;
+        entry.Panel.Title = MarkupParser.Escape($"{entry.Summary} · ожидает разрешения");
+        entry.Body.Visible = false;
+        var permission = new ExternalReadPermissionComponent(request, complete);
+        entry.Permission = permission;
+        entry.Panel.AddControl(permission);
+        permission.Focus(window);
+    }
+
+    public void CancelReadPermission(string callId)
+    {
+        if (_calls.TryGetValue(callId, out var entry))
+            entry.Permission?.Cancel();
+    }
+
     public void FinishPending()
     {
         foreach (var entry in _calls.Values)
         {
             if (entry.Status != ToolCallStatus.Running) continue;
+            entry.Permission?.Cancel();
             entry.Status = ToolCallStatus.Cancelled;
             entry.Panel.Title = MarkupParser.Escape($"{entry.Summary} · interrupted");
             entry.Body.Text = MarkupParser.Escape(FormatBody(entry.Arguments, "The request ended before a result was received."));

@@ -23,11 +23,13 @@ public sealed class AgentLoop
     private readonly AIAgent _agent;
     private readonly string _cacheSessionId = Guid.NewGuid().ToString("D");
     private readonly AsyncLocal<Action<FileChange>?> _fileChangeObserver = new();
+    private readonly WorkspaceFiles _files;
     private AgentSession? _session;
 
     public event Action<ToolCallUpdate>? ToolCallUpdated;
 
-    public AgentLoop(string? workspaceRoot = null)
+    public AgentLoop(string? workspaceRoot = null,
+        Func<ExternalReadRequest, CancellationToken, Task<ExternalReadDecision>>? confirmExternalRead = null)
     {
         var apiKey = Environment.GetEnvironmentVariable("WIKIVIBE_API_KEY");
         if (string.IsNullOrWhiteSpace(apiKey))
@@ -39,7 +41,7 @@ public sealed class AgentLoop
         clientOptions.AddPolicy(new CodexSessionHeadersPolicy(_cacheSessionId), PipelinePosition.PerCall);
         var client = new OpenAIClient(new ApiKeyCredential(apiKey), clientOptions);
 
-        var files = new WorkspaceFiles(workspaceRoot);
+        var files = _files = new WorkspaceFiles(workspaceRoot, confirmExternalRead);
         var promptContext = new SystemPromptContext(
             files.Root,
             RuntimeInformation.OSDescription,
@@ -84,7 +86,19 @@ public sealed class AgentLoop
         _fileChangeObserver.Value = change => fileChange = change;
         try
         {
-            var result = await next(context, cancellationToken);
+            var accessError = "";
+            if (call.Name is "read_file" or "list_directory" or "grep")
+            {
+                using var arguments = JsonDocument.Parse(call.Arguments);
+                var path = arguments.RootElement.TryGetProperty("path", out var value)
+                    ? value.GetString()! : ".";
+                accessError = await WorkspaceFiles.ExecuteAsync(async () =>
+                {
+                    await _files.AuthorizeReadAsync(path, call.Name, call.CallId, cancellationToken);
+                    return "";
+                });
+            }
+            var result = accessError.Length == 0 ? await next(context, cancellationToken) : accessError;
             var text = result switch
             {
                 string value => value,
