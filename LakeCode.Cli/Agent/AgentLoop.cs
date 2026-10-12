@@ -7,6 +7,9 @@ using LakeCode.Cli.Agent.Tools;
 using LakeCode.Cli.Agent.Tools.ReadFile;
 using LakeCode.Cli.Agent.Tools.ListDirectory;
 using LakeCode.Cli.Agent.Tools.Grep;
+using LakeCode.Cli.Agent.Tools.Bash;
+using LakeCode.Cli.Agent.Tools.WriteFile;
+using LakeCode.Cli.Agent.Tools.EditFile;
 using Microsoft.Agents.AI;
 using Microsoft.Extensions.AI;
 using OpenAI;
@@ -44,18 +47,24 @@ public sealed class AgentLoop
         var readFile = new ReadFileTool(files);
         var listDirectory = new ListDirectoryTool(files);
         var grep = new GrepTool(files);
+        var bash = new BashTool(files);
+        var writeFile = new WriteFileTool(files);
+        var editFile = new EditFileTool(files);
 
         // The OpenAI SDK requires explicit opt-in for its Responses API.
 #pragma warning disable OPENAI001
         _agent = client.GetResponsesClient().AsAIAgent(
-            model: "gpt-6-luna",
+            model: "gpt-6.1-sol",
             name: "LakeCode",
             instructions: SystemPromptBuilder.Build(promptContext),
             tools:
             [
                 AIFunctionFactory.Create(readFile.ReadAsync, name: "read_file"),
                 AIFunctionFactory.Create(listDirectory.ListAsync, name: "list_directory"),
-                AIFunctionFactory.Create(grep.SearchAsync, name: "grep")
+                AIFunctionFactory.Create(grep.SearchAsync, name: "grep"),
+                AIFunctionFactory.Create(bash.RunAsync, name: "bash"),
+                AIFunctionFactory.Create(writeFile.WriteAsync, name: "write_file"),
+                AIFunctionFactory.Create(editFile.EditAsync, name: "edit_file")
             ]).AsBuilder().Use(ObserveToolCallAsync).Build();
         #pragma warning restore OPENAI001
     }

@@ -8,8 +8,8 @@ using SharpConsoleUI.Drivers;
 using SharpConsoleUI.Configuration;
 
 var shutdown = new CancellationTokenSource();
-var modelStore = new ModelStore(ModelCatalog.Models, "gpt-6-luna");
-var statisticsStore = new StatisticsStore(ModelCatalog.Models["gpt-6-luna"]);
+var modelStore = new ModelStore(ModelCatalog.Models, "gpt-6.1-sol");
+var statisticsStore = new StatisticsStore(ModelCatalog.Models["gpt-6.1-sol"]);
 var modelsWindow = new ModelsWindowComponent(modelStore);
 
 var windowSystem = new ConsoleWindowSystem(
