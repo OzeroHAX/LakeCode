@@ -73,7 +73,7 @@ internal static class ImageInput
         return Decode(data, Path.GetFileName(path));
     }
 
-    private static ImageAttachment Decode(ReadOnlyMemory<byte> data, string name)
+    internal static ImageAttachment Decode(ReadOnlyMemory<byte> data, string name)
     {
         if (data.IsEmpty) throw new InvalidOperationException("Изображение пустое.");
         // Only the three allowed decoders run, including during header identification (no TIFF).

@@ -40,6 +40,13 @@ internal sealed class StatisticsStore(ModelInfo model) : INotifyPropertyChanged
         SetGenerating(false);
     }
 
+    public void Restore(RequestStatistics statistics, double? tokensPerSecond)
+    {
+        SetCurrent(statistics);
+        TokensPerSecond = tokensPerSecond;
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(TokensPerSecond)));
+    }
+
     public void Update(UsageDetails usage, ModelInfo requestModel)
     {
         SetCurrent(new RequestStatistics(

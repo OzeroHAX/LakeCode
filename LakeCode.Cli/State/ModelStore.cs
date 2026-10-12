@@ -37,6 +37,14 @@ internal sealed class ModelStore : INotifyPropertyChanged
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(SelectedModel)));
     }
 
+    public void SelectReasoningEffort(string effort)
+    {
+        if (!SelectedModel.ReasoningEfforts.Contains(effort))
+            throw new ArgumentException("Модель не поддерживает сохранённый уровень рассуждения.", nameof(effort));
+        SelectedReasoningEffort = effort;
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(SelectedReasoningEffort)));
+    }
+
     public void CycleReasoningEffort()
     {
         var efforts = SelectedModel.ReasoningEfforts;
