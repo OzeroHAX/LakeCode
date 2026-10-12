@@ -37,6 +37,8 @@ internal sealed class ToolCallGroupComponent : CollapsiblePanel
         FocusedBackgroundColor = new Color(45, 45, 45);
         IsExpanded = alwaysVisible;
         MaxContentHeight = int.MaxValue;
+        if (alwaysVisible)
+            BackgroundColor = new Color(26, 26, 26);
     }
 
     public void Update(ToolCallUpdate update)
@@ -56,10 +58,13 @@ internal sealed class ToolCallGroupComponent : CollapsiblePanel
             {
                 Wrap = true,
                 HorizontalAlignment = HorizontalAlignment.Stretch,
-                Margin = new Margin(2, 1, 2, 1)
+                Margin = _alwaysVisible ? new Margin(0, 0, 0, 0) : new Margin(2, 1, 2, 1)
             };
             if (_alwaysVisible)
-                panel.BackgroundColor = new Color(26, 26, 26);
+            {
+                panel.BackgroundColor = BackgroundColor;
+                body.BackgroundColor = BackgroundColor;
+            }
             panel.AddControl(body);
             var summary = _alwaysVisible ? $"{ToolName}: {Summarize(update)}" : Summarize(update);
             entry = new Entry(summary, FormatArguments(update), panel, body);
