@@ -1,7 +1,6 @@
 using System.Text.Json;
 using LakeCode.Cli.Agent;
 using SharpConsoleUI;
-using SharpConsoleUI.Configuration;
 using SharpConsoleUI.Controls;
 using SharpConsoleUI.Layout;
 using SharpConsoleUI.Parsing;
@@ -10,14 +9,12 @@ namespace LakeCode.Cli.Components;
 
 internal sealed class ToolCallGroupComponent : CollapsiblePanel
 {
-    private sealed class Entry(string summary, string arguments, CollapsiblePanel panel, MarkupControl body,
-        ScrollablePanelControl viewport)
+    private sealed class Entry(string summary, string arguments, CollapsiblePanel panel, MarkupControl body)
     {
         public string Summary { get; } = summary;
         public string Arguments { get; } = arguments;
         public CollapsiblePanel Panel { get; } = panel;
         public MarkupControl Body { get; } = body;
-        public ScrollablePanelControl Viewport { get; } = viewport;
         public ToolCallStatus Status { get; set; } = ToolCallStatus.Running;
         public ExternalReadPermissionComponent? Permission { get; set; }
     }
@@ -39,8 +36,7 @@ internal sealed class ToolCallGroupComponent : CollapsiblePanel
         FocusedForegroundColor = new Color(185, 185, 185);
         FocusedBackgroundColor = new Color(45, 45, 45);
         IsExpanded = alwaysVisible;
-        if (alwaysVisible)
-            MaxContentHeight = ControlDefaults.ScrollablePanelDefaultUnboundedHeight;
+        MaxContentHeight = int.MaxValue;
     }
 
     public void Update(ToolCallUpdate update)
@@ -53,30 +49,20 @@ internal sealed class ToolCallGroupComponent : CollapsiblePanel
                 HorizontalAlignment = HorizontalAlignment.Stretch,
                 Collapsible = !_alwaysVisible,
                 IsExpanded = _alwaysVisible,
-                MaxContentHeight = ControlDefaults.ScrollablePanelDefaultUnboundedHeight,
+                MaxContentHeight = int.MaxValue,
                 Margin = new Margin(_alwaysVisible ? 0 : 2, 0, 0, 0)
             };
             var body = new MarkupControl(new List<string>())
             {
                 Wrap = true,
-                HorizontalAlignment = HorizontalAlignment.Stretch
-            };
-            var viewport = new ScrollablePanelControl
-            {
-                BorderStyle = BorderStyle.None,
                 HorizontalAlignment = HorizontalAlignment.Stretch,
-                Padding = new Padding(2, 1, 2, 1),
-                ShowScrollbar = true,
-                AutoScroll = ToolName == "bash",
-                ScrollbarColor = new Color(50, 50, 50),
-                ScrollbarThumbColor = new Color(105, 105, 105)
+                Margin = new Margin(2, 1, 2, 1)
             };
             if (_alwaysVisible)
-                viewport.BackgroundColor = new Color(26, 26, 26);
-            viewport.AddControl(body);
-            panel.AddControl(viewport);
+                panel.BackgroundColor = new Color(26, 26, 26);
+            panel.AddControl(body);
             var summary = _alwaysVisible ? $"{ToolName}: {Summarize(update)}" : Summarize(update);
-            entry = new Entry(summary, FormatArguments(update), panel, body, viewport);
+            entry = new Entry(summary, FormatArguments(update), panel, body);
             _calls.Add(update.CallId, entry);
             AddControl(panel);
         }
@@ -90,8 +76,6 @@ internal sealed class ToolCallGroupComponent : CollapsiblePanel
         entry.Body.Text = update.Status == ToolCallStatus.Completed && update.FileChange is { } change
             ? FileDiffPreview.Format(change)
             : MarkupParser.Escape(FormatBody(entry.Arguments, update.Result ?? "Running…"));
-        if (ToolName == "bash")
-            entry.Viewport.ScrollToBottom();
         UpdateTitle();
     }
 
