@@ -10,12 +10,14 @@ namespace LakeCode.Cli.Components;
 
 internal sealed class ToolCallGroupComponent : CollapsiblePanel
 {
-    private sealed class Entry(string summary, string arguments, CollapsiblePanel panel, MarkupControl body)
+    private sealed class Entry(string summary, string arguments, CollapsiblePanel panel, MarkupControl body,
+        ScrollablePanelControl viewport)
     {
         public string Summary { get; } = summary;
         public string Arguments { get; } = arguments;
         public CollapsiblePanel Panel { get; } = panel;
         public MarkupControl Body { get; } = body;
+        public ScrollablePanelControl Viewport { get; } = viewport;
         public ToolCallStatus Status { get; set; } = ToolCallStatus.Running;
         public ExternalReadPermissionComponent? Permission { get; set; }
     }
@@ -65,6 +67,7 @@ internal sealed class ToolCallGroupComponent : CollapsiblePanel
                 HorizontalAlignment = HorizontalAlignment.Stretch,
                 Padding = new Padding(2, 1, 2, 1),
                 ShowScrollbar = true,
+                AutoScroll = ToolName == "bash",
                 ScrollbarColor = new Color(50, 50, 50),
                 ScrollbarThumbColor = new Color(105, 105, 105)
             };
@@ -73,7 +76,7 @@ internal sealed class ToolCallGroupComponent : CollapsiblePanel
             viewport.AddControl(body);
             panel.AddControl(viewport);
             var summary = _alwaysVisible ? $"{ToolName}: {Summarize(update)}" : Summarize(update);
-            entry = new Entry(summary, FormatArguments(update), panel, body);
+            entry = new Entry(summary, FormatArguments(update), panel, body, viewport);
             _calls.Add(update.CallId, entry);
             AddControl(panel);
         }
@@ -87,6 +90,8 @@ internal sealed class ToolCallGroupComponent : CollapsiblePanel
         entry.Body.Text = update.Status == ToolCallStatus.Completed && update.FileChange is { } change
             ? FileDiffPreview.Format(change)
             : MarkupParser.Escape(FormatBody(entry.Arguments, update.Result ?? "Running…"));
+        if (ToolName == "bash")
+            entry.Viewport.ScrollToBottom();
         UpdateTitle();
     }
 
