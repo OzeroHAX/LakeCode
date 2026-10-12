@@ -123,6 +123,8 @@ internal sealed class ToolCallGroupComponent : CollapsiblePanel
             "bash" => $"Run {count} {(count == 1 ? "command" : "commands")}",
             "write_file" => $"Write {count} {(count == 1 ? "file" : "files")}",
             "edit_file" => $"Edit {count} {(count == 1 ? "file" : "files")}",
+            "load_skill" => $"Load {count} {(count == 1 ? "skill" : "skills")}",
+            "read_skill_resource" => $"Read {count} skill {(count == 1 ? "resource" : "resources")}",
             _ => $"{ToolName} · {count} calls"
         };
         var running = _calls.Values.Count(entry => entry.Status == ToolCallStatus.Running);
@@ -160,6 +162,10 @@ internal sealed class ToolCallGroupComponent : CollapsiblePanel
     {
         using var arguments = JsonDocument.Parse(update.Arguments);
         var root = arguments.RootElement;
+        if (update.Name is "load_skill" or "read_skill_resource" &&
+            root.TryGetProperty("skillName", out var skill))
+            return root.TryGetProperty("resourceName", out var resource)
+                ? $"{skill}: {resource}" : skill.ToString();
         if (update.Name == "bash" && root.TryGetProperty("command", out var command))
             return command.ToString();
         var path = root.TryGetProperty("path", out var value) ? value.ToString() : ".";

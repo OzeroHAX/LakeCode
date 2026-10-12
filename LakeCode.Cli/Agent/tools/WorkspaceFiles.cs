@@ -63,7 +63,7 @@ internal sealed class WorkspaceFiles
         return fullPath;
     }
 
-    private static void ValidateLinks(string fullPath, string root, bool allowMissing)
+    internal static void ValidateLinks(string fullPath, string root, bool allowMissing)
     {
         var relative = Path.GetRelativePath(root, fullPath);
 
