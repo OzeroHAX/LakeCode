@@ -23,7 +23,8 @@ internal sealed class FooterComponent : MarkupControl
         Margin = new Margin(3, 0, 3, 1);
         var frame = IdleFrame;
         string Render() =>
-            $"{frame} [cyan]{Markup.Escape(store.SelectedModel.Name)}[/]   [grey50]│[/]   [cyan]{Markup.Escape(store.SelectedReasoningEffort)}[/]   [grey50]│[/]   {Markup.Escape(directory)}   [grey50]│[/]   {FormatStatistics(statistics)}   [grey50]│[/]   {statistics.TokensPerSecond?.ToString("0.0", CultureInfo.InvariantCulture) ?? "—"} tok/s";
+            $"{frame} [cyan]{Markup.Escape(store.SelectedModel.Name)}[/]   [grey50]│[/]   [cyan]{Markup.Escape(store.SelectedReasoningEffort)}[/]   [grey50]│[/]   {Markup.Escape(directory)}   [grey50]│[/]   {FormatStatistics(statistics)}   [grey50]│[/]   {statistics.TokensPerSecond?.ToString("0.0", CultureInfo.InvariantCulture) ?? "—"} tok/s\n" +
+            FormatRawStatistics(statistics);
 
         _scanner = new SpinnerTextAnimator(windowSystem, ScannerFrames, value =>
         {
@@ -88,14 +89,14 @@ internal sealed class FooterComponent : MarkupControl
         if (store.Current?.InputTokens is not { } input)
             return $"0/{FormatTokens(store.Model.ContextWindowTokens)}";
 
-        var context = $"{FormatTokens(input)}/{FormatTokens(store.Model.ContextWindowTokens)}";
-        if (input > 0 && store.Current.CachedInputTokens is { } cached)
-        {
-            var cacheHit = (100.0 * cached / input).ToString("0", CultureInfo.InvariantCulture);
-            return $"{context} ({cacheHit}% cache hit)";
-        }
+        return $"{FormatTokens(input)}/{FormatTokens(store.Model.ContextWindowTokens)}";
+    }
 
-        return context;
+    private static string FormatRawStatistics(StatisticsStore store)
+    {
+        static string Value(long? tokens) => tokens?.ToString(CultureInfo.InvariantCulture) ?? "null";
+        var usage = store.Current;
+        return $"[grey70]usage (MAF): input={Value(usage?.InputTokens)} cached={Value(usage?.CachedInputTokens)} output={Value(usage?.OutputTokens)} reasoning={Value(usage?.ReasoningTokens)} total={Value(usage?.TotalTokens)}[/]";
     }
 
     private static string FormatTokens(long tokens)
