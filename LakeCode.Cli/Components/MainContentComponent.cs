@@ -17,8 +17,8 @@ internal sealed class MainContentComponent : ScrollablePanelControl
         Margin = new Margin(1, 0, 1, 0);
     }
 
-    public void AddUserMessage(string message)
+    public void AddUserMessage(string message, IReadOnlyList<ImageAttachment> attachments)
     {
-        AddControl(new UserMessageComponent(message));
+        AddControl(new UserMessageComponent(message, attachments));
     }
 }

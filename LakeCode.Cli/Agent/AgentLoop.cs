@@ -179,13 +179,19 @@ public sealed class AgentLoop
     }
 
     public async IAsyncEnumerable<AgentResponseUpdate> RunAsync(
-        string message,
+        ChatMessage message,
         ModelInfo model,
         string reasoningEffort,
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(message);
+        ArgumentNullException.ThrowIfNull(message);
         ArgumentNullException.ThrowIfNull(model);
+        bool hasImages = message.Contents.OfType<DataContent>()
+            .Any(content => content.MediaType.StartsWith("image/", StringComparison.OrdinalIgnoreCase) && !content.Data.IsEmpty);
+        if (string.IsNullOrWhiteSpace(message.Text) && !hasImages)
+            throw new ArgumentException("The message must contain text or an image.", nameof(message));
+        if (hasImages && !model.InputModalities.Contains(ModelModality.Image))
+            throw new ArgumentException("The model does not support image input.", nameof(model));
         if (!model.ReasoningEfforts.Contains(reasoningEffort))
             throw new ArgumentException("The model does not support this reasoning effort.", nameof(reasoningEffort));
         // Recheck discovery roots before the context provider reads skills.

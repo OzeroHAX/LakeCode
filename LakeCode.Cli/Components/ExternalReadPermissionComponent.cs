@@ -37,7 +37,6 @@ internal sealed class ExternalReadPermissionComponent : CollapsiblePanel
         _choices = new ListControl
         {
             IsSelectable = true,
-            Height = 2,
             MaxVisibleItems = 2,
             HorizontalAlignment = HorizontalAlignment.Stretch,
             HighlightBackgroundColor = new Color(35, 65, 75),

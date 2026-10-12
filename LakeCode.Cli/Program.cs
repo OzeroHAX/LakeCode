@@ -25,7 +25,7 @@ windowSystem.RegisterGlobalShortcut(ConsoleModifiers.Control, ConsoleKey.C, () =
 
 var header = new HeaderComponent("LakeCode", "Coding agent");
 var mainContent = new MainContentComponent();
-var input = new InputComponent();
+using var input = new InputComponent(windowSystem, shutdown.Token);
 var footer = new FooterComponent(windowSystem, modelStore, statisticsStore, workspaceRoot);
 
 var window = new WindowBuilder(windowSystem)
@@ -37,6 +37,7 @@ var window = new WindowBuilder(windowSystem)
     .AddControl(input)
     .AddControl(footer)
     .Build();
+input.Attach(window);
 window.OnClosing += (_, _) => shutdown.Cancel();
 window.PreviewKeyPressed += (_, e) =>
 {

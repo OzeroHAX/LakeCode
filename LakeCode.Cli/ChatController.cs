@@ -51,29 +51,46 @@ internal sealed class ChatController
         _agent = null;
         ((SharpConsoleUI.Controls.IControlHost)_mainContent).ClearControls();
         _statistics.Reset(_models.SelectedModel);
-        _input.Editor.Input = string.Empty;
+        _input.ClearDraft();
         _focusInput();
     }
 
     private void SendMessage()
     {
+        if (_sending) return;
+        if (_input.IsImporting)
+        {
+            _input.ShowError("Дождитесь окончания чтения изображения или буфера обмена.");
+            return;
+        }
+        var model = _models.SelectedModel;
+        if (_input.HasAttachments && !model.InputModalities.Contains(ModelModality.Image))
+        {
+            _input.ShowError($"Модель {model.Name} не поддерживает изображения. Выберите другую модель или удалите вложения; черновик сохранён.");
+            return;
+        }
         var message = _input.Editor.Input;
-        if (_sending || string.IsNullOrWhiteSpace(message))
+        if (string.IsNullOrWhiteSpace(message) && !_input.HasAttachments)
         {
             return;
         }
+        var attachments = _input.GetAttachments();
+        var contents = new List<AIContent>(attachments.Length + 1);
+        if (!string.IsNullOrWhiteSpace(message)) contents.Add(new TextContent(message));
+        foreach (var attachment in attachments)
+            contents.Add(new DataContent(attachment.Data, attachment.MediaType));
+        var request = new ChatMessage(ChatRole.User, contents);
 
-        _mainContent.AddUserMessage(message);
-        _input.Editor.Input = string.Empty;
+        _mainContent.AddUserMessage(message, attachments);
+        _input.ClearDraft();
         _sending = true;
         _statistics.SetGenerating(true);
-        _input.Editor.IsEnabled = false;
+        _input.SetSending(true);
         var response = new AssistantMessageComponent(_windowSystem);
         _activeResponse = response;
         _mainContent.AddControl(response);
-        var model = _models.SelectedModel;
         var reasoningEffort = _models.SelectedReasoningEffort;
-        _ = Task.Run(() => SendAsync(message, response, model, reasoningEffort));
+        _ = Task.Run(() => SendAsync(request, response, model, reasoningEffort));
     }
 
     private async Task<ExternalReadDecision> ConfirmExternalReadAsync(
@@ -108,7 +125,7 @@ internal sealed class ChatController
     }
 
     private async Task SendAsync(
-        string message, AssistantMessageComponent response, ModelInfo model, string reasoningEffort)
+        ChatMessage message, AssistantMessageComponent response, ModelInfo model, string reasoningEffort)
     {
         void OnToolCall(ToolCallUpdate update) =>
             _windowSystem.EnqueueOnUIThread(() => response.UpdateToolCall(update));
@@ -177,7 +194,7 @@ internal sealed class ChatController
                 _windowSystem.EnqueueOnUIThread(() =>
                 {
                     _sending = false;
-                    _input.Editor.IsEnabled = true;
+                    _input.SetSending(false);
                     _focusInput();
                 });
             }
