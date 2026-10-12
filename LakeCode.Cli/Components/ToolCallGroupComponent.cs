@@ -125,6 +125,8 @@ internal sealed class ToolCallGroupComponent : CollapsiblePanel
             "read_file" => $"Read {count} {(count == 1 ? "file" : "files")}",
             "list_directory" => $"List {count} {(count == 1 ? "directory" : "directories")}",
             "grep" => $"Grep {count} {(count == 1 ? "search" : "searches")}",
+            "web_search" => $"Search {count} {(count == 1 ? "query" : "queries")}",
+            "read_web" => $"Read {count} {(count == 1 ? "page" : "pages")}",
             "bash" => $"Run {count} {(count == 1 ? "command" : "commands")}",
             "write_file" => $"Write {count} {(count == 1 ? "file" : "files")}",
             "edit_file" => $"Edit {count} {(count == 1 ? "file" : "files")}",
@@ -167,6 +169,12 @@ internal sealed class ToolCallGroupComponent : CollapsiblePanel
     {
         using var arguments = JsonDocument.Parse(update.Arguments);
         var root = arguments.RootElement;
+        if (update.Name is "web_search" or "read_web")
+        {
+            var parameter = update.Name == "web_search" ? "query" : "url";
+            return root.TryGetProperty(parameter, out var argument) && argument.ValueKind == JsonValueKind.String
+                ? argument.GetString() ?? update.Name : update.Name;
+        }
         if (update.Name is "load_skill" or "read_skill_resource" &&
             root.TryGetProperty("skillName", out var skill))
             return root.TryGetProperty("resourceName", out var resource)

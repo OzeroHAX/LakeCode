@@ -10,6 +10,9 @@ using LakeCode.Cli.Agent.Tools.Grep;
 using LakeCode.Cli.Agent.Tools.Bash;
 using LakeCode.Cli.Agent.Tools.WriteFile;
 using LakeCode.Cli.Agent.Tools.EditFile;
+using WebSearchTool = LakeCode.Cli.Agent.Tools.WebSearch.WebSearchTool;
+using LakeCode.Cli.Agent.Tools.ReadWeb;
+using WebClient = LakeCode.Cli.Agent.Tools.Web.WebClient;
 using Microsoft.Agents.AI;
 using Microsoft.Extensions.AI;
 using OpenAI;
@@ -54,6 +57,9 @@ public sealed class AgentLoop
         var bash = new BashTool(files);
         var writeFile = new WriteFileTool(files, change => _fileChangeObserver.Value?.Invoke(change));
         var editFile = new EditFileTool(files, change => _fileChangeObserver.Value?.Invoke(change));
+        var web = new WebClient(_cacheSessionId);
+        var webSearch = new WebSearchTool(web);
+        var readWeb = new ReadWebTool(web);
         var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
         var projectSkills = files.Resolve(".agents/skills", allowMissing: true);
         // MAF deduplicates by name: the first source (project) wins.
@@ -97,7 +103,9 @@ public sealed class AgentLoop
                     AIFunctionFactory.Create(grep.SearchAsync, name: "grep"),
                     AIFunctionFactory.Create(bash.RunAsync, name: "bash"),
                     AIFunctionFactory.Create(writeFile.WriteAsync, name: "write_file"),
-                    AIFunctionFactory.Create(editFile.EditAsync, name: "edit_file")
+                    AIFunctionFactory.Create(editFile.EditAsync, name: "edit_file"),
+                    AIFunctionFactory.Create(webSearch.SearchAsync, name: "web_search"),
+                    AIFunctionFactory.Create(readWeb.ReadAsync, name: "read_web")
                 ]
             },
             AIContextProviders = [skills]
