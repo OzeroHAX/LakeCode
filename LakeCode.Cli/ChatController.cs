@@ -38,6 +38,18 @@ internal sealed class ChatController
         _input.Editor.Entered += (_, _) => SendMessage();
     }
 
+    public void StartNewSession()
+    {
+        if (_sending)
+            return;
+
+        _agent = null;
+        ((SharpConsoleUI.Controls.IControlHost)_mainContent).ClearControls();
+        _statistics.Reset(_models.SelectedModel);
+        _input.Editor.Input = string.Empty;
+        _focusInput();
+    }
+
     private void SendMessage()
     {
         var message = _input.Editor.Input;

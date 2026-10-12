@@ -31,6 +31,15 @@ internal sealed class StatisticsStore(ModelInfo model) : INotifyPropertyChanged
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(IsGenerating)));
     }
 
+    public void Reset(ModelInfo sessionModel)
+    {
+        model = sessionModel;
+        SetCurrent(null);
+        TokensPerSecond = null;
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(TokensPerSecond)));
+        SetGenerating(false);
+    }
+
     public void Update(UsageDetails usage, ModelInfo requestModel)
     {
         SetCurrent(new RequestStatistics(

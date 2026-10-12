@@ -69,6 +69,16 @@ internal sealed class AssistantMessageComponent : CollapsiblePanel
             _body.Visible = false;
         _body = null;
         _response.Clear();
+        if (update.Name is "bash" or "write_file" or "edit_file")
+        {
+            _activeToolGroup = null;
+            var call = new ToolCallGroupComponent(update.Name, alwaysVisible: true);
+            _toolCalls.Add(update.CallId, call);
+            AddControl(call);
+            call.Update(update);
+            return;
+        }
+
         if (_activeToolGroup?.ToolName != update.Name)
         {
             _activeToolGroup = new ToolCallGroupComponent(update.Name);

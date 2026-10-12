@@ -20,18 +20,24 @@ internal sealed class ToolCallGroupComponent : CollapsiblePanel
     }
 
     private readonly Dictionary<string, Entry> _calls = new(StringComparer.Ordinal);
+    private readonly bool _alwaysVisible;
     public string ToolName { get; }
 
-    public ToolCallGroupComponent(string toolName)
+    public ToolCallGroupComponent(string toolName, bool alwaysVisible = false)
     {
         ToolName = toolName;
+        _alwaysVisible = alwaysVisible;
+        Collapsible = !alwaysVisible;
+        ShowHeader = !alwaysVisible;
         HeaderStyle = CollapsibleHeaderStyle.Borderless;
         HorizontalAlignment = HorizontalAlignment.Stretch;
         Margin = new Margin(0, 0, 0, 1);
         ForegroundColor = new Color(155, 155, 155);
         FocusedForegroundColor = new Color(185, 185, 185);
         FocusedBackgroundColor = new Color(45, 45, 45);
-        IsExpanded = false;
+        IsExpanded = alwaysVisible;
+        if (alwaysVisible)
+            MaxContentHeight = ControlDefaults.ScrollablePanelDefaultUnboundedHeight;
     }
 
     public void Update(ToolCallUpdate update)
@@ -42,9 +48,10 @@ internal sealed class ToolCallGroupComponent : CollapsiblePanel
             {
                 HeaderStyle = CollapsibleHeaderStyle.Borderless,
                 HorizontalAlignment = HorizontalAlignment.Stretch,
-                IsExpanded = false,
+                Collapsible = !_alwaysVisible,
+                IsExpanded = _alwaysVisible,
                 MaxContentHeight = ControlDefaults.ScrollablePanelDefaultUnboundedHeight,
-                Margin = new Margin(2, 0, 0, 0)
+                Margin = new Margin(_alwaysVisible ? 0 : 2, 0, 0, 0)
             };
             var body = new MarkupControl(new List<string>())
             {
@@ -56,11 +63,16 @@ internal sealed class ToolCallGroupComponent : CollapsiblePanel
                 BorderStyle = BorderStyle.None,
                 HorizontalAlignment = HorizontalAlignment.Stretch,
                 Padding = new Padding(2, 1, 2, 1),
-                ShowScrollbar = true
+                ShowScrollbar = true,
+                ScrollbarColor = new Color(50, 50, 50),
+                ScrollbarThumbColor = new Color(105, 105, 105)
             };
+            if (_alwaysVisible)
+                viewport.BackgroundColor = new Color(26, 26, 26);
             viewport.AddControl(body);
             panel.AddControl(viewport);
-            entry = new Entry(Summarize(update), update.Arguments, panel, body);
+            var summary = _alwaysVisible ? $"{ToolName}: {Summarize(update)}" : Summarize(update);
+            entry = new Entry(summary, update.Arguments, panel, body);
             _calls.Add(update.CallId, entry);
             AddControl(panel);
         }

@@ -52,11 +52,16 @@ windowSystem.AddWindow(window);
 using var slashCommands = new SlashCommandsComponent(window, input,
 [
     ("/exit", "Завершить LakeCode"),
+    ("/new", "Начать новую сессию"),
     ("/models", "Показать доступные модели")
 ]);
 slashCommands.CommandSelected += (_, command) =>
 {
-    if (command.Equals("/models", StringComparison.OrdinalIgnoreCase))
+    if (command.Equals("/new", StringComparison.OrdinalIgnoreCase))
+    {
+        chat.StartNewSession();
+    }
+    else if (command.Equals("/models", StringComparison.OrdinalIgnoreCase))
     {
         input.Editor.Input = string.Empty;
         modelsWindow.Show(windowSystem);
