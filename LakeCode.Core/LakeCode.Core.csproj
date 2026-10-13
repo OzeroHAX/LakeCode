@@ -5,6 +5,7 @@
         <Nullable>enable</Nullable>
     </PropertyGroup>
     <ItemGroup>
+        <ProjectReference Include="../LakeCode.Eval.Contracts/LakeCode.Eval.Contracts.csproj" />
         <PackageReference Include="Microsoft.Agents.AI" Version="1.24.0" />
         <PackageReference Include="Microsoft.Agents.AI.OpenAI" Version="1.24.0" />
         <PackageReference Include="Microsoft.Agents.AI.Anthropic" Version="1.24.0" />

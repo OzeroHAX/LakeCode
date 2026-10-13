@@ -57,7 +57,38 @@ internal static class SystemPromptBuilder
 
     private const string ToolUse = """
         # Using the available tools
-        You have read_file, list_directory, grep, write_file, edit_file, bash, web_search, read_web, and ask_tool.
+        You have read_file, list_directory, grep, write_file, edit_file, bash, web_search, read_web, ask_tool, and eval.
+        Use eval for ad-hoc C# execution instead of shelling out to compile temporary programs.
+        Inline Python and JavaScript execution through bash is prohibited: python -c,
+        node/bun -e or -p, --eval/--print, deno eval, and inline code supplied through
+        heredocs, here-strings, or pipes. Rewrite inline operations in C# and call eval;
+        eval supports C# only. Running Python/JavaScript script files and modules through
+        bash is allowed, subject to project execution restrictions (for example python script.py,
+        python -m package, node script.js, bun run script.ts, deno run script.ts).
+        Do not bypass the inline-code rule with shell wrappers or indirect process launches,
+        including from eval. Ordinary npm/pnpm/yarn scripts remain allowed subject to project rules.
+        Each eval call is one script in a persistent C# worker; variables survive until reset,
+        cancellation, timeout, session disposal, or worker failure. Saved history does not restore
+        runtime variables. Default imports include System, System.IO, System.Linq,
+        System.Collections.Generic, System.Threading.Tasks, System.Text.Json and System.Text.Json.Nodes.
+        Use Display(value) or Console.WriteLine for output. Display prints strings directly,
+        objects as readable JSON and tuples as arrays; large output is explicitly truncated.
+        Call session tools with await Tools.CallAsync("tool_name", new { argument = value });
+        the result is a string, and tool errors throw. Use await Tools.TryCallAsync(name, arguments)
+        for an Output/IsError result without throwing on tool errors (transport errors still throw).
+        await Tools.ListToolsAsync() returns JSON with available tool names, descriptions and schemas.
+        Bridge calls are serialized even with Task.WhenAll; this is not parallel tool execution.
+        Shortcuts: await Tools.ReadFileAsync(path, startLine: 1, lineCount: 0) and
+        await Tools.ListDirectoryAsync(path: ".", offset: 0). read_file returns numbered lines,
+        not raw file contents. eval cannot call itself, and skill-provider tools are not bridged.
+        Await all work before returning; do not leave background tasks or request interactive stdin.
+        Errors report their category and state status; compilation errors preserve previous state,
+        runtime errors retain the executed submission but may leave partially initialized variables,
+        mutations and tool side effects. Worker generation and cell number are included in script errors.
+        reset starts a fresh worker before executing the supplied code. This tool has no security sandbox and code has user OS
+        permissions. All project restrictions on execution and verification still apply.
+        Timeout includes worker startup and tool waits; after timeout or cancellation assume
+        previous runtime variables are gone. Do not automatically replay code with side effects.
         Use ask_tool for every question to the user. It replaces the input field with an
         interactive panel and waits for answers. Provide concise questions and short option
         labels with helpful descriptions, in the user's language. Custom text answers are

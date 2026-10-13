@@ -128,6 +128,7 @@ internal sealed class ToolCallGroupComponent : CollapsiblePanel
             "web_search" => $"Search {count} {(count == 1 ? "query" : "queries")}",
             "read_web" => $"Read {count} {(count == 1 ? "page" : "pages")}",
             "bash" => $"Run {count} {(count == 1 ? "command" : "commands")}",
+            "eval" => $"Eval {count} C# {(count == 1 ? "script" : "scripts")}",
             "write_file" => $"Write {count} {(count == 1 ? "file" : "files")}",
             "edit_file" => $"Edit {count} {(count == 1 ? "file" : "files")}",
             "ask_tool" => $"Ask {count} {(count == 1 ? "question set" : "question sets")}",

@@ -28,6 +28,8 @@ public sealed class AgentLoop : IDisposable
     private readonly string _cacheSessionId;
     private readonly AsyncLocal<Action<FileChange>?> _fileChangeObserver = new();
     private readonly WorkspaceFiles _files;
+    private readonly Tools.Eval.EvalTool _eval;
+    private readonly Dictionary<string, AIFunction> _evalFunctions = new(StringComparer.Ordinal);
     private readonly string[] _skillPaths;
     private AgentSession? _session;
     private string? _historyOrigin;
@@ -91,6 +93,27 @@ public sealed class AgentLoop : IDisposable
                     """
             });
 
+        AIFunction[] functions =
+        [
+            AIFunctionFactory.Create(readFile.ReadAsync, name: "read_file"),
+            AIFunctionFactory.Create(listDirectory.ListAsync, name: "list_directory"),
+            AIFunctionFactory.Create(grep.SearchAsync, name: "grep"),
+            AIFunctionFactory.Create(bash.RunAsync, name: "bash"),
+            AIFunctionFactory.Create(writeFile.WriteAsync, name: "write_file"),
+            AIFunctionFactory.Create(editFile.EditAsync, name: "edit_file"),
+            AIFunctionFactory.Create(webSearch.SearchAsync, name: "web_search"),
+            AIFunctionFactory.Create(readWeb.ReadAsync, name: "read_web"),
+            AIFunctionFactory.Create(askTool.AskAsync, name: "ask_tool")
+        ];
+        foreach (var function in functions) _evalFunctions.Add(function.Name, function);
+        _eval = new Tools.Eval.EvalTool(files.Root, InvokeEvalToolAsync,
+            () => JsonSerializer.Serialize(functions.Select(function => new
+            {
+                function.Name,
+                function.Description,
+                Parameters = function.JsonSchema
+            })));
+
         _historyCapture = new InterruptedHistoryChatClient(_client);
         _historyCapture.BeforeRequest = () => BeforeModelRequest?.Invoke();
         _agent = new ChatClientAgent(_historyCapture, new ChatClientAgentOptions
@@ -100,18 +123,7 @@ public sealed class AgentLoop : IDisposable
             ChatOptions = new ChatOptions
             {
                 Instructions = SystemPromptBuilder.Build(promptContext),
-                Tools =
-                [
-                    AIFunctionFactory.Create(readFile.ReadAsync, name: "read_file"),
-                    AIFunctionFactory.Create(listDirectory.ListAsync, name: "list_directory"),
-                    AIFunctionFactory.Create(grep.SearchAsync, name: "grep"),
-                    AIFunctionFactory.Create(bash.RunAsync, name: "bash"),
-                    AIFunctionFactory.Create(writeFile.WriteAsync, name: "write_file"),
-                    AIFunctionFactory.Create(editFile.EditAsync, name: "edit_file"),
-                    AIFunctionFactory.Create(webSearch.SearchAsync, name: "web_search"),
-                    AIFunctionFactory.Create(readWeb.ReadAsync, name: "read_web"),
-                    AIFunctionFactory.Create(askTool.AskAsync, name: "ask_tool")
-                ]
+                Tools = [.. functions, AIFunctionFactory.Create(_eval.RunAsync, name: "eval")]
             },
             AIContextProviders = [skills]
         }).AsBuilder().Use(ObserveToolCallAsync).Build();
@@ -162,14 +174,34 @@ public sealed class AgentLoop : IDisposable
             WorkspaceFiles.ValidateLinks(path, Path.GetPathRoot(path)!, allowMissing: true);
     }
 
-    private async ValueTask<object?> ObserveToolCallAsync(
+    private ValueTask<object?> ObserveToolCallAsync(
         AIAgent agent,
         FunctionInvocationContext context,
         Func<FunctionInvocationContext, CancellationToken, ValueTask<object?>> next,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken) => ObserveInvocationAsync(
+            context.CallContent.CallId, context.Function.Name, JsonSerializer.Serialize(context.Arguments),
+            token => next(context, token), cancellationToken);
+
+    private async Task<string> InvokeEvalToolAsync(string name, JsonElement arguments, CancellationToken cancellationToken)
     {
-        var call = new ToolCallUpdate(context.CallContent.CallId, context.Function.Name,
-            JsonSerializer.Serialize(context.Arguments), ToolCallStatus.Running);
+        if (!_evalFunctions.TryGetValue(name, out var function))
+            return $"Error: Tool '{name}' is not available through eval. Recursive eval is not supported.";
+        if (arguments.ValueKind != JsonValueKind.Object) return "Error: Tool arguments must be an object.";
+        var values = JsonSerializer.Deserialize<Dictionary<string, object?>>(arguments.GetRawText())!;
+        var result = await ObserveInvocationAsync("eval-" + Guid.NewGuid().ToString("N"), name,
+            arguments.GetRawText(), token => function.InvokeAsync(new AIFunctionArguments(values), token), cancellationToken);
+        return result switch
+        {
+            string text => text,
+            JsonElement { ValueKind: JsonValueKind.String } element => element.GetString()!,
+            _ => JsonSerializer.Serialize(result)
+        };
+    }
+
+    private async ValueTask<object?> ObserveInvocationAsync(string callId, string name, string argumentsJson,
+        Func<CancellationToken, ValueTask<object?>> invoke, CancellationToken cancellationToken)
+    {
+        var call = new ToolCallUpdate(callId, name, argumentsJson, ToolCallStatus.Running);
         ToolCallUpdated?.Invoke(call);
         FileChange? fileChange = null;
         var previousObserver = _fileChangeObserver.Value;
@@ -197,7 +229,7 @@ public sealed class AgentLoop : IDisposable
                     return "";
                 });
             }
-            var result = accessError.Length == 0 ? await next(context, cancellationToken) : accessError;
+            var result = accessError.Length == 0 ? await invoke(cancellationToken) : accessError;
             var text = result switch
             {
                 string value => value,
@@ -239,6 +271,7 @@ public sealed class AgentLoop : IDisposable
 
     public async ValueTask RestoreSessionAsync(JsonElement state, CancellationToken cancellationToken = default)
     {
+        _eval.Reset();
         _historyCapture.ClearSideContext();
         if (state.TryGetProperty("FrameworkState", out var frameworkState))
         {
@@ -255,6 +288,7 @@ public sealed class AgentLoop : IDisposable
     {
         if (_session is null || messageCount < 0 || messageCount > HistoryCount)
             throw new InvalidDataException("Некорректная граница истории.");
+        _eval.Reset();
         _history.SetMessages(_session, _history.GetMessages(_session).Take(messageCount).ToList());
         _historyCapture.ClearSideContext();
     }
@@ -301,7 +335,11 @@ public sealed class AgentLoop : IDisposable
         _history.SetMessages(_session, messages);
     }
 
-    public void Dispose() => _historyCapture.Dispose();
+    public void Dispose()
+    {
+        _eval.Dispose();
+        _historyCapture.Dispose();
+    }
 
     public async IAsyncEnumerable<AgentResponseUpdate> RunAsync(
         ChatMessage message,

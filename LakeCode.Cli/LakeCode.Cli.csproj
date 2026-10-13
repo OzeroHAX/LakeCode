@@ -9,7 +9,22 @@
 
     <ItemGroup>
       <ProjectReference Include="../LakeCode.Core/LakeCode.Core.csproj" />
+      <ProjectReference Include="../LakeCode.Eval.Worker/LakeCode.Eval.Worker.csproj" ReferenceOutputAssembly="false" />
       <ProjectReference Include="../external/ConsoleEx/SharpConsoleUI/SharpConsoleUI.csproj" />
     </ItemGroup>
 
+    <Target Name="CopyEvalWorker" AfterTargets="Build">
+      <MSBuild Projects="../LakeCode.Eval.Worker/LakeCode.Eval.Worker.csproj" Targets="GetEvalWorkerFiles" Properties="Configuration=$(Configuration)">
+        <Output TaskParameter="TargetOutputs" ItemName="EvalWorkerFiles" />
+      </MSBuild>
+      <Error Condition="'@(EvalWorkerFiles)' == ''" Text="C# worker output files were not found." />
+      <Copy SourceFiles="@(EvalWorkerFiles)" DestinationFiles="@(EvalWorkerFiles->'$(TargetDir)eval-worker/%(RecursiveDir)%(Filename)%(Extension)')" SkipUnchangedFiles="true" />
+    </Target>
+    <Target Name="PublishEvalWorker" AfterTargets="Publish">
+      <PropertyGroup>
+        <EvalWorkerPublishDir>$([System.IO.Path]::GetFullPath('$(PublishDir)eval-worker/', '$(MSBuildProjectDirectory)'))</EvalWorkerPublishDir>
+      </PropertyGroup>
+      <MSBuild Projects="../LakeCode.Eval.Worker/LakeCode.Eval.Worker.csproj" Targets="Publish"
+               Properties="Configuration=$(Configuration);PublishDir=$(EvalWorkerPublishDir);PublishSingleFile=false;PublishTrimmed=false;UseAppHost=true" />
+    </Target>
 </Project>

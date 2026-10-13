@@ -1,3 +1,4 @@
+using System.Text.Encodings.Web;
 using System.Text.Json;
 using LakeCode.Core.Attachments;
 
@@ -7,7 +8,11 @@ namespace LakeCode.Core.Sessions;
 internal sealed class SessionStorage
 {
     private const long MaxSnapshotBytes = 256L * 1024 * 1024;
-    private static readonly JsonSerializerOptions JsonOptions = new() { WriteIndented = false };
+    private static readonly JsonSerializerOptions JsonOptions = new()
+    {
+        WriteIndented = false,
+        Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping
+    };
     private readonly string _root;
 
     public SessionStorage()
