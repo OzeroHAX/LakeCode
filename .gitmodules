@@ -1,0 +1,4 @@
+[submodule "external/ConsoleEx"]
+	path = external/ConsoleEx
+	url = https://github.com/OzeroHAX/ConsoleEx.git
+	branch = fix/markup-cache-retention

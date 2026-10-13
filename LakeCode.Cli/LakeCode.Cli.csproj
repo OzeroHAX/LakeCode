@@ -9,7 +9,7 @@
 
     <ItemGroup>
       <ProjectReference Include="../LakeCode.Core/LakeCode.Core.csproj" />
-      <PackageReference Include="SharpConsoleUI" Version="2.6.18" />
+      <ProjectReference Include="../external/ConsoleEx/SharpConsoleUI/SharpConsoleUI.csproj" />
     </ItemGroup>
 
 </Project>

@@ -68,8 +68,10 @@ internal static class ImageInput
     internal static ImageAttachment CreatePreview(ImageData imageData)
     {
         using var image = Image.Load<Rgb24>(ImageAttachments.CreateDecoderOptions(), imageData.Data.Span);
+        var pixels = new byte[checked(image.Width * image.Height * 3)];
+        image.CopyPixelDataTo(pixels);
         return new ImageAttachment(imageData.Name, imageData.Data, imageData.MediaType,
-            imageData.Width, imageData.Height, PixelBuffer.FromImageSharp(image));
+            imageData.Width, imageData.Height, PixelBuffer.FromRgb24Bytes(pixels, image.Width, image.Height));
     }
 
     private static async Task<ReadOnlyMemory<byte>> RunAsync(
