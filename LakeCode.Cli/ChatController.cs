@@ -19,8 +19,11 @@ internal sealed class ChatController : IDisposable
     private readonly ModelStore _models;
     private readonly Action _focusInput;
     private readonly SessionsWindowComponent _sessionsWindow;
+    private readonly BtwWindowComponent _btw;
+    private Guid? _shownSideRequestId;
     private readonly PanelControl _askHost;
     private readonly ConversationService _conversation;
+    private readonly string _workspaceRoot;
     private ConversationState _state;
     private AssistantMessageComponent? _response;
     private Guid? _responseRequestId;
@@ -30,15 +33,16 @@ internal sealed class ChatController : IDisposable
     private bool _disposed;
 
     public bool CanRewind => _state.CanRewind && !_input.IsImporting &&
-        string.IsNullOrWhiteSpace(_input.Editor.Input) && !_input.HasAttachments;
+        string.IsNullOrWhiteSpace(_input.Editor.Input) && !_input.HasAttachments && !_btw.IsOpen;
     public int TurnCount => _state.TurnCount;
-    public bool CanStopGeneration => _state.CanStopGeneration;
+    public bool CanStopGeneration => _state.CanStopGeneration && !_btw.IsOpen;
 
     public ChatController(ConsoleWindowSystem windowSystem, MainContentComponent mainContent,
         HeaderComponent header, InputComponent input, StatisticsStore statistics, ModelStore models,
         Action focusInput, SessionsWindowComponent sessionsWindow, PanelControl askHost,
-        ConversationService conversation)
+        ConversationService conversation, string workspaceRoot, BtwWindowComponent btw)
     {
+        _workspaceRoot = workspaceRoot;
         _windowSystem = windowSystem;
         _content = mainContent;
         _header = header;
@@ -47,6 +51,10 @@ internal sealed class ChatController : IDisposable
         _models = models;
         _focusInput = focusInput;
         _sessionsWindow = sessionsWindow;
+        _btw = btw;
+        _btw.CancelRequested += CancelSideQuestion;
+        _btw.ClearRequested += ClearSideQuestions;
+        _btw.Closed += RestoreFocusAfterSide;
         _askHost = askHost;
         _conversation = conversation;
         _state = conversation.State;
@@ -69,18 +77,85 @@ internal sealed class ChatController : IDisposable
     }
     public Task FinishAsync() => _conversation.FinishAsync();
 
+    public void ShowOrAskSideQuestion(string question)
+    {
+        if (_input.IsImporting || _input.HasAttachments || _input.GetFilePaths().Length > 0)
+        {
+            _input.ShowError("/btw принимает только текст без новых вложений. Черновик сохранён; дождитесь чтения или удалите вложения.");
+            return;
+        }
+        if (string.IsNullOrWhiteSpace(question))
+        {
+            _btw.Apply(_conversation.State.SideQuestions);
+            if (_input.GetParentWindow() is { } window && _btw.Show(window))
+                _input.Editor.Input = string.Empty;
+            else _input.ShowError("Пока нет попутных ответов. Используйте /btw вопрос.");
+            return;
+        }
+        if (_conversation.Execute(new AskSideQuestion(question))) _input.ClearDraft();
+    }
+
+    private void CancelSideQuestion(Guid id) => _conversation.Execute(new CancelSideQuestion(id));
+    private void ClearSideQuestions() => _conversation.Execute(new ClearSideQuestions());
+    private void RestoreFocusAfterSide()
+    {
+        if (!_disposed && _question is null && _permissions.Count == 0) _focusInput();
+    }
+
     private void SendMessage(SubmissionMode mode)
     {
         if (_input.IsImporting)
         {
-            _input.ShowError("Дождитесь окончания чтения изображения или буфера обмена.");
+            _input.ShowError("Дождитесь окончания чтения вложений или буфера обмена.");
             return;
         }
         var images = _input.GetAttachments().Select(image => new LakeCode.Core.Attachments.ImageData(
             image.Name, image.Data, image.MediaType, image.Width, image.Height)).ToImmutableArray();
-        if (_conversation.Execute(new SubmitMessage(_input.Editor.Input, images,
-                _models.SelectedModel.Id, _models.SelectedReasoningEffort, mode, _models.SelectedProviderId)))
-            _input.ClearDraft();
+        var text = _input.Editor.Input;
+        var mentions = _input.Editor.Mentions;
+        var model = _models.SelectedModel;
+        var effort = _models.SelectedReasoningEffort;
+        var providerId = _models.SelectedProviderId;
+        var paths = _input.GetFilePaths();
+        if (paths.Length == 0)
+        {
+            if (_conversation.Execute(new SubmitMessage(text, images, model.Id, effort, mode, providerId)))
+                _input.ClearDraft();
+            return;
+        }
+        var revision = _input.DraftRevision;
+        var operation = _input.BeginFileCapture();
+        _ = CaptureAndSendAsync();
+
+        async Task CaptureAndSendAsync()
+        {
+            ImmutableArray<LakeCode.Core.Attachments.FileAttachment> files = [];
+            string? error = null;
+            try
+            {
+                files = await Task.Run(() => LakeCode.Core.Attachments.FileAttachments.CaptureAsync(
+                    _workspaceRoot, paths, model.ContextWindowTokens, operation.Token), operation.Token);
+            }
+            catch (OperationCanceledException) { }
+            catch (Exception failure) { error = failure.Message; }
+            _windowSystem.EnqueueOnUIThread(() =>
+            {
+                try
+                {
+                    if (_disposed || !_input.EndFileCapture(operation)) return;
+                    if (operation.IsCancellationRequested) return;
+                    if (error is not null) { _input.ShowError(error); return; }
+                    if (_input.DraftRevision != revision)
+                    {
+                        _input.ShowError("Черновик изменился во время чтения файлов. Отправьте его повторно.");
+                        return;
+                    }
+                    if (_conversation.Execute(new SubmitMessage(text, images, model.Id, effort, mode, providerId, files, mentions)))
+                        _input.ClearDraft();
+                }
+                finally { operation.Dispose(); }
+            });
+        }
     }
 
     private void OnStateChanged(ConversationState state) => Enqueue(() => ApplyState(state));
@@ -95,6 +170,7 @@ internal sealed class ChatController : IDisposable
         if (state.Revision < _state.Revision) return;
         var wasExclusive = _state.IsBusy && !_state.IsGenerating;
         _state = state;
+        _btw.Apply(state.SideQuestions);
         _header.SetSessionTitle(state.Title);
         _input.SetSending(state.IsBusy && !state.IsGenerating);
         _statistics.Apply(state);
@@ -102,7 +178,7 @@ internal sealed class ChatController : IDisposable
         {
             var text = string.Join(" ", item.Text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
             if (text.Length > 100) text = text[..100] + "…";
-            if (text.Length == 0) text = $"Изображения: {item.ImageCount}";
+            if (text.Length == 0) text = $"Изображения: {item.ImageCount} · Файлы: {item.FileCount}";
             var label = item.Mode switch
             {
                 SubmissionMode.Clarify => "После инструментов",
@@ -111,7 +187,7 @@ internal sealed class ChatController : IDisposable
             };
             return $"{label}: {text}";
         }).ToArray(), state.QueuePaused);
-        if (wasExclusive && !state.IsBusy) _focusInput();
+        if (wasExclusive && !state.IsBusy && !_btw.IsOpen) _focusInput();
     }
 
     private void ApplyEvent(ConversationEventEnvelope envelope)
@@ -128,7 +204,7 @@ internal sealed class ChatController : IDisposable
                         id => { if (!_input.IsImporting) _conversation.Execute(new OpenSession(id)); });
                     break;
                 case TurnStarted started:
-                    _content.AddUserMessage(started.Text, started.Images.Select(ImageInput.CreatePreview).ToArray());
+                    _content.AddUserMessage(started.Text, started.Images.Select(ImageInput.CreatePreview).ToArray(), started.Files, started.Mentions);
                     _response = new AssistantMessageComponent(_windowSystem);
                     _responseRequestId = envelope.RequestId;
                     _content.AddControl(_response);
@@ -147,6 +223,15 @@ internal sealed class ChatController : IDisposable
                     else _response!.ShowError(finished.Error ?? "Запрос прерван.");
                     _response = null;
                     _responseRequestId = null;
+                    break;
+                case SideQuestionsChanged side:
+                    _btw.Apply(side.State);
+                    if (side.State.Exchanges.IsEmpty) _shownSideRequestId = null;
+                    else if (side.State.IsGenerating && _shownSideRequestId != side.State.Exchanges[^1].RequestId)
+                    {
+                        _shownSideRequestId = side.State.Exchanges[^1].RequestId;
+                        if (_input.GetParentWindow() is { } parent) _btw.Show(parent);
+                    }
                     break;
                 case ConversationError error:
                     _input.ShowError(error.Message);
@@ -189,7 +274,7 @@ internal sealed class ChatController : IDisposable
         var controls = new List<IWindowControl>();
         foreach (var turn in view.Turns)
         {
-            controls.Add(new UserMessageComponent(turn.Text, turn.Images.Select(ImageInput.CreatePreview).ToArray()));
+            controls.Add(new UserMessageComponent(turn.Text, turn.Images.Select(ImageInput.CreatePreview).ToArray(), turn.Files, turn.Mentions));
             var response = new AssistantMessageComponent(_windowSystem);
             foreach (var item in turn.Items)
             {
@@ -217,6 +302,9 @@ internal sealed class ChatController : IDisposable
         }
         _input.ClearDraft();
         _input.SetDraft(view.DraftText, draftImages);
+        _input.Editor.Restore(view.DraftText, view.DraftMentions);
+        foreach (var file in view.DraftFiles.Where(file => !view.DraftMentions.Any(mention => mention.Path == file.Path)))
+            _input.AddFile(file.Path, _input.Editor.Input.Length, 0);
         _content.ScrollToBottom();
         _focusInput();
     }
@@ -259,6 +347,9 @@ internal sealed class ChatController : IDisposable
         _input.Submitted -= SendMessage;
         _conversation.StateChanged -= OnStateChanged;
         _conversation.EventOccurred -= OnEvent;
+        _btw.CancelRequested -= CancelSideQuestion;
+        _btw.ClearRequested -= ClearSideQuestions;
+        _btw.Closed -= RestoreFocusAfterSide;
         if (_questionId is { } id) HideInteraction(id);
         foreach (var permissionId in _permissions.Keys.ToArray()) HideInteraction(permissionId);
     }

@@ -12,14 +12,16 @@ internal sealed class InputComponent : PanelControl
     private readonly CancellationToken _shutdown;
     private readonly ScrollablePanelControl _attachmentsPanel = new();
     private readonly List<ImageAttachmentComponent> _attachments = [];
+    public string[] GetFilePaths() => Editor.FilePaths;
+    public long DraftRevision { get; private set; }
     private readonly MarkupControl _status = new(new List<string>());
     private CancellationTokenSource? _operation;
     private Window? _window;
     private bool _disposed;
 
-    public bool HasAttachments => _attachments.Count != 0;
+    public bool HasAttachments => _attachments.Count != 0 || Editor.Mentions.Length != 0;
     public bool IsImporting => _operation is not null;
-    public PromptControl Editor { get; }
+    public InlinePromptControl Editor { get; }
     public event Action<SubmissionMode>? Submitted;
     private readonly MarkupControl _pending = new(new List<string>());
 
@@ -35,7 +37,7 @@ internal sealed class InputComponent : PanelControl
         Margin = new Margin(1, 1, 1, 0);
         HorizontalAlignment = HorizontalAlignment.Stretch;
 
-        Editor = new PromptControl
+        Editor = new InlinePromptControl
         {
             Prompt = "[cyan]>[/] ",
             Placeholder = OperatingSystem.IsWindows()
@@ -70,6 +72,7 @@ internal sealed class InputComponent : PanelControl
             "[grey70]Enter — уточнить · F6 — в очередь · F7 — прервать и отправить[/]"
         }) { Wrap = true });
         Editor.Entered += (_, _) => Submitted?.Invoke(SubmissionMode.Clarify);
+        Editor.InputChanged += (_, _) => DraftRevision++;
     }
 
     public void Attach(Window window)
@@ -94,6 +97,21 @@ internal sealed class InputComponent : PanelControl
             e.Handled = true;
             StartImport(token => ImageInput.ReadClipboardAsync(token));
         }
+    }
+
+    public CancellationTokenSource BeginFileCapture()
+    {
+        var operation = BeginOperation();
+        _status.Text = "[cyan]Чтение файлов…[/]";
+        return operation;
+    }
+
+    public bool EndFileCapture(CancellationTokenSource operation)
+    {
+        if (_disposed || _operation != operation) return false;
+        _operation = null;
+        _status.Visible = false;
+        return true;
     }
 
     private void StartImport(Func<CancellationToken, Task<ClipboardInput>> read)
@@ -160,20 +178,33 @@ internal sealed class InputComponent : PanelControl
             _window?.FocusControl(Editor);
             ((IControlHost)_attachmentsPanel).RemoveControl(component!);
             _attachments.Remove(component!);
+            DraftRevision++;
             component!.Dispose();
             UpdateAttachmentHeight();
             _status.Visible = false;
         });
         component.ExpandedChanged += (_, _) => UpdateAttachmentHeight();
         _attachments.Add(component);
+        DraftRevision++;
         _attachmentsPanel.AddControl(component);
         UpdateAttachmentHeight();
         _status.Visible = false;
     }
 
+    public bool AddFile(string path, int start, int length)
+    {
+        if (Editor.FilePaths.Length >= LakeCode.Core.Attachments.FileAttachments.MaxFiles && !Editor.FilePaths.Contains(path))
+        {
+            ShowError("Можно прикрепить не больше 16 файлов.");
+            return false;
+        }
+        Editor.InsertFile(start, length, path);
+        return true;
+    }
+
     private void UpdateAttachmentHeight()
     {
-        _attachmentsPanel.Visible = HasAttachments;
+        _attachmentsPanel.Visible = _attachments.Count != 0;
         _attachmentsPanel.Height = Math.Min(14, _attachments.Sum(item => item.IsExpanded ? 12 : 2));
     }
 
@@ -214,6 +245,7 @@ internal sealed class InputComponent : PanelControl
         ((IControlHost)_attachmentsPanel).ClearControls();
         foreach (var attachment in _attachments) attachment.Dispose();
         _attachments.Clear();
+        DraftRevision++;
         UpdateAttachmentHeight();
         Editor.Input = string.Empty;
         _status.Visible = false;

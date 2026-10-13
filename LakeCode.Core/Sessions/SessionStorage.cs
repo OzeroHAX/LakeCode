@@ -102,6 +102,17 @@ internal sealed class SessionStorage
                     throw new InvalidDataException("Аргументы инструмента должны быть объектом.");
             }
         }
+        if (snapshot.DraftFiles is null) throw new InvalidDataException("Некорректные файловые вложения черновика.");
+        FileAttachments.Validate(snapshot.DraftFiles);
+        if (snapshot.DraftMentions is null) throw new InvalidDataException("Некорректные инлайн-вложения черновика.");
+        FileMention.Validate(snapshot.DraftText ?? "", snapshot.DraftMentions, snapshot.DraftFiles);
+        foreach (var turn in snapshot.Turns)
+        {
+            if (turn.Files is null) throw new InvalidDataException("Некорректные файловые вложения сообщения.");
+            FileAttachments.Validate(turn.Files);
+            if (turn.Mentions is null) throw new InvalidDataException("Некорректные инлайн-вложения сообщения.");
+            FileMention.Validate(turn.Text, turn.Mentions, turn.Files);
+        }
         var pendingPath = Path.Combine(directory, "pending.json");
         RejectLink(pendingPath);
         if (File.Exists(pendingPath))
@@ -121,6 +132,13 @@ internal sealed class SessionStorage
                 item.Images.Sum(image => (long)image.Data.Length) > ImageAttachments.MaxTotalBytes) ||
             snapshot.PendingMessages.Sum(item => item.Images.Sum(image => (long)image.Data.Length)) > 96L * 1024 * 1024)
             throw new InvalidDataException("Некорректная очередь сообщений.");
+        foreach (var item in snapshot.PendingMessages)
+        {
+            if (item.Files is null) throw new InvalidDataException("Некорректные файловые вложения очереди.");
+            FileAttachments.Validate(item.Files);
+            if (item.Mentions is null) throw new InvalidDataException("Некорректные инлайн-вложения очереди.");
+            FileMention.Validate(item.Text, item.Mentions, item.Files);
+        }
         return snapshot;
     }
 

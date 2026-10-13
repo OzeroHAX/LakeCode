@@ -33,6 +33,7 @@ var header = new HeaderComponent("LakeCode", "Coding agent");
 var mainContent = new MainContentComponent();
 using var input = new InputComponent(windowSystem, shutdown.Token);
 var footer = new FooterComponent(windowSystem, modelStore, statisticsStore, workspaceRoot);
+using var btw = new BtwWindowComponent(windowSystem);
 var askHost = new SharpConsoleUI.Controls.PanelControl
 {
     Visible = false,
@@ -58,7 +59,7 @@ stopGeneration.Attach(window);
 window.OnClosing += (_, _) => shutdown.Cancel();
 window.PreviewKeyPressed += (_, e) =>
 {
-    if (!e.Handled && e.KeyInfo.Key == ConsoleKey.Tab && e.KeyInfo.Modifiers == ConsoleModifiers.Shift)
+    if (!btw.IsOpen && !e.Handled && e.KeyInfo.Key == ConsoleKey.Tab && e.KeyInfo.Modifiers == ConsoleModifiers.Shift)
     {
         modelStore.CycleReasoningEffort();
         e.Handled = true;
@@ -66,10 +67,11 @@ window.PreviewKeyPressed += (_, e) =>
 };
 chat = new ChatController(
     windowSystem, mainContent, header, input, statisticsStore, modelStore,
-    () => window.FocusControl(input.Editor), sessionsWindow, askHost, conversation);
+    () => window.FocusControl(input.Editor), sessionsWindow, askHost, conversation, workspaceRoot, btw);
 
 windowSystem.AddWindow(window);
 using var rewind = new RewindComponent(window, mainContent, input, chat);
+using var fileMentions = new FileMentionsComponent(window, windowSystem, input, workspaceRoot, shutdown.Token);
 using var slashCommands = new SlashCommandsComponent(window, input,
 [
     ("/exit", "Завершить LakeCode"),
@@ -77,10 +79,17 @@ using var slashCommands = new SlashCommandsComponent(window, input,
     ("/models", "Показать доступные модели"),
     ("/providers", "Настроить подключения и модели"),
     ("/sessions", "Открыть сохранённую сессию"),
+    ("/btw", "Попутный вопрос без изменения основной истории"),
     ("/debug", "Показать или скрыть usage (MAF)")
 ]);
-slashCommands.CommandSelected += (_, command) =>
+slashCommands.CommandSelected += (_, selected) =>
 {
+    var command = selected.Name;
+    if (command.Equals("/btw", StringComparison.OrdinalIgnoreCase))
+    {
+        chat.ShowOrAskSideQuestion(selected.Arguments);
+        return;
+    }
     if (command.Equals("/new", StringComparison.OrdinalIgnoreCase))
     {
         chat.StartNewSession();

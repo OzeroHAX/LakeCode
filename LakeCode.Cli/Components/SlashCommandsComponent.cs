@@ -38,7 +38,7 @@ internal sealed class SlashCommandsComponent : PortalContentContainer, IDisposab
     /// <summary>
     /// Raised on Enter after completing a known command. The component does not execute it.
     /// </summary>
-    public event EventHandler<string>? CommandSelected;
+    public event EventHandler<(string Name, string Arguments)>? CommandSelected;
 
     public SlashCommandsComponent(Window window, InputComponent input,
         IReadOnlyList<(string Name, string Description)> commands)
@@ -103,11 +103,11 @@ internal sealed class SlashCommandsComponent : PortalContentContainer, IDisposab
                 _list.ProcessKey(e.KeyInfo);
                 break;
             case ConsoleKey.Tab when selected != null:
-                _input.Editor.SetInput(selected);
+                _input.Editor.SetInput(selected.Equals("/btw", StringComparison.OrdinalIgnoreCase) ? selected + " " : selected);
                 break;
             case ConsoleKey.Enter when _input.Editor.Input.StartsWith('/'):
                 e.Handled = true; // Never submit slash commands to the chat.
-                SelectCommand(selected ?? _input.Editor.Input.Trim());
+                SelectCommand(selected ?? _input.Editor.Input);
                 return;
             default:
                 return;
@@ -117,14 +117,31 @@ internal sealed class SlashCommandsComponent : PortalContentContainer, IDisposab
 
     private void SelectCommand(string command)
     {
-        if (!_commands.Any(item => item.Name.Equals(command, StringComparison.OrdinalIgnoreCase)))
+        var separator = command.IndexOfAny([' ', '\t', '\r', '\n']);
+        var name = separator < 0 ? command : command[..separator];
+        var arguments = separator < 0 ? "" : command[(separator + 1)..].TrimStart();
+        if (!_commands.Any(item => item.Name.Equals(name, StringComparison.OrdinalIgnoreCase)))
         {
-            OnInputChanged(this, command);
+            Close();
+            _input.ShowError("Неизвестная команда. Черновик сохранён.");
             return;
         }
-        _input.Editor.SetInput(command);
+        if (name.Equals("/btw", StringComparison.OrdinalIgnoreCase) &&
+            !_input.Editor.Input.Equals(name, StringComparison.OrdinalIgnoreCase) && separator < 0)
+        {
+            _input.Editor.SetInput(name + " ");
+            Close();
+            return;
+        }
+        if (!name.Equals("/btw", StringComparison.OrdinalIgnoreCase) && arguments.Length > 0)
+        {
+            Close();
+            _input.ShowError($"Команда {name} не принимает аргументы. Черновик сохранён.");
+            return;
+        }
+        if (separator < 0) _input.Editor.SetInput(name);
         Close();
-        CommandSelected?.Invoke(this, command);
+        CommandSelected?.Invoke(this, (name, arguments));
     }
 
     private void Close()

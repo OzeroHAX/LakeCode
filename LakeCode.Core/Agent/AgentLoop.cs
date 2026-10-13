@@ -37,6 +37,8 @@ public sealed class AgentLoop : IDisposable
 
     public event Action<ToolCallUpdate>? ToolCallUpdated;
     public event Action? BeforeModelRequest;
+    internal SideQuestionContext? SideContext => _historyCapture.SideContext;
+    internal string? SideContextError => _historyCapture.SideContextError;
 
     public AgentLoop(string? workspaceRoot = null,
         Func<ExternalReadRequest, CancellationToken, Task<ExternalReadDecision>>? confirmExternalRead = null,
@@ -237,6 +239,7 @@ public sealed class AgentLoop : IDisposable
 
     public async ValueTask RestoreSessionAsync(JsonElement state, CancellationToken cancellationToken = default)
     {
+        _historyCapture.ClearSideContext();
         if (state.TryGetProperty("FrameworkState", out var frameworkState))
         {
             _historyOrigin = state.GetProperty("LakeCodeHistoryOrigin").GetString();
@@ -253,6 +256,7 @@ public sealed class AgentLoop : IDisposable
         if (_session is null || messageCount < 0 || messageCount > HistoryCount)
             throw new InvalidDataException("Некорректная граница истории.");
         _history.SetMessages(_session, _history.GetMessages(_session).Take(messageCount).ToList());
+        _historyCapture.ClearSideContext();
     }
 
     public void PreserveInterruptedHistory()
@@ -326,6 +330,7 @@ public sealed class AgentLoop : IDisposable
             .SelectMany(item => item.Contents).OfType<DataContent>().Any(content => content.MediaType.StartsWith("image/", StringComparison.OrdinalIgnoreCase)))
             throw new ArgumentException("История содержит изображения. Выберите модель с image input или начните новую сессию.");
         _client.Configure(provider, model, _cacheSessionId);
+        _historyCapture.ConfigureSideContext(provider, model, reasoningEffort, _cacheSessionId);
         var origin = $"{provider.Id}|{provider.Revision}|{provider.Kind}|{provider.ApiMode}|{provider.BaseUrl.TrimEnd('/')}|{model.Id}";
         if (_historyOrigin != origin) NormalizeHistory();
         _historyOrigin = origin;

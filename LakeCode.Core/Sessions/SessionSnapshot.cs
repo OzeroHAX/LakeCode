@@ -22,6 +22,8 @@ internal sealed class SessionSnapshot
     public JsonElement? AgentState { get; set; }
     public string? DraftText { get; set; }
     public List<SavedImage> DraftImages { get; set; } = [];
+    public List<FileAttachment> DraftFiles { get; set; } = [];
+    public List<FileMention> DraftMentions { get; set; } = [];
     public List<SessionTurn> Turns { get; set; } = [];
     // Owned by ConversationService; snapshots for persistence are captured under its state lock.
     public PendingMessage[] PendingMessages { get; set; } = [];
@@ -32,6 +34,8 @@ internal sealed class SessionTurn
     public int? HistoryStart { get; set; }
     public string Text { get; set; } = "";
     public List<SavedImage> Images { get; set; } = [];
+    public List<FileAttachment> Files { get; set; } = [];
+    public List<FileMention> Mentions { get; set; } = [];
     public ModelInfo? ModelMetadata { get; set; }
     public string ProviderId { get; set; } = ProviderProfile.LegacyId;
     public string ModelId { get; set; } = "";

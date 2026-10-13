@@ -13,7 +13,9 @@ internal sealed class UserMessageComponent : ScrollablePanelControl
         BackgroundColor = selected ? new Color(30, 45, 48) : new Color(26, 26, 26);
     }
 
-    public UserMessageComponent(string message, IReadOnlyList<ImageAttachment> attachments)
+    public UserMessageComponent(string message, IReadOnlyList<ImageAttachment> attachments,
+        IReadOnlyList<LakeCode.Core.Attachments.FileAttachment>? files = null,
+        IReadOnlyList<LakeCode.Core.Attachments.FileMention>? mentions = null)
     {
         BorderStyle = BorderStyle.None;
         ShowScrollbar = false;
@@ -30,10 +32,25 @@ internal sealed class UserMessageComponent : ScrollablePanelControl
                 EnableSelection = true,
                 HorizontalAlignment = HorizontalAlignment.Stretch
             };
-            body.SetMarkdown(message);
+            if (mentions is { Count: > 0 })
+            {
+                var display = new System.Text.StringBuilder();
+                var offset = 0;
+                foreach (var mention in mentions.OrderBy(item => item.Start))
+                {
+                    display.Append(SharpConsoleUI.Parsing.MarkupParser.Escape(message[offset..mention.Start]));
+                    display.Append("[white on #23414b]").Append(SharpConsoleUI.Parsing.MarkupParser.Escape(message.Substring(mention.Start, mention.Length))).Append("[/]");
+                    offset = mention.Start + mention.Length;
+                }
+                display.Append(SharpConsoleUI.Parsing.MarkupParser.Escape(message[offset..]));
+                body.Text = display.ToString();
+            }
+            else body.SetMarkdown(message);
             AddControl(body);
         }
         foreach (var attachment in attachments)
             AddControl(new ImageAttachmentComponent(attachment));
+        foreach (var file in files ?? [])
+            AddControl(new FileAttachmentComponent(file.Path, file));
     }
 }

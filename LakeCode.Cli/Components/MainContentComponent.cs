@@ -17,8 +17,10 @@ internal sealed class MainContentComponent : ScrollablePanelControl
         Margin = new Margin(1, 0, 1, 0);
     }
 
-    public void AddUserMessage(string message, IReadOnlyList<ImageAttachment> attachments)
+    public void AddUserMessage(string message, IReadOnlyList<ImageAttachment> attachments,
+        IReadOnlyList<LakeCode.Core.Attachments.FileAttachment>? files = null,
+        IReadOnlyList<LakeCode.Core.Attachments.FileMention>? mentions = null)
     {
-        AddControl(new UserMessageComponent(message, attachments));
+        AddControl(new UserMessageComponent(message, attachments, files, mentions));
     }
 }
