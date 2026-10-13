@@ -168,6 +168,15 @@ internal sealed class InputComponent : PanelControl
         Editor.IsEnabled = !sending;
     }
 
+    public void SetDraft(string text, IReadOnlyList<ImageAttachment> images)
+    {
+        if (images.Count > ImageInput.MaxAttachments || images.Sum(image => (long)image.Data.Length) > ImageInput.MaxTotalBytes)
+            throw new InvalidDataException("Вложения черновика превышают лимиты.");
+        ClearDraft();
+        Editor.Input = text;
+        foreach (var image in images) AddAttachment(image);
+    }
+
     public void ClearDraft()
     {
         _operation?.Cancel();

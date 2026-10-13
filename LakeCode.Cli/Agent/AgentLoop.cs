@@ -12,6 +12,7 @@ using LakeCode.Cli.Agent.Tools.WriteFile;
 using LakeCode.Cli.Agent.Tools.EditFile;
 using WebSearchTool = LakeCode.Cli.Agent.Tools.WebSearch.WebSearchTool;
 using LakeCode.Cli.Agent.Tools.ReadWeb;
+using LakeCode.Cli.Agent.Tools.Ask;
 using WebClient = LakeCode.Cli.Agent.Tools.Web.WebClient;
 using Microsoft.Agents.AI;
 using Microsoft.Extensions.AI;
@@ -30,13 +31,18 @@ public sealed class AgentLoop
     private readonly WorkspaceFiles _files;
     private readonly string[] _skillPaths;
     private AgentSession? _session;
+    private readonly InMemoryChatHistoryProvider _history = new();
+    private readonly InterruptedHistoryChatClient _historyCapture;
+    private readonly Dictionary<string, ToolCallUpdate> _runTools = new(StringComparer.Ordinal);
 
     public event Action<ToolCallUpdate>? ToolCallUpdated;
 
     public AgentLoop(string? workspaceRoot = null,
         Func<ExternalReadRequest, CancellationToken, Task<ExternalReadDecision>>? confirmExternalRead = null,
-        string? sessionId = null)
+        string? sessionId = null,
+        Func<AskQuestion[], CancellationToken, Task<string[][]>>? askUser = null)
     {
+        ToolCallUpdated += update => _runTools[update.CallId] = update;
         _cacheSessionId = sessionId ?? Guid.NewGuid().ToString("D");
         var apiKey = Environment.GetEnvironmentVariable("WIKIVIBE_API_KEY");
         if (string.IsNullOrWhiteSpace(apiKey))
@@ -63,6 +69,7 @@ public sealed class AgentLoop
         var web = new WebClient(_cacheSessionId);
         var webSearch = new WebSearchTool(web);
         var readWeb = new ReadWebTool(web);
+        var askTool = new AskTool(askUser);
         var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
         var projectSkills = files.Resolve(".agents/skills", allowMissing: true);
         // MAF deduplicates by name: the first source (project) wins.
@@ -93,10 +100,11 @@ public sealed class AgentLoop
 
         // The OpenAI SDK requires explicit opt-in for its Responses API.
 #pragma warning disable OPENAI001
-        _agent = client.GetResponsesClient().AsAIAgent(new ChatClientAgentOptions
+        _historyCapture = new InterruptedHistoryChatClient(client.GetResponsesClient().AsIChatClient());
+        _agent = new ChatClientAgent(_historyCapture, new ChatClientAgentOptions
         {
             Name = "LakeCode",
-            ChatHistoryProvider = new InMemoryChatHistoryProvider(),
+            ChatHistoryProvider = _history,
             ChatOptions = new ChatOptions
             {
                 Instructions = SystemPromptBuilder.Build(promptContext),
@@ -109,11 +117,12 @@ public sealed class AgentLoop
                     AIFunctionFactory.Create(writeFile.WriteAsync, name: "write_file"),
                     AIFunctionFactory.Create(editFile.EditAsync, name: "edit_file"),
                     AIFunctionFactory.Create(webSearch.SearchAsync, name: "web_search"),
-                    AIFunctionFactory.Create(readWeb.ReadAsync, name: "read_web")
+                    AIFunctionFactory.Create(readWeb.ReadAsync, name: "read_web"),
+                    AIFunctionFactory.Create(askTool.AskAsync, name: "ask_tool")
                 ]
             },
             AIContextProviders = [skills]
-        }, model: "gpt-6.1-sol").AsBuilder().Use(ObserveToolCallAsync).Build();
+        }).AsBuilder().Use(ObserveToolCallAsync).Build();
         _titleAgent = client.GetResponsesClient().AsAIAgent(new ChatClientAgentOptions
         {
             Name = "SessionTitle",
@@ -251,12 +260,39 @@ public sealed class AgentLoop
         _session = await _agent.DeserializeSessionAsync(state, cancellationToken: cancellationToken);
     }
 
+    public int HistoryCount => _session is null ? 0 : _history.GetMessages(_session).Count;
+
+    public void Rewind(int messageCount)
+    {
+        if (_session is null || messageCount < 0 || messageCount > HistoryCount)
+            throw new InvalidDataException("Некорректная граница истории.");
+        _history.SetMessages(_session, _history.GetMessages(_session).Take(messageCount).ToList());
+    }
+
+    public void PreserveInterruptedHistory()
+    {
+        if (_session is null || _historyCapture.GetInterruptedMessages() is not { } messages) return;
+        var results = messages.SelectMany(message => message.Contents).OfType<FunctionResultContent>()
+            .Select(result => result.CallId).ToHashSet(StringComparer.Ordinal);
+        var calls = messages.SelectMany(message => message.Contents).OfType<FunctionCallContent>().ToArray();
+        foreach (var call in calls)
+        {
+            if (!results.Add(call.CallId)) continue;
+            var result = _runTools.TryGetValue(call.CallId, out var tool) && tool.Result is not null
+                ? tool.Result : "Вызов прерван; результат не получен. Побочные эффекты могли произойти. Не повторять автоматически.";
+            messages.Add(new ChatMessage(ChatRole.Tool, [new FunctionResultContent(call.CallId, result)]));
+        }
+        _history.SetMessages(_session, messages);
+    }
+
     public async IAsyncEnumerable<AgentResponseUpdate> RunAsync(
         ChatMessage message,
         ModelInfo model,
         string reasoningEffort,
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
+        _historyCapture.Reset();
+        _runTools.Clear();
         ArgumentNullException.ThrowIfNull(message);
         ArgumentNullException.ThrowIfNull(model);
         bool hasImages = message.Contents.OfType<DataContent>()

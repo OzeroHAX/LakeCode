@@ -6,6 +6,13 @@ namespace LakeCode.Cli.Components;
 
 internal sealed class UserMessageComponent : ScrollablePanelControl
 {
+    public void SetRewindSelected(bool selected)
+    {
+        BorderStyle = selected ? BorderStyle.Rounded : BorderStyle.None;
+        BorderColor = new Color(80, 180, 190);
+        BackgroundColor = selected ? new Color(30, 45, 48) : new Color(26, 26, 26);
+    }
+
     public UserMessageComponent(string message, IReadOnlyList<ImageAttachment> attachments)
     {
         BorderStyle = BorderStyle.None;
@@ -20,6 +27,7 @@ internal sealed class UserMessageComponent : ScrollablePanelControl
             var body = new MarkupControl(new List<string>())
             {
                 Wrap = true,
+                EnableSelection = true,
                 HorizontalAlignment = HorizontalAlignment.Stretch
             };
             body.SetMarkdown(message);

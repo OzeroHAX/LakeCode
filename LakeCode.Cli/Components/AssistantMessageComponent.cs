@@ -106,7 +106,8 @@ internal sealed class AssistantMessageComponent : CollapsiblePanel
     private static MarkupControl CreateBody() => new(new List<string>())
     {
         HorizontalAlignment = HorizontalAlignment.Stretch,
-        Wrap = true
+        Wrap = true,
+        EnableSelection = true
     };
 
     public void Complete()

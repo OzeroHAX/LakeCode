@@ -20,16 +20,16 @@ var sessionStorage = new SessionStorage();
 var windowSystem = new ConsoleWindowSystem(
     new NetConsoleDriver(RenderMode.Buffer),
     options: new ConsoleWindowSystemOptions(ShowTopPanel: false, ShowBottomPanel: false));
-windowSystem.RegisterGlobalShortcut(ConsoleModifiers.Control, ConsoleKey.C, () =>
-{
-    shutdown.Cancel();
-    windowSystem.Shutdown();
-});
 
 var header = new HeaderComponent("LakeCode", "Coding agent");
 var mainContent = new MainContentComponent();
 using var input = new InputComponent(windowSystem, shutdown.Token);
 var footer = new FooterComponent(windowSystem, modelStore, statisticsStore, workspaceRoot);
+var askHost = new SharpConsoleUI.Controls.PanelControl
+{
+    Visible = false,
+    HorizontalAlignment = SharpConsoleUI.Layout.HorizontalAlignment.Stretch
+};
 ChatController? chat = null;
 using var stopGeneration = new StopGenerationComponent(windowSystem, statisticsStore,
     () => chat?.CanStopGeneration == true, () => chat?.StopGeneration());
@@ -42,6 +42,7 @@ var window = new WindowBuilder(windowSystem)
     .AddControl(mainContent)
     .AddControl(stopGeneration)
     .AddControl(input)
+    .AddControl(askHost)
     .AddControl(footer)
     .Build();
 input.Attach(window);
@@ -57,9 +58,10 @@ window.PreviewKeyPressed += (_, e) =>
 };
 chat = new ChatController(
     windowSystem, mainContent, header, input, statisticsStore, modelStore,
-    () => window.FocusControl(input.Editor), workspaceRoot, sessionStorage, sessionsWindow, shutdown.Token);
+    () => window.FocusControl(input.Editor), workspaceRoot, sessionStorage, sessionsWindow, askHost, shutdown.Token);
 
 windowSystem.AddWindow(window);
+using var rewind = new RewindComponent(window, mainContent, input, chat);
 using var slashCommands = new SlashCommandsComponent(window, input,
 [
     ("/exit", "Завершить LakeCode"),

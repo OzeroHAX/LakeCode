@@ -63,7 +63,7 @@ internal sealed class SessionStorage
             throw new InvalidDataException("Сессия превышает лимит хранения 256 MiB.");
         var snapshot = await JsonSerializer.DeserializeAsync<SessionSnapshot>(stream, JsonOptions, cancellationToken)
             ?? throw new InvalidDataException("Файл сессии пуст.");
-        if (snapshot.SchemaVersion != 1 || snapshot.FrameworkVersion != "1.24.0")
+        if (snapshot.SchemaVersion is not (1 or 2) || snapshot.FrameworkVersion != "1.24.0")
             throw new InvalidDataException("Версия сохранённой сессии несовместима с этой версией LakeCode.");
         if (snapshot.Id != id || snapshot.Turns is null || string.IsNullOrWhiteSpace(snapshot.WorkspaceRoot) ||
             string.IsNullOrWhiteSpace(snapshot.Title) || string.IsNullOrWhiteSpace(snapshot.ModelId) ||

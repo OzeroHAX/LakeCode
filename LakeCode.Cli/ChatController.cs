@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using LakeCode.Cli.Agent;
+using LakeCode.Cli.Agent.Tools.Ask;
 using LakeCode.Cli.Components;
 using LakeCode.Cli.State;
 using LakeCode.Cli.Sessions;
@@ -24,14 +25,20 @@ internal sealed class ChatController
     private AssistantMessageComponent? _activeResponse;
     private bool _sending;
     private bool _saveFailed;
+    private bool _contextFailed;
+    public bool CanRewind => !_sending && !_saveFailed && !_contextFailed && !_input.IsImporting &&
+        string.IsNullOrWhiteSpace(_input.Editor.Input) && !_input.HasAttachments;
+    public int TurnCount => _snapshot?.Turns.Count ?? 0;
     private readonly SessionStorage _sessions;
     private readonly SessionsWindowComponent _sessionsWindow;
     private SessionSnapshot? _snapshot;
     private Task _operation = Task.CompletedTask;
     private CancellationTokenSource? _generation;
     private bool _awaitingReadPermission;
+    private readonly SharpConsoleUI.Controls.PanelControl _askHost;
+    private AskComponent? _activeQuestion;
 
-    public bool CanStopGeneration => _generation is { IsCancellationRequested: false } && !_awaitingReadPermission;
+    public bool CanStopGeneration => _generation is { IsCancellationRequested: false } && !_awaitingReadPermission && _activeQuestion is null;
 
     public void StopGeneration() => _generation?.Cancel();
 
@@ -46,6 +53,7 @@ internal sealed class ChatController
         string workspaceRoot,
         SessionStorage sessions,
         SessionsWindowComponent sessionsWindow,
+        SharpConsoleUI.Controls.PanelControl askHost,
         CancellationToken cancellationToken)
     {
         _windowSystem = windowSystem;
@@ -59,6 +67,7 @@ internal sealed class ChatController
         _workspaceRoot = workspaceRoot;
         _sessions = sessions;
         _sessionsWindow = sessionsWindow;
+        _askHost = askHost;
         _input.Editor.Entered += (_, _) => SendMessage();
     }
 
@@ -73,6 +82,7 @@ internal sealed class ChatController
         }
 
         _agent = null;
+        _contextFailed = false;
         _snapshot = null;
         _header.SetSessionTitle(null);
         ((SharpConsoleUI.Controls.IControlHost)_mainContent).ClearControls();
@@ -127,7 +137,7 @@ internal sealed class ChatController
                 if (!_models.Models.TryGetValue(snapshot.ModelId, out var model) ||
                     !model.ReasoningEfforts.Contains(snapshot.ReasoningEffort))
                     throw new InvalidDataException("Сохранённая модель или уровень рассуждения больше не доступны.");
-                var agent = new AgentLoop(_workspaceRoot, ConfirmExternalReadAsync, snapshot.Id);
+                var agent = new AgentLoop(_workspaceRoot, ConfirmExternalReadAsync, snapshot.Id, AskUserAsync);
                 if (snapshot.AgentState is { } state)
                     await agent.RestoreSessionAsync(state, _cancellationToken);
                 var images = snapshot.Turns.Select(turn =>
@@ -137,6 +147,7 @@ internal sealed class ChatController
                         throw new InvalidDataException("Вложения сохранённого сообщения превышают лимиты.");
                     return turn.Images.Select(image => image.Decode()).ToArray();
                 }).ToArray();
+                var draftImages = snapshot.DraftImages.Select(image => image.Decode()).ToArray();
                 _windowSystem.EnqueueOnUIThread(() =>
                 {
                     try
@@ -160,7 +171,7 @@ internal sealed class ChatController
                                 if (turn.Status == "in_progress")
                                 {
                                     turn.Status = "interrupted";
-                                    turn.Error = "Запрос прерван. Контекст восстановлен с последнего завершённого ответа. Выполненные действия не отменены и не будут повторены автоматически.";
+                                    turn.Error = "Запрос не завершён до закрытия приложения. Восстановлен последний сохранённый контекст. Выполненные действия не отменены и не будут повторены автоматически.";
                                 }
                                 response.ShowError(turn.Error ?? "Запрос не завершён.");
                             }
@@ -179,7 +190,8 @@ internal sealed class ChatController
                             _statistics.Restore(new RequestStatistics(usageModel, usage.Input, usage.Output,
                                 usage.Total, usage.Cached, usage.Reasoning),
                                 snapshot.Turns.LastOrDefault(turn => turn.Status == "completed")?.TokensPerSecond);
-                        _input.ClearDraft();
+                        _input.SetDraft(snapshot.DraftText ?? "", draftImages);
+                        _contextFailed = false;
                         _mainContent.ScrollToBottom();
                     }
                     catch (Exception error) { _input.ShowError($"Не удалось открыть сессию: {error.Message}"); }
@@ -195,6 +207,90 @@ internal sealed class ChatController
         });
     }
 
+    public void RewindTo(int index)
+    {
+        if (!CanRewind || _snapshot is null || index < 0 || index >= _snapshot.Turns.Count) return;
+        if (_snapshot.Turns[index].HistoryStart is not { } boundary)
+        {
+            _input.ShowError("Для этого старого сообщения нет сохранённой границы контекста.");
+            return;
+        }
+        SetBusy(true);
+        _operation = Task.Run(async () =>
+        {
+            System.Text.Json.JsonElement? original = null;
+            bool committed = false;
+            try
+            {
+                var current = _snapshot;
+                var next = System.Text.Json.JsonSerializer.Deserialize<SessionSnapshot>(
+                    System.Text.Json.JsonSerializer.Serialize(current))!;
+                var selected = next.Turns[index];
+                var draftImages = selected.Images.Select(image => image.Decode()).ToArray();
+                var historyImages = next.Turns.Take(index).Select(turn => turn.Images.Select(image => image.Decode()).ToArray()).ToArray();
+                _agent ??= new AgentLoop(_workspaceRoot, ConfirmExternalReadAsync, current.Id, AskUserAsync);
+                if (current.AgentState is { } state) await _agent.RestoreSessionAsync(state);
+                original = await _agent.SerializeSessionAsync();
+                _agent.Rewind(boundary);
+                next.AgentState = await _agent.SerializeSessionAsync();
+                await _agent.RestoreSessionAsync(original.Value);
+                next.Turns.RemoveRange(index, next.Turns.Count - index);
+                next.DraftText = selected.Text;
+                next.DraftImages = selected.Images;
+                next.SchemaVersion = 2;
+                next.UpdatedAt = DateTimeOffset.UtcNow;
+                await _sessions.SaveAsync(next);
+                await _agent.RestoreSessionAsync(next.AgentState.Value);
+                committed = true;
+                _windowSystem.EnqueueOnUIThread(() =>
+                {
+                    try
+                    {
+                        ((SharpConsoleUI.Controls.IControlHost)_mainContent).ClearControls();
+                        for (var i = 0; i < next.Turns.Count; i++)
+                        {
+                            var turn = next.Turns[i];
+                            _mainContent.AddUserMessage(turn.Text, historyImages[i]);
+                            var response = new AssistantMessageComponent(_windowSystem);
+                            foreach (var item in turn.Events)
+                            {
+                                if (item.Kind == "thinking") response.AppendReasoning(item.Text!);
+                                else if (item.Kind == "text") response.AppendResponse(item.Text!);
+                                else if (item.ToolCall is { } call) response.UpdateToolCall(call);
+                            }
+                            if (turn.Status == "completed") response.Complete();
+                            else response.ShowError(turn.Error ?? "Запрос прерван.");
+                            _mainContent.AddControl(response);
+                        }
+                        _snapshot = next;
+                        _input.SetDraft(selected.Text, draftImages);
+                        _statistics.Reset(_models.SelectedModel);
+                        _mainContent.ScrollToBottom();
+                    }
+                    catch (Exception error)
+                    {
+                        _snapshot = next;
+                        _input.ShowError($"История сохранена, но экран не обновлён: {error.Message}. Откройте сессию через /sessions.");
+                    }
+                    finally { SetBusy(false); }
+                });
+            }
+            catch (Exception error)
+            {
+                if (!committed && original is { } state && _agent is not null)
+                {
+                    try { await _agent.RestoreSessionAsync(state); }
+                    catch { _contextFailed = true; }
+                }
+                _windowSystem.EnqueueOnUIThread(() =>
+                {
+                    _input.ShowError($"Не удалось вернуть сообщение: {error.Message}");
+                    SetBusy(false);
+                });
+            }
+        });
+    }
+
     private void SetBusy(bool busy)
     {
         _sending = busy;
@@ -205,6 +301,11 @@ internal sealed class ChatController
     private void SendMessage()
     {
         if (_sending) return;
+        if (_contextFailed || _saveFailed)
+        {
+            _input.ShowError("Отправка заблокирована: контекст или сессия не сохранены.");
+            return;
+        }
         if (_input.IsImporting)
         {
             _input.ShowError("Дождитесь окончания чтения изображения или буфера обмена.");
@@ -255,6 +356,56 @@ internal sealed class ChatController
         var generation = CancellationTokenSource.CreateLinkedTokenSource(_cancellationToken);
         _generation = generation;
         _operation = Task.Run(() => SendAsync(request, response, model, reasoningEffort, _snapshot, turn, generation.Token));
+    }
+
+    private async Task<string[][]> AskUserAsync(AskQuestion[] questions, CancellationToken cancellationToken)
+    {
+        var completion = new TaskCompletionSource<string[][]>(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var registration = cancellationToken.Register(() => completion.TrySetCanceled(cancellationToken));
+        AskComponent? component = null;
+        void Hide()
+        {
+            if (component is null || _activeQuestion != component) return;
+            component.Cancel();
+            _activeQuestion = null;
+            ((SharpConsoleUI.Controls.IControlHost)_askHost).RemoveControl(component);
+            component.Dispose();
+            _askHost.Visible = false;
+            _input.Visible = true;
+            _focusInput();
+        }
+        _windowSystem.EnqueueOnUIThread(() =>
+        {
+            if (completion.Task.IsCompleted) return;
+            try
+            {
+                var window = _input.GetParentWindow()
+                    ?? throw new InvalidOperationException("No active window for question.");
+                component = new AskComponent(questions, answers =>
+                {
+                    if (completion.Task.IsCompleted) return;
+                    Hide();
+                    if (answers is null)
+                    {
+                        StopGeneration();
+                        completion.TrySetCanceled(cancellationToken);
+                    }
+                    else completion.TrySetResult(answers);
+                });
+                _activeQuestion = component;
+                _input.Visible = false;
+                _askHost.AddControl(component);
+                _askHost.Visible = true;
+                component.Focus(window);
+            }
+            catch (Exception error)
+            {
+                Hide();
+                completion.TrySetException(error);
+            }
+        });
+        try { return await completion.Task; }
+        finally { _windowSystem.EnqueueOnUIThread(Hide); }
     }
 
     private async Task<ExternalReadDecision> ConfirmExternalReadAsync(
@@ -339,7 +490,7 @@ internal sealed class ChatController
             await _sessions.SaveAsync(snapshot, generationToken);
             if (_agent is null)
             {
-                var agent = new AgentLoop(_workspaceRoot, ConfirmExternalReadAsync, snapshot.Id);
+                var agent = new AgentLoop(_workspaceRoot, ConfirmExternalReadAsync, snapshot.Id, AskUserAsync);
                 if (checkpoint is { } savedState)
                     await agent.RestoreSessionAsync(savedState, generationToken);
                 _agent = agent;
@@ -348,6 +499,11 @@ internal sealed class ChatController
                 titleTask = GenerateSessionTitleAsync(message, model, generationToken);
             checkpoint ??= await _agent.SerializeSessionAsync(generationToken);
             snapshot.AgentState = checkpoint;
+            turn.HistoryStart = _agent.HistoryCount;
+            snapshot.SchemaVersion = 2;
+            snapshot.DraftText = null;
+            snapshot.DraftImages.Clear();
+            await _sessions.SaveAsync(snapshot, generationToken);
             _agent.ToolCallUpdated += OnToolCall;
             long? firstTokenTimestamp = null;
             long? outputTokens = null;
@@ -402,13 +558,13 @@ internal sealed class ChatController
             turn.Error = (_cancellationToken.IsCancellationRequested
                 ? "Запрос отменён при закрытии приложения."
                 : "Генерация остановлена пользователем.") +
-                " Контекст восстановлен с последнего завершённого ответа; выполненные действия не отменены.";
+                " Полученная история сохранена; выполненные действия не отменены.";
             _windowSystem.EnqueueOnUIThread(() => response.ShowError(turn.Error));
         }
         catch (Exception error)
         {
             turn.Status = "failed";
-            turn.Error = error.Message + "\nКонтекст возвращён к последнему завершённому ответу. Уже выполненные действия не отменены.";
+            turn.Error = error.Message + "\nПолученная история сохранена. Уже выполненные действия не отменены.";
             _windowSystem.EnqueueOnUIThread(() => response.ShowError(turn.Error));
         }
         finally
@@ -417,18 +573,28 @@ internal sealed class ChatController
                 _agent.ToolCallUpdated -= OnToolCall;
             if (!completed)
             {
-                snapshot.AgentState = checkpoint;
                 try
                 {
-                    if (_agent is not null && checkpoint is { } state)
-                        await _agent.RestoreSessionAsync(state);
-                    else _agent = null;
+                    if (_agent is not null)
+                    {
+                        _agent.PreserveInterruptedHistory();
+                        snapshot.AgentState = await _agent.SerializeSessionAsync();
+                    }
                 }
                 catch (Exception error)
                 {
-                    _agent = null;
-                    _windowSystem.EnqueueOnUIThread(() => _input.ShowError($"Не удалось восстановить контекст после ошибки: {error.Message}. Откройте сессию через /sessions."));
+                    _contextFailed = true;
+                    _windowSystem.EnqueueOnUIThread(() => _input.ShowError($"Не удалось сохранить контекст агента: {error.Message}. Отправка заблокирована; события диалога сохраняются."));
                 }
+            }
+            var pending = turn.Events.Where(item => item.ToolCall is not null)
+                .GroupBy(item => item.ToolCall!.CallId).Select(group => group.Last().ToolCall!)
+                .Where(call => call.Status == ToolCallStatus.Running).ToArray();
+            foreach (var call in pending)
+            {
+                var interrupted = call with { Status = ToolCallStatus.Cancelled, Result = "Вызов прерван; результат не получен." };
+                turn.Events.Add(new ResponseEvent { Kind = "tool", ToolCall = interrupted });
+                _windowSystem.EnqueueOnUIThread(() => response.UpdateToolCall(interrupted));
             }
             // Await the isolated request before saving; it never races snapshot serialization.
             if (await titleTask is { } title)

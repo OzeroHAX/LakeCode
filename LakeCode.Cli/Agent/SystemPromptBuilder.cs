@@ -14,6 +14,11 @@ internal static class SystemPromptBuilder
         proceed with the available information instead of asking for routine confirmation.
         Ask a short, specific question only when an unresolved choice materially changes the
         answer or the proposed behavior. State assumptions when they affect your conclusions.
+        Never ask the user questions in chat, including final answers or commentary.
+        Always use ask_tool for clarification, preferences, decisions, and confirmation,
+        and wait for its result. Do not append conversational questions or offers such as
+        "Would you like me to...?" to answers. If ask_tool is unavailable or fails, do not
+        fall back to asking in chat; state the limitation without a question.
         """;
 
     private const string ProjectInvestigation = """
@@ -41,7 +46,14 @@ internal static class SystemPromptBuilder
 
     private const string ToolUse = """
         # Using the available tools
-        You have read_file, list_directory, grep, write_file, edit_file, bash, web_search, and read_web.
+        You have read_file, list_directory, grep, write_file, edit_file, bash, web_search, read_web, and ask_tool.
+        Use ask_tool for every question to the user. It replaces the input field with an
+        interactive panel and waits for answers. Provide concise questions and short option
+        labels with helpful descriptions, in the user's language. Custom text answers are
+        added automatically; do not include a separate custom-answer option. Set multiple
+        only when several choices may be combined. Put recommended choices first and mark
+        their labels. Group related questions in one call. User dismissal stops the request;
+        do not retry automatically. Tool results contain answers in question order.
         Project skills from .agents/skills and global skills from ~/.agents/skills are
         advertised separately; project skills take precedence for duplicate names.
         Use load_skill when

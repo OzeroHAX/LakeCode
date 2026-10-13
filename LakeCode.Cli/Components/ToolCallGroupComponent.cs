@@ -130,6 +130,7 @@ internal sealed class ToolCallGroupComponent : CollapsiblePanel
             "bash" => $"Run {count} {(count == 1 ? "command" : "commands")}",
             "write_file" => $"Write {count} {(count == 1 ? "file" : "files")}",
             "edit_file" => $"Edit {count} {(count == 1 ? "file" : "files")}",
+            "ask_tool" => $"Ask {count} {(count == 1 ? "question set" : "question sets")}",
             "load_skill" => $"Load {count} {(count == 1 ? "skill" : "skills")}",
             "read_skill_resource" => $"Read {count} skill {(count == 1 ? "resource" : "resources")}",
             _ => $"{ToolName} · {count} calls"
@@ -169,6 +170,9 @@ internal sealed class ToolCallGroupComponent : CollapsiblePanel
     {
         using var arguments = JsonDocument.Parse(update.Arguments);
         var root = arguments.RootElement;
+        if (update.Name == "ask_tool" && root.TryGetProperty("questions", out var questions))
+            return string.Join(" · ", questions.EnumerateArray().Select(question =>
+                question.TryGetProperty("header", out var header) ? header.ToString() : "Question"));
         if (update.Name is "web_search" or "read_web")
         {
             var parameter = update.Name == "web_search" ? "query" : "url";

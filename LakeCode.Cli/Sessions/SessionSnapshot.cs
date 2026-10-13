@@ -6,7 +6,7 @@ namespace LakeCode.Cli.Sessions;
 
 internal sealed class SessionSnapshot
 {
-    public int SchemaVersion { get; set; } = 1;
+    public int SchemaVersion { get; set; } = 2;
     public string FrameworkVersion { get; set; } = "1.24.0";
     public string Id { get; set; } = Guid.NewGuid().ToString("D");
     public string WorkspaceRoot { get; set; } = "";
@@ -15,13 +15,16 @@ internal sealed class SessionSnapshot
     public DateTimeOffset UpdatedAt { get; set; } = DateTimeOffset.UtcNow;
     public string ModelId { get; set; } = "";
     public string ReasoningEffort { get; set; } = "medium";
-    // Only completed runs advance this checkpoint. UI history also retains interrupted runs.
+    // Includes received history from completed, failed and interrupted runs.
     public JsonElement? AgentState { get; set; }
+    public string? DraftText { get; set; }
+    public List<SavedImage> DraftImages { get; set; } = [];
     public List<SessionTurn> Turns { get; set; } = [];
 }
 
 internal sealed class SessionTurn
 {
+    public int? HistoryStart { get; set; }
     public string Text { get; set; } = "";
     public List<SavedImage> Images { get; set; } = [];
     public string ModelId { get; set; } = "";
