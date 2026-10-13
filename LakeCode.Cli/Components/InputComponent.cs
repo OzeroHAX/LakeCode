@@ -35,7 +35,9 @@ internal sealed class InputComponent : PanelControl
         Editor = new PromptControl
         {
             Prompt = "[cyan]>[/] ",
-            Placeholder = "Опишите задачу… (Enter — отправить, Shift+Enter — новая строка)",
+            Placeholder = OperatingSystem.IsWindows()
+                ? "Опишите задачу… (Enter — отправить, Shift+Enter — новая строка)"
+                : "Опишите задачу… (Enter — отправить, Alt+Enter / Ctrl+L — новая строка)",
             UnfocusOnEnter = false,
             Multiline = true,
             EnterBehavior = EnterBehavior.Submit,
