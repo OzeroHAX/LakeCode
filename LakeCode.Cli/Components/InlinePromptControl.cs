@@ -23,6 +23,15 @@ internal sealed class InlinePromptControl : PromptControl, IInteractiveControl, 
     private int _wrapWidth = 1;
     private int _scrollTop;
     private bool _dragging;
+
+    public InlinePromptControl()
+    {
+        PropertyChanged += (_, _) =>
+        {
+            if (!HasFocus || !IsEnabled) _dragging = false;
+        };
+    }
+
     public int Caret => _caret;
     public ImmutableArray<FileMention> Mentions => _mentions.ToImmutableArray();
     public string[] FilePaths => _mentions.OrderBy(item => item.Start).Select(item => item.Path).Distinct(StringComparer.Ordinal).ToArray();
@@ -31,6 +40,7 @@ internal sealed class InlinePromptControl : PromptControl, IInteractiveControl, 
 
     public new void SetInput(string? text)
     {
+        _dragging = false;
         _mentions.Clear();
         _caret = (text ?? "").Length;
         _anchor = -1;
@@ -39,6 +49,7 @@ internal sealed class InlinePromptControl : PromptControl, IInteractiveControl, 
 
     public void Restore(string text, IEnumerable<FileMention> mentions)
     {
+        _dragging = false;
         _mentions.Clear();
         _mentions.AddRange(mentions.OrderBy(item => item.Start));
         _caret = text.Length;
@@ -92,21 +103,20 @@ internal sealed class InlinePromptControl : PromptControl, IInteractiveControl, 
 
     private void Sync(string? value = null)
     {
-        // Public cursor geometry avoids accessing PromptControl's private edit state.
         if (value is not null) base.SetInput(value);
-        base.ProcessKey(Key(ConsoleKey.Home, control: true));
+        // PromptControl exposes no text-offset setter. Its horizontal keys move by UTF-16
+        // offsets, independently of wrapping and scroll, unlike SetLogicalCursorPosition.
         var start = _anchor >= 0 ? _anchor : _caret;
-        var rows = Rows();
-        var index = RowIndex(rows, start);
-        var row = rows[index];
-        var column = UnicodeWidth.CharOffsetToColumn(Input.Substring(row.Offset, row.Length), start - row.Offset);
-        base.SetLogicalCursorPosition(new Point(MarkupParser.StripLength(Prompt ?? "") + column, index));
+        var fromEnd = start > Input.Length / 2;
+        base.ProcessKey(Key(fromEnd ? ConsoleKey.End : ConsoleKey.Home, control: true));
+        var steps = fromEnd ? Input.Length - start : start;
+        var direction = fromEnd ? ConsoleKey.LeftArrow : ConsoleKey.RightArrow;
+        for (var i = 0; i < steps; i++) base.ProcessKey(Key(direction));
         if (_anchor >= 0)
         {
-            var direction = _caret >= _anchor ? ConsoleKey.RightArrow : ConsoleKey.LeftArrow;
+            direction = _caret >= _anchor ? ConsoleKey.RightArrow : ConsoleKey.LeftArrow;
             for (var i = 0; i < Math.Abs(_caret - _anchor); i++) base.ProcessKey(Key(direction, shift: true));
         }
-        Invalidate();
     }
 
     private static ConsoleKeyInfo Key(ConsoleKey key, bool shift = false, bool control = false) =>
@@ -150,6 +160,7 @@ internal sealed class InlinePromptControl : PromptControl, IInteractiveControl, 
 
     public new bool ProcessKey(ConsoleKeyInfo key)
     {
+        _dragging = false;
         if (!IsEnabled) return false;
         var ctrl = key.Modifiers.HasFlag(ConsoleModifiers.Control);
         var shift = key.Modifiers.HasFlag(ConsoleModifiers.Shift);
@@ -236,32 +247,56 @@ internal sealed class InlinePromptControl : PromptControl, IInteractiveControl, 
 
     public override LayoutSize MeasureDOM(LayoutConstraints constraints)
     {
+        var size = base.MeasureDOM(constraints);
         _wrapWidth = Math.Max(1, (Width ?? constraints.MaxWidth) - Margin.Left - Margin.Right - MarkupParser.StripLength(Prompt ?? ""));
-        return base.MeasureDOM(constraints);
+        return size;
     }
 
     private int ScrollTop(List<PromptTextWrapping.Segment> rows)
     {
-        // The standard renderer knows its scroll offset; recover it from its logical caret geometry.
-        var caret = base.GetLogicalCursorPosition();
-        if (caret is { } point) _scrollTop = Math.Max(0, RowIndex(rows, _caret) - point.Y + Margin.Top);
+        // Sync positions the base caret by text offset, so its visible Y yields the scroll offset.
+        if (base.GetLogicalCursorPosition() is { } point)
+            _scrollTop = Math.Max(0, RowIndex(rows, _caret) - point.Y + Margin.Top);
         return Math.Clamp(_scrollTop, 0, Math.Max(0, rows.Count - 1));
     }
 
     public new void SetLogicalCursorPosition(Point position)
     {
         var rows = Rows();
-        var row = rows[Math.Clamp(position.Y + ScrollTop(rows), 0, rows.Count - 1)];
-        var column = Math.Max(0, position.X - MarkupParser.StripLength(Prompt ?? ""));
+        var row = rows[Math.Clamp(position.Y - Margin.Top + ScrollTop(rows), 0, rows.Count - 1)];
+        var column = Math.Max(0, position.X - Margin.Left - MarkupParser.StripLength(Prompt ?? ""));
         Move(row.Offset + UnicodeWidth.ColumnToCharOffset(Input.Substring(row.Offset, row.Length), column), false);
     }
 
     public new bool ProcessMouseEvent(MouseEventArgs args)
     {
-        if (!IsEnabled) return false;
-        if (args.HasFlag(MouseFlags.Button1Released)) { _dragging = false; return true; }
-        if (!args.HasFlag(MouseFlags.Button1Pressed) && !args.HasFlag(MouseFlags.Button1Clicked) &&
-            !args.HasFlag(MouseFlags.Button1DoubleClicked) && !(_dragging && args.HasFlag(MouseFlags.ReportMousePosition))) return false;
+        if (!IsEnabled || args.HasFlag(MouseFlags.MouseLeave))
+        {
+            _dragging = false;
+            return false;
+        }
+        if (args.HasFlag(MouseFlags.Button1Released))
+        {
+            _dragging = false;
+            args.Handled = true;
+            return true;
+        }
+        var motion = args.HasFlag(MouseFlags.ReportMousePosition) || args.HasFlag(MouseFlags.Button1Dragged);
+        var held = args.HasFlag(MouseFlags.Button1Pressed) || args.HasFlag(MouseFlags.Button1Dragged);
+        if (motion && (!held || !_dragging || !HasFocus))
+        {
+            _dragging = false;
+            return false;
+        }
+        var extend = motion && _dragging && held;
+        if (!extend && !args.HasFlag(MouseFlags.Button1Pressed) && !args.HasFlag(MouseFlags.Button1Clicked) &&
+            !args.HasFlag(MouseFlags.Button1DoubleClicked)) return false;
+        // Continuous press notifications are not a new click and must not reset the selection.
+        if (!motion && _dragging && args.HasFlag(MouseFlags.Button1Pressed))
+        {
+            args.Handled = true;
+            return true;
+        }
         if (!HasFocus) this.GetParentWindow()?.FocusManager.SetFocus(this, FocusReason.Mouse);
         var rows = Rows();
         var row = rows[Math.Clamp(args.Position.Y - Margin.Top + ScrollTop(rows), 0, rows.Count - 1)];
@@ -270,14 +305,18 @@ internal sealed class InlinePromptControl : PromptControl, IInteractiveControl, 
         var chip = _mentions.FirstOrDefault(item => pos >= item.Start && pos < item.Start + item.Length);
         if (args.HasFlag(MouseFlags.Button1DoubleClicked) && chip is not null)
         {
+            _dragging = false;
             _anchor = chip.Start;
             _caret = chip.Start + chip.Length;
             Sync();
         }
         else
         {
-            var extend = _dragging && args.HasFlag(MouseFlags.ReportMousePosition);
-            if (!extend) { _anchor = -1; _dragging = true; }
+            if (!extend)
+            {
+                _anchor = -1;
+                _dragging = args.HasFlag(MouseFlags.Button1Pressed);
+            }
             Move(pos, extend);
         }
         args.Handled = true;
