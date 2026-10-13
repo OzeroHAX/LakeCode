@@ -67,7 +67,8 @@ using var slashCommands = new SlashCommandsComponent(window, input,
     ("/exit", "Завершить LakeCode"),
     ("/new", "Начать новую сессию"),
     ("/models", "Показать доступные модели"),
-    ("/sessions", "Открыть сохранённую сессию")
+    ("/sessions", "Открыть сохранённую сессию"),
+    ("/debug", "Показать или скрыть usage (MAF)")
 ]);
 slashCommands.CommandSelected += (_, command) =>
 {
@@ -78,6 +79,11 @@ slashCommands.CommandSelected += (_, command) =>
     else if (command.Equals("/sessions", StringComparison.OrdinalIgnoreCase))
     {
         chat.ShowSessions();
+    }
+    else if (command.Equals("/debug", StringComparison.OrdinalIgnoreCase))
+    {
+        input.Editor.Input = string.Empty;
+        footer.ToggleDebug();
     }
     else if (command.Equals("/models", StringComparison.OrdinalIgnoreCase))
     {

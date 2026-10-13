@@ -16,6 +16,9 @@ internal sealed class FooterComponent : MarkupControl
     private static readonly string IdleFrame = $"[{new SharpConsoleUI.Color(0, 255, 255, 51).ToMarkup()}]⬝⬝⬝⬝⬝⬝⬝⬝[/]";
     private static readonly string[] ScannerFrames = CreateScannerFrames();
     private readonly SpinnerTextAnimator _scanner;
+    private readonly Func<string> _render;
+    private bool _debugEnabled;
+
     public FooterComponent(ConsoleWindowSystem windowSystem, ModelStore store, StatisticsStore statistics, string directory)
         : base(new List<string>())
     {
@@ -23,8 +26,9 @@ internal sealed class FooterComponent : MarkupControl
         Margin = new Margin(3, 0, 3, 1);
         var frame = IdleFrame;
         string Render() =>
-            $"{frame} [cyan]{Markup.Escape(store.SelectedModel.Name)}[/]   [grey50]│[/]   [cyan]{Markup.Escape(store.SelectedReasoningEffort)}[/]   [grey50]│[/]   {Markup.Escape(directory)}   [grey50]│[/]   {FormatStatistics(statistics)}   [grey50]│[/]   {statistics.TokensPerSecond?.ToString("0.0", CultureInfo.InvariantCulture) ?? "—"} tok/s\n" +
-            FormatRawStatistics(statistics);
+            $"{frame} [cyan]{Markup.Escape(store.SelectedModel.Name)}[/]   [grey50]│[/]   [cyan]{Markup.Escape(store.SelectedReasoningEffort)}[/]   [grey50]│[/]   {Markup.Escape(directory)}   [grey50]│[/]   {FormatStatistics(statistics)}   [grey50]│[/]   {statistics.TokensPerSecond?.ToString("0.0", CultureInfo.InvariantCulture) ?? "—"} tok/s" +
+            (_debugEnabled ? "\n" + FormatRawStatistics(statistics) : string.Empty);
+        _render = Render;
 
         _scanner = new SpinnerTextAnimator(windowSystem, ScannerFrames, value =>
         {
@@ -42,6 +46,12 @@ internal sealed class FooterComponent : MarkupControl
             _scanner.Visible = active;
             return Render();
         });
+    }
+
+    public void ToggleDebug()
+    {
+        _debugEnabled = !_debugEnabled;
+        Text = _render();
     }
 
     public void StopAnimation() => _scanner.Dispose();
