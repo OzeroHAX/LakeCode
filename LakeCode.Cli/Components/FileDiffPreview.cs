@@ -1,5 +1,5 @@
 using System.Text;
-using LakeCode.Cli.Agent;
+using LakeCode.Core.Agent;
 using SharpConsoleUI.Parsing;
 
 namespace LakeCode.Cli.Components;

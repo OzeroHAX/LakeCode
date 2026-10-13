@@ -1,4 +1,4 @@
-using LakeCode.Cli.Agent.Tools.Ask;
+using LakeCode.Core.Agent.Tools.Ask;
 using SharpConsoleUI;
 using SharpConsoleUI.Controls;
 using SharpConsoleUI.Layout;

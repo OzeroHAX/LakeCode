@@ -1,21 +1,29 @@
 ﻿using LakeCode.Cli.Components;
 using LakeCode.Cli;
-using LakeCode.Cli.Agent;
-using LakeCode.Cli.Agent.Tools;
+using LakeCode.Core.Agent;
+using LakeCode.Core.Providers;
+using LakeCode.Core.Conversations;
 using LakeCode.Cli.State;
-using LakeCode.Cli.Sessions;
 using SharpConsoleUI;
 using SharpConsoleUI.Builders;
 using SharpConsoleUI.Drivers;
 using SharpConsoleUI.Configuration;
 
-var workspaceRoot = WorkspaceFiles.ResolveRoot();
+var workspaceRoot = ConversationService.ResolveWorkspaceRoot();
 var shutdown = new CancellationTokenSource();
-var modelStore = new ModelStore(ModelCatalog.Models, "gpt-6.1-sol");
-var statisticsStore = new StatisticsStore(ModelCatalog.Models["gpt-6.1-sol"]);
+ProviderRegistry providers;
+try { providers = new ProviderRegistry(); }
+catch (Exception error)
+{
+    Console.Error.WriteLine($"Не удалось загрузить настройки провайдеров: {error.Message}");
+    return;
+}
+var modelStore = new ModelStore(providers);
+var statisticsStore = new StatisticsStore(modelStore.SelectedModel);
 var modelsWindow = new ModelsWindowComponent(modelStore);
+var providersWindow = new ProvidersWindowComponent(providers, modelStore, shutdown.Token);
 var sessionsWindow = new SessionsWindowComponent();
-var sessionStorage = new SessionStorage();
+var conversation = new ConversationService(workspaceRoot, providers, modelStore.SelectedModel, shutdown.Token);
 
 var windowSystem = new ConsoleWindowSystem(
     new NetConsoleDriver(RenderMode.Buffer),
@@ -58,7 +66,7 @@ window.PreviewKeyPressed += (_, e) =>
 };
 chat = new ChatController(
     windowSystem, mainContent, header, input, statisticsStore, modelStore,
-    () => window.FocusControl(input.Editor), workspaceRoot, sessionStorage, sessionsWindow, askHost, shutdown.Token);
+    () => window.FocusControl(input.Editor), sessionsWindow, askHost, conversation);
 
 windowSystem.AddWindow(window);
 using var rewind = new RewindComponent(window, mainContent, input, chat);
@@ -67,6 +75,7 @@ using var slashCommands = new SlashCommandsComponent(window, input,
     ("/exit", "Завершить LakeCode"),
     ("/new", "Начать новую сессию"),
     ("/models", "Показать доступные модели"),
+    ("/providers", "Настроить подключения и модели"),
     ("/sessions", "Открыть сохранённую сессию"),
     ("/debug", "Показать или скрыть usage (MAF)")
 ]);
@@ -85,6 +94,11 @@ slashCommands.CommandSelected += (_, command) =>
         input.Editor.Input = string.Empty;
         footer.ToggleDebug();
     }
+    else if (command.Equals("/providers", StringComparison.OrdinalIgnoreCase))
+    {
+        input.Editor.Input = string.Empty;
+        providersWindow.Show(windowSystem);
+    }
     else if (command.Equals("/models", StringComparison.OrdinalIgnoreCase))
     {
         input.Editor.Input = string.Empty;
@@ -101,4 +115,5 @@ finally
     footer.StopAnimation();
     shutdown.Cancel();
     chat.FinishAsync().GetAwaiter().GetResult();
+    chat.Dispose();
 }

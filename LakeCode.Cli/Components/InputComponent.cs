@@ -1,3 +1,4 @@
+using LakeCode.Core.Conversations;
 using SharpConsoleUI;
 using SharpConsoleUI.Controls;
 using SharpConsoleUI.Layout;
@@ -19,6 +20,8 @@ internal sealed class InputComponent : PanelControl
     public bool HasAttachments => _attachments.Count != 0;
     public bool IsImporting => _operation is not null;
     public PromptControl Editor { get; }
+    public event Action<SubmissionMode>? Submitted;
+    private readonly MarkupControl _pending = new(new List<string>());
 
     public ImageAttachment[] GetAttachments() => _attachments.Select(item => item.Attachment).ToArray();
 
@@ -59,6 +62,14 @@ internal sealed class InputComponent : PanelControl
         _status.HorizontalAlignment = HorizontalAlignment.Stretch;
         _status.Visible = false;
         AddControl(_status);
+        _pending.Wrap = true;
+        _pending.Visible = false;
+        AddControl(_pending);
+        AddControl(new MarkupControl(new List<string>
+        {
+            "[grey70]Enter — уточнить · F6 — в очередь · F7 — прервать и отправить[/]"
+        }) { Wrap = true });
+        Editor.Entered += (_, _) => Submitted?.Invoke(SubmissionMode.Clarify);
     }
 
     public void Attach(Window window)
@@ -69,8 +80,15 @@ internal sealed class InputComponent : PanelControl
 
     private void OnPreviewKeyPressed(object? sender, KeyPressedEventArgs e)
     {
-        if (e.Handled || !Editor.HasFocus || !Editor.IsEnabled ||
-            e.KeyInfo.Modifiers != ConsoleModifiers.Control) return;
+        if (e.Handled || !Editor.HasFocus || !Editor.IsEnabled) return;
+        if (e.KeyInfo.Modifiers == 0 && e.KeyInfo.Key is ConsoleKey.F6 or ConsoleKey.F7)
+        {
+            e.Handled = true;
+            if (Editor.Input.StartsWith('/')) return; // Slash commands are never agent messages.
+            Submitted?.Invoke(e.KeyInfo.Key == ConsoleKey.F6 ? SubmissionMode.Enqueue : SubmissionMode.Interrupt);
+            return;
+        }
+        if (e.KeyInfo.Modifiers != ConsoleModifiers.Control) return;
         if (e.KeyInfo.Key == ConsoleKey.V)
         {
             e.Handled = true;
@@ -168,6 +186,15 @@ internal sealed class InputComponent : PanelControl
     public void SetSending(bool sending)
     {
         Editor.IsEnabled = !sending;
+    }
+
+    public void ShowPending(IReadOnlyList<string> descriptions, bool paused)
+    {
+        _pending.Text = string.Join("\n", descriptions.Select(text =>
+            $"[cyan]{MarkupParser.Escape(text)}[/]"));
+        if (paused && descriptions.Count > 0)
+            _pending.Text += "\n[yellow]Очередь приостановлена. F6 с пустым полем — продолжить.[/]";
+        _pending.Visible = descriptions.Count > 0;
     }
 
     public void SetDraft(string text, IReadOnlyList<ImageAttachment> images)

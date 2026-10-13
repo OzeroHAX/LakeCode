@@ -26,7 +26,7 @@ internal sealed class FooterComponent : MarkupControl
         Margin = new Margin(3, 0, 3, 1);
         var frame = IdleFrame;
         string Render() =>
-            $"{frame} [cyan]{Markup.Escape(store.SelectedModel.Name)}[/]   [grey50]│[/]   [cyan]{Markup.Escape(store.SelectedReasoningEffort)}[/]   [grey50]│[/]   {Markup.Escape(directory)}   [grey50]│[/]   {FormatStatistics(statistics)}   [grey50]│[/]   {statistics.TokensPerSecond?.ToString("0.0", CultureInfo.InvariantCulture) ?? "—"} tok/s" +
+            $"{frame} [cyan]{Markup.Escape(store.HasSelection ? store.SelectedProviderName + " · " + store.SelectedModel.Name : "Нет подключения — /providers")}[/]   [grey50]│[/]   [cyan]{Markup.Escape(store.SelectedReasoningEffort)}[/]   [grey50]│[/]   {Markup.Escape(directory)}   [grey50]│[/]   {FormatStatistics(statistics)}   [grey50]│[/]   {statistics.TokensPerSecond?.ToString("0.0", CultureInfo.InvariantCulture) ?? "—"} tok/s" +
             (_debugEnabled ? "\n" + FormatRawStatistics(statistics) : string.Empty);
         _render = Render;
 
@@ -37,8 +37,10 @@ internal sealed class FooterComponent : MarkupControl
         }, 50);
         _scanner.Visible = false;
         _scanner.Start();
+        this.Bind(store, state => state.SelectedProviderName, control => control.Text, _ => Render());
         this.Bind(store, state => state.SelectedModel, control => control.Text, _ => Render());
         this.Bind(store, state => state.SelectedReasoningEffort, control => control.Text, _ => Render());
+        this.Bind(statistics, state => state.Model, control => control.Text, _ => Render());
         this.Bind(statistics, state => state.Current, control => control.Text, _ => Render());
         this.Bind(statistics, state => state.TokensPerSecond, control => control.Text, _ => Render());
         this.Bind(statistics, state => state.IsGenerating, control => control.Text, active =>

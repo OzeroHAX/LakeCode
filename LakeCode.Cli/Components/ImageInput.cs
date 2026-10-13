@@ -1,13 +1,10 @@
+using LakeCode.Core.Attachments;
 using System.ComponentModel;
 using System.Diagnostics;
 using System.Text;
 using SharpConsoleUI.Helpers;
 using SharpConsoleUI.Imaging;
 using SixLabors.ImageSharp;
-using SixLabors.ImageSharp.Formats;
-using SixLabors.ImageSharp.Formats.Jpeg;
-using SixLabors.ImageSharp.Formats.Png;
-using SixLabors.ImageSharp.Formats.Webp;
 using SixLabors.ImageSharp.PixelFormats;
 
 namespace LakeCode.Cli.Components;
@@ -17,19 +14,11 @@ internal sealed record ClipboardInput(ImageAttachment? Image, string? Text);
 
 internal static class ImageInput
 {
-    public const int MaxImageBytes = 8 * 1024 * 1024;
-    public const int MaxTotalBytes = 24 * 1024 * 1024;
-    public const int MaxAttachments = 4;
+    public const int MaxImageBytes = ImageAttachments.MaxImageBytes;
+    public const int MaxTotalBytes = ImageAttachments.MaxTotalBytes;
+    public const int MaxAttachments = ImageAttachments.MaxAttachments;
     private static readonly string[] ImageTypes = ["image/png", "image/jpeg", "image/webp"];
     private static readonly string[] TextTypes = ["text/plain;charset=utf-8", "text/plain", "UTF8_STRING", "STRING"];
-    private static readonly DecoderOptions Decoder = new()
-    {
-        Configuration = new SixLabors.ImageSharp.Configuration(
-            new PngConfigurationModule(), new JpegConfigurationModule(), new WebpConfigurationModule()),
-        SkipMetadata = true,
-        MaxFrames = 1,
-        TargetSize = new SixLabors.ImageSharp.Size(640, 400)
-    };
 
     public static async Task<ClipboardInput> ReadClipboardAsync(CancellationToken cancellationToken)
     {
@@ -73,17 +62,14 @@ internal static class ImageInput
         return Decode(data, Path.GetFileName(path));
     }
 
-    internal static ImageAttachment Decode(ReadOnlyMemory<byte> data, string name)
+    internal static ImageAttachment Decode(ReadOnlyMemory<byte> data, string name) =>
+        CreatePreview(ImageAttachments.Decode(data, name));
+
+    internal static ImageAttachment CreatePreview(ImageData imageData)
     {
-        if (data.IsEmpty) throw new InvalidOperationException("Изображение пустое.");
-        // Only the three allowed decoders run, including during header identification (no TIFF).
-        var info = Image.Identify(Decoder, data.Span);
-        if (info.Width > 8192 || info.Height > 8192 || (long)info.Width * info.Height > 16_000_000)
-            throw new InvalidOperationException("Изображение слишком большое: максимум 8192 пикселя по стороне и 16 мегапикселей.");
-        using var image = Image.Load<Rgb24>(Decoder, data.Span);
-        var mediaType = image.Metadata.DecodedImageFormat?.DefaultMimeType
-            ?? throw new InvalidOperationException("Не удалось определить формат изображения.");
-        return new ImageAttachment(name, data, mediaType, info.Width, info.Height, PixelBuffer.FromImageSharp(image));
+        using var image = Image.Load<Rgb24>(ImageAttachments.CreateDecoderOptions(), imageData.Data.Span);
+        return new ImageAttachment(imageData.Name, imageData.Data, imageData.MediaType,
+            imageData.Width, imageData.Height, PixelBuffer.FromImageSharp(image));
     }
 
     private static async Task<ReadOnlyMemory<byte>> RunAsync(

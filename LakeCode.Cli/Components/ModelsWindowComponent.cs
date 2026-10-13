@@ -25,12 +25,14 @@ internal sealed class ModelsWindowComponent(ModelStore store)
             Margin = new Margin(2, 1, 2, 0)
         };
 
-        foreach (var model in store.Models.Values.OrderBy(model => model.Id, StringComparer.Ordinal))
+        foreach (var provider in store.Providers.Profiles.OrderBy(profile => profile.Name, StringComparer.Ordinal))
+        foreach (var model in provider.Models.OrderBy(model => model.Id, StringComparer.Ordinal))
         {
-            list.AddItem(new ListItem(Markup.Escape(model.Name)) { Tag = model.Id });
-            if (model.Id == store.SelectedModel.Id)
+            list.AddItem(new ListItem(Markup.Escape($"{provider.Name} · {model.Name}")) { Tag = (provider.Id, model.Id) });
+            if (provider.Id == store.SelectedProviderId && model.Id == store.SelectedModel.Id)
                 list.SelectedIndex = list.Items.Count - 1;
         }
+        if (list.Items.Count == 0) list.AddItem(new ListItem("Нет моделей. Настройте /providers."));
 
         var hint = new MarkupControl(new List<string>
         {
@@ -43,7 +45,7 @@ internal sealed class ModelsWindowComponent(ModelStore store)
 
         var window = new WindowBuilder(windowSystem)
             .WithTitle("Выбор модели")
-            .WithSize(40, store.Models.Count + 5)
+            .WithSize(64, Math.Min(20, list.Items.Count + 5))
             .Centered()
             .AsModal()
             .HideTitleButtons()
@@ -69,10 +71,10 @@ internal sealed class ModelsWindowComponent(ModelStore store)
 
         list.ItemActivated += (_, _) =>
         {
-            if (list.SelectedItem?.Tag is not string modelId)
+            if (list.SelectedItem?.Tag is not ValueTuple<string, string> selection)
                 return;
 
-            store.SelectModel(modelId);
+            store.SelectModel(selection.Item1, selection.Item2);
             windowSystem.CloseWindow(window);
         };
 

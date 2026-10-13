@@ -1,4 +1,4 @@
-using LakeCode.Cli.Sessions;
+using LakeCode.Core.Sessions;
 using SharpConsoleUI;
 using SharpConsoleUI.Builders;
 using SharpConsoleUI.Controls;
