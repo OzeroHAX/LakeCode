@@ -4,8 +4,6 @@ using System.Diagnostics;
 using System.Text;
 using SharpConsoleUI.Helpers;
 using SharpConsoleUI.Imaging;
-using SixLabors.ImageSharp;
-using SixLabors.ImageSharp.PixelFormats;
 
 namespace LakeCode.Cli.Components;
 
@@ -17,7 +15,7 @@ internal static class ImageInput
     public const int MaxImageBytes = ImageAttachments.MaxImageBytes;
     public const int MaxTotalBytes = ImageAttachments.MaxTotalBytes;
     public const int MaxAttachments = ImageAttachments.MaxAttachments;
-    private static readonly string[] ImageTypes = ["image/png", "image/jpeg", "image/webp"];
+    private static readonly string[] ImageTypes = ["image/png", "image/jpeg"];
     private static readonly string[] TextTypes = ["text/plain;charset=utf-8", "text/plain", "UTF8_STRING", "STRING"];
 
     public static async Task<ClipboardInput> ReadClipboardAsync(CancellationToken cancellationToken)
@@ -47,7 +45,7 @@ internal static class ImageInput
 
         string? textType = TextTypes.FirstOrDefault(type => types.Contains(type, StringComparer.Ordinal));
         if (textType is null)
-            throw new InvalidOperationException("В буфере нет текста или поддерживаемого изображения. Используйте PNG, JPEG или WebP.");
+            throw new InvalidOperationException("В буфере нет текста или поддерживаемого изображения. Используйте PNG или JPEG.");
         var text = await RunAsync(tool, wayland ? ["--no-newline", "--type", textType] :
             ["-selection", "clipboard", "-o", "-t", textType], 1024 * 1024, cancellationToken);
         var encoding = !wayland && textType == "STRING" ? Encoding.Latin1 : Encoding.UTF8;
@@ -62,16 +60,33 @@ internal static class ImageInput
         return Decode(data, Path.GetFileName(path));
     }
 
-    internal static ImageAttachment Decode(ReadOnlyMemory<byte> data, string name) =>
-        CreatePreview(ImageAttachments.Decode(data, name));
-
-    internal static ImageAttachment CreatePreview(ImageData imageData)
+    internal static ImageAttachment Decode(ReadOnlyMemory<byte> data, string name)
     {
-        using var image = Image.Load<Rgb24>(ImageAttachments.CreateDecoderOptions(), imageData.Data.Span);
-        var pixels = new byte[checked(image.Width * image.Height * 3)];
-        image.CopyPixelDataTo(pixels);
+        var decoded = ImageAttachments.DecodePixels(data, name);
+        return CreatePreview(decoded.Image, decoded.Pixels);
+    }
+
+    internal static ImageAttachment CreatePreview(ImageData imageData) => Decode(imageData.Data, imageData.Name);
+
+    private static ImageAttachment CreatePreview(ImageData imageData, byte[] pixels)
+    {
+        // Sample into a bounded preview instead of allocating a full-size UI pixel buffer.
+        double scale = Math.Min(1, Math.Min(640d / imageData.Width, 400d / imageData.Height));
+        int width = Math.Max(1, (int)(imageData.Width * scale));
+        int height = Math.Max(1, (int)(imageData.Height * scale));
+        var preview = new PixelBuffer(width, height);
+        for (int y = 0; y < height; y++)
+        {
+            int sourceY = (int)((long)y * imageData.Height / height);
+            for (int x = 0; x < width; x++)
+            {
+                int sourceX = (int)((long)x * imageData.Width / width);
+                int offset = (sourceY * imageData.Width + sourceX) * 3;
+                preview.SetPixel(x, y, new ImagePixel(pixels[offset], pixels[offset + 1], pixels[offset + 2]));
+            }
+        }
         return new ImageAttachment(imageData.Name, imageData.Data, imageData.MediaType,
-            imageData.Width, imageData.Height, PixelBuffer.FromRgb24Bytes(pixels, image.Width, image.Height));
+            imageData.Width, imageData.Height, preview);
     }
 
     private static async Task<ReadOnlyMemory<byte>> RunAsync(
