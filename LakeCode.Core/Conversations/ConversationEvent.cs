@@ -9,6 +9,7 @@ namespace LakeCode.Core.Conversations;
 /// <summary>Facts, not commands or a replacement for current state. Events are ordered per service.</summary>
 public abstract record ConversationEvent;
 public sealed record ConversationReplaced(ConversationView Conversation) : ConversationEvent;
+public sealed record RewindFinished(string? Error) : ConversationEvent;
 public sealed record SessionsListed(ImmutableArray<SessionSummary> Sessions, ImmutableArray<string> Errors,
     string? ActiveId) : ConversationEvent;
 public sealed record TurnStarted(string Text, ImmutableArray<ImageData> Images,

@@ -84,7 +84,7 @@ public sealed class ConversationService
                 StartNewSession start => NewSession(start.ProviderId, start.ModelId),
                 ListSessions => BeginListSessions(),
                 OpenSession open => BeginOpenSession(open.SessionId),
-                RewindToTurn rewind => BeginRewind(rewind.Index),
+                RewindToTurn rewind => BeginRewind(rewind),
                 AnswerQuestion answer => Answer(answer),
                 ResolveReadPermission permission => ResolvePermission(permission),
                 FailInteraction failure => Fail(failure),
@@ -583,11 +583,43 @@ public sealed class ConversationService
         return true;
     }
 
-    private bool BeginRewind(int index)
+    public ImmutableArray<RewindPoint> GetRewindPoints()
     {
-        if (!_state.CanRewind || _snapshot is null || index < 0 || index >= _snapshot.Turns.Count) return false;
-        if (_snapshot.Turns[index].HistoryStart is not { } boundary)
-            return Reject("Для этого старого сообщения нет сохранённой границы контекста.");
+        lock (_gate)
+        {
+            if (_snapshot is null) return [];
+            var points = ImmutableArray.CreateBuilder<RewindPoint>();
+            for (var index = 0; index < _snapshot.Turns.Count; index++)
+            {
+                var turn = _snapshot.Turns[index];
+                var userText = turn.Text;
+                if (string.IsNullOrWhiteSpace(userText))
+                    userText = $"Сообщение без текста · изображения: {turn.Images.Count} · файлы: {turn.Files.Count}";
+                points.Add(new RewindPoint(index, RewindTargetKind.User, userText,
+                    turn.HistoryStart is null ? "Нет сохранённой границы контекста для этого запроса." : null));
+                var answer = string.Join("\n", turn.Events.Where(item => item.Kind == "text").Select(item => item.Text));
+                if (string.IsNullOrWhiteSpace(answer)) answer = "Ответ без текста";
+                if (turn.Status != "completed") answer += "\n" + (turn.Error ?? "Ответ прерван.");
+                var reason = index == _snapshot.Turns.Count - 1 ? "История уже находится в этой точке." :
+                    _snapshot.Turns[index + 1].HistoryStart is null ? "Нет сохранённой границы после этого ответа." : null;
+                points.Add(new RewindPoint(index, RewindTargetKind.Assistant, answer, reason));
+            }
+            return points.ToImmutable();
+        }
+    }
+
+    private bool BeginRewind(RewindToTurn command)
+    {
+        var index = command.Index;
+        if (!_state.CanRewind || _snapshot is null || index < 0 || index >= _snapshot.Turns.Count ||
+            !Enum.IsDefined(command.Kind)) return false;
+        if ((command.SessionId is not null && command.SessionId != _snapshot.Id) ||
+            (command.ExpectedTurnCount is { } count && count != _snapshot.Turns.Count)) return false;
+        var keepAnswer = command.Kind == RewindTargetKind.Assistant;
+        if (keepAnswer && index == _snapshot.Turns.Count - 1) return false;
+        var boundaryIndex = keepAnswer ? index + 1 : index;
+        if (_snapshot.Turns[boundaryIndex].HistoryStart is not { } boundary)
+            return Reject("Для этой точки нет сохранённой границы контекста.");
         var current = CopySnapshot(_snapshot);
         ClearSide();
         _busy = true;
@@ -607,11 +639,11 @@ public sealed class ConversationService
                 _agent.Rewind(boundary);
                 next.AgentState = await _agent.SerializeSessionAsync().ConfigureAwait(false);
                 await _agent.RestoreSessionAsync(original.Value).ConfigureAwait(false);
-                next.Turns.RemoveRange(index, next.Turns.Count - index);
-                next.DraftText = selected.Text;
-                next.DraftImages = selected.Images;
-                next.DraftFiles = selected.Files;
-                next.DraftMentions = selected.Mentions;
+                next.Turns.RemoveRange(boundaryIndex, next.Turns.Count - boundaryIndex);
+                next.DraftText = keepAnswer ? null : selected.Text;
+                next.DraftImages = keepAnswer ? [] : selected.Images;
+                next.DraftFiles = keepAnswer ? [] : selected.Files;
+                next.DraftMentions = keepAnswer ? [] : selected.Mentions;
                 next.ProviderId = selected.ProviderId;
                 next.ModelId = selected.ModelId;
                 next.ModelMetadata = selected.ModelMetadata;
@@ -627,6 +659,7 @@ public sealed class ConversationService
                     _statistics = null;
                     _tokensPerSecond = null;
                     Emit(new ConversationReplaced(CreateView()));
+                    Emit(new RewindFinished(null));
                 }
             }
             catch (Exception error)
@@ -636,7 +669,12 @@ public sealed class ConversationService
                     try { await _agent.RestoreSessionAsync(state).ConfigureAwait(false); }
                     catch { lock (_gate) _contextFailed = true; }
                 }
-                lock (_gate) Emit(new ConversationError($"Не удалось вернуть сообщение: {error.Message}"));
+                lock (_gate)
+                {
+                    var message = $"Не удалось откатить историю: {error.Message}";
+                    Emit(new ConversationError(message));
+                    Emit(new RewindFinished(message));
+                }
             }
             finally { lock (_gate) { _busy = false; PublishState(); } }
         });

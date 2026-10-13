@@ -71,10 +71,12 @@ internal sealed class ChatController : IDisposable
         if (_input.IsImporting) return;
         if (_conversation.Execute(new ListSessions())) _input.Editor.Input = string.Empty;
     }
-    public void RewindTo(int index)
-    {
-        if (CanRewind) _conversation.Execute(new RewindToTurn(index));
-    }
+    public event Action<string?>? RewindCompleted;
+    public (string? SessionId, int TurnCount, ImmutableArray<RewindPoint> Points) GetRewindPoints() =>
+        (_state.SessionId, _state.TurnCount, _conversation.GetRewindPoints());
+
+    public bool RewindTo(RewindPoint point, string? sessionId, int turnCount) =>
+        CanRewind && _conversation.Execute(new RewindToTurn(point.Index, point.Kind, sessionId, turnCount));
     public Task FinishAsync() => _conversation.FinishAsync();
 
     public void ShowOrAskSideQuestion(string question)
@@ -198,6 +200,9 @@ internal sealed class ChatController : IDisposable
             {
                 case ConversationReplaced replaced:
                     ReplaceConversation(replaced.Conversation);
+                    break;
+                case RewindFinished rewindFinished:
+                    RewindCompleted?.Invoke(rewindFinished.Error);
                     break;
                 case SessionsListed listed:
                     _sessionsWindow.Show(_windowSystem, listed.Sessions, listed.Errors, listed.ActiveId,

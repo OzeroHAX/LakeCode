@@ -70,7 +70,8 @@ chat = new ChatController(
     () => window.FocusControl(input.Editor), sessionsWindow, askHost, conversation, workspaceRoot, btw);
 
 windowSystem.AddWindow(window);
-using var rewind = new RewindComponent(window, mainContent, input, chat);
+using var rewindWindow = new RewindWindowComponent(windowSystem, chat);
+using var rewind = new RewindComponent(window, input, chat, rewindWindow);
 using var fileMentions = new FileMentionsComponent(window, windowSystem, input, workspaceRoot, shutdown.Token);
 using var slashCommands = new SlashCommandsComponent(window, input,
 [
