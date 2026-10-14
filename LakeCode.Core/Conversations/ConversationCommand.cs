@@ -8,14 +8,14 @@ namespace LakeCode.Core.Conversations;
 /// <summary>User intent. Execute returns acceptance, not completion of generation.</summary>
 public abstract record ConversationCommand;
 public sealed record SubmitMessage(string Text, ImmutableArray<ImageData> Images, string ModelId,
-    string ReasoningEffort, SubmissionMode Mode, string ProviderId = ProviderProfile.LegacyId,
+    string ReasoningEffort, SubmissionMode Mode, string ProviderId,
     ImmutableArray<FileAttachment> Files = default, ImmutableArray<FileMention> Mentions = default,
     Settings.ModelSelection? SubagentModel = null) : ConversationCommand;
 public sealed record StopGeneration : ConversationCommand;
 public sealed record AskSideQuestion(string Question) : ConversationCommand;
 public sealed record CancelSideQuestion(Guid RequestId) : ConversationCommand;
 public sealed record ClearSideQuestions : ConversationCommand;
-public sealed record StartNewSession(string ModelId, string ProviderId = ProviderProfile.LegacyId) : ConversationCommand;
+public sealed record StartNewSession(string ModelId, string ProviderId) : ConversationCommand;
 public sealed record ListSessions : ConversationCommand;
 public sealed record OpenSession(string SessionId) : ConversationCommand;
 public enum RewindTargetKind { User, Assistant, Tool }

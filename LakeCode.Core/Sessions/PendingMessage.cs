@@ -7,7 +7,7 @@ namespace LakeCode.Core.Sessions;
 
 internal sealed record PendingMessage(
     string Text, SavedImage[] Images, string ModelId, string ReasoningEffort, SubmissionMode Mode,
-    string ProviderId = ProviderProfile.LegacyId)
+    string ProviderId = SessionSnapshot.HistoricalProviderId)
 {
     public LakeCode.Core.Attachments.FileAttachment[] Files { get; init; } = [];
     public LakeCode.Core.Attachments.FileMention[] Mentions { get; init; } = [];

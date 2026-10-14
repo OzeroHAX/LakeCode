@@ -1148,7 +1148,6 @@ public sealed class ConversationService
         var configured = _providers.Profiles.FirstOrDefault(profile => profile.Id == providerId)?.Models
             .FirstOrDefault(model => model.Id == modelId);
         if (configured is not null) return configured;
-        if (providerId == ProviderProfile.LegacyId && ModelCatalog.Models.TryGetValue(modelId, out var legacy)) return legacy;
         return null;
     }
 

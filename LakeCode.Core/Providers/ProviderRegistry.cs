@@ -21,6 +21,7 @@ public sealed class ProviderRegistry
 
     public async Task SaveAsync(ProviderProfile profile, CancellationToken cancellationToken = default)
     {
+        profile = profile with { Revision = Guid.NewGuid().ToString("D") };
         profile.Validate();
         await _writes.WaitAsync(cancellationToken);
         try

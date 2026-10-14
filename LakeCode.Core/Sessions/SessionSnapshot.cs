@@ -7,6 +7,8 @@ namespace LakeCode.Core.Sessions;
 
 internal sealed class SessionSnapshot
 {
+    // Historical v1/v2 files omitted ProviderId; this does not create a connection.
+    internal const string HistoricalProviderId = "00000000-0000-0000-0000-000000000001";
     public int SchemaVersion { get; set; } = 3;
     public string FrameworkVersion { get; set; } = "1.24.0";
     public string Id { get; set; } = Guid.NewGuid().ToString("D");
@@ -15,7 +17,7 @@ internal sealed class SessionSnapshot
     public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
     public DateTimeOffset UpdatedAt { get; set; } = DateTimeOffset.UtcNow;
     public ModelInfo? ModelMetadata { get; set; }
-    public string ProviderId { get; set; } = ProviderProfile.LegacyId;
+    public string ProviderId { get; set; } = HistoricalProviderId;
     public string ModelId { get; set; } = "";
     public string ReasoningEffort { get; set; } = "medium";
     // Includes received history from completed, failed and interrupted runs.
@@ -38,7 +40,7 @@ internal sealed class SessionTurn
     public List<FileAttachment> Files { get; set; } = [];
     public List<FileMention> Mentions { get; set; } = [];
     public ModelInfo? ModelMetadata { get; set; }
-    public string ProviderId { get; set; } = ProviderProfile.LegacyId;
+    public string ProviderId { get; set; } = SessionSnapshot.HistoricalProviderId;
     public string ModelId { get; set; } = "";
     public string ReasoningEffort { get; set; } = "";
     public string Status { get; set; } = "in_progress";

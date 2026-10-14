@@ -1,6 +1,9 @@
 using System.Collections.Immutable;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Text.Json.Nodes;
+using LakeCode.Core.Agent;
+using System.Security.Cryptography;
 
 namespace LakeCode.Core.Providers;
 
@@ -24,34 +27,79 @@ public sealed class ProviderStorage
     public ImmutableArray<ProviderProfile> Load()
     {
         ValidatePath(FilePath);
-        if (!File.Exists(FilePath))
-        {
-            var legacy = ProviderProfile.Legacy();
-            legacy.Validate();
-            return [legacy];
-        }
+        if (!File.Exists(FilePath)) return [];
         using var stream = File.OpenRead(FilePath);
         if (stream.Length > MaxBytes) throw new InvalidDataException("Настройки провайдеров превышают 1 MiB.");
         Settings settings;
-        try { settings = JsonSerializer.Deserialize<Settings>(stream, Options) ?? throw new JsonException(); }
-        catch (JsonException) { throw new InvalidDataException("Повреждён providers.json. Исправьте файл; настройки не были сброшены."); }
-        if (settings.SchemaVersion != 1) throw new InvalidDataException("Неподдерживаемая версия providers.json.");
+        try
+        {
+            var root = JsonNode.Parse(stream)?.AsObject() ?? throw new JsonException();
+            var version = root["SchemaVersion"]?.GetValue<int>() ?? throw new JsonException();
+            if (version == 1)
+            {
+                foreach (var node in root["Providers"]?.AsArray() ?? throw new JsonException())
+                {
+                    var profile = node?.AsObject() ?? throw new JsonException();
+                    var oldModels = profile["Models"]?.Deserialize<ImmutableArray<ModelInfo>>(Options) ?? throw new JsonException();
+                    var overrides = oldModels.ToImmutableDictionary(model => model.Id,
+                        model => new ModelOverride { Manual = true, Definition = ModelCapabilities.FromModel(model) }, StringComparer.Ordinal);
+                    profile.Remove("Models");
+                    profile["ModelOverrides"] = JsonSerializer.SerializeToNode(overrides, Options);
+                }
+                root["SchemaVersion"] = 2;
+            }
+            settings = root.Deserialize<Settings>(Options) ?? throw new JsonException();
+        }
+        catch (Exception error) when (error is JsonException or InvalidOperationException or ArgumentException or NullReferenceException)
+        { throw new InvalidDataException("Повреждён providers.json. Исправьте файл; настройки не были сброшены."); }
+        if (settings.SchemaVersion != 2) throw new InvalidDataException("Неподдерживаемая версия providers.json.");
         Validate(settings.Providers);
-        return settings.Providers;
+        return settings.Providers.Select(profile => profile with { Discovery = LoadDiscovery(profile) }).ToImmutableArray();
     }
 
     public async Task SaveAsync(ImmutableArray<ProviderProfile> profiles, CancellationToken cancellationToken = default)
     {
         Validate(profiles);
-        ValidatePath(FilePath);
-        var directory = Path.GetDirectoryName(FilePath)!;
+        foreach (var profile in profiles)
+            if (profile.Discovery is { } discovery)
+                await WriteAtomicAsync(CachePath(profile), new ModelCache(Fingerprint(profile), discovery), cancellationToken);
+        await WriteAtomicAsync(FilePath, new Settings { Providers = profiles }, cancellationToken);
+    }
+
+    private DiscoveredModels? LoadDiscovery(ProviderProfile profile)
+    {
+        var path = CachePath(profile);
+        ValidatePath(path);
+        if (!File.Exists(path)) return null;
+        using var stream = File.OpenRead(path);
+        if (stream.Length > MaxBytes) throw new InvalidDataException("Кэш моделей превышает 1 MiB.");
+        var cache = JsonSerializer.Deserialize<ModelCache>(stream, Options)
+            ?? throw new InvalidDataException("Повреждён кэш моделей.");
+        if (cache.ConnectionFingerprint != Fingerprint(profile)) return null;
+        if (cache.Discovery is null) throw new InvalidDataException("Повреждён кэш моделей.");
+        (profile with { Discovery = cache.Discovery }).Validate();
+        return cache.Discovery;
+    }
+
+    private sealed record ModelCache(string ConnectionFingerprint, DiscoveredModels Discovery);
+
+    private static string Fingerprint(ProviderProfile profile) => Convert.ToHexString(SHA256.HashData(
+        JsonSerializer.SerializeToUtf8Bytes(new { profile.Kind, BaseUrl = profile.BaseUrl.TrimEnd('/'), profile.ApiKey })));
+
+    private string CachePath(ProviderProfile profile) => Path.Combine(Path.GetDirectoryName(FilePath)!,
+        "model-cache", profile.Id, profile.Revision + ".json");
+
+    private static async Task WriteAtomicAsync<T>(string path, T value, CancellationToken cancellationToken)
+    {
+        ValidatePath(path);
+        var directory = Path.GetDirectoryName(path)!;
         if (OperatingSystem.IsWindows()) Directory.CreateDirectory(directory);
         else
         {
             Directory.CreateDirectory(directory, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
             File.SetUnixFileMode(directory, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
         }
-        var bytes = JsonSerializer.SerializeToUtf8Bytes(new Settings { Providers = profiles }, Options);
+        var bytes = JsonSerializer.SerializeToUtf8Bytes(value, Options);
         if (bytes.Length > MaxBytes) throw new InvalidDataException("Настройки провайдеров превышают 1 MiB.");
         var temporary = Path.Combine(directory, $".{Guid.NewGuid():N}.tmp");
         try
@@ -68,8 +116,11 @@ public sealed class ProviderStorage
                 stream.Flush(flushToDisk: true);
             }
             cancellationToken.ThrowIfCancellationRequested();
-            ValidatePath(FilePath);
-            File.Move(temporary, FilePath, overwrite: true);
+            ValidatePath(path);
+            if (!OperatingSystem.IsWindows() && File.Exists(path))
+                File.SetUnixFileMode(temporary, File.GetUnixFileMode(path));
+            cancellationToken.ThrowIfCancellationRequested();
+            File.Move(temporary, path, overwrite: true);
         }
         finally { if (File.Exists(temporary)) File.Delete(temporary); }
     }
@@ -91,7 +142,7 @@ public sealed class ProviderStorage
 
     private sealed class Settings
     {
-        [JsonRequired] public int SchemaVersion { get; init; } = 1;
+        [JsonRequired] public int SchemaVersion { get; init; } = 2;
         [JsonRequired] public ImmutableArray<ProviderProfile> Providers { get; init; } = [];
     }
 }

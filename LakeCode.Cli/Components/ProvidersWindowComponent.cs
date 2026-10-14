@@ -1,211 +1,385 @@
 using System.Collections.Immutable;
-using System.Globalization;
 using LakeCode.Cli.State;
-using LakeCode.Core.Agent;
 using LakeCode.Core.Providers;
 using SharpConsoleUI;
-using SharpConsoleUI.Builders;
 using SharpConsoleUI.Controls;
 using SharpConsoleUI.Layout;
 using Markup = Spectre.Console.Markup;
+using static LakeCode.Cli.Components.ProviderWindowControls;
 
 namespace LakeCode.Cli.Components;
 
-/// <summary>Edits user-owned connection profiles; never adds credentials to the chat draft.</summary>
+/// <summary>Connection drafts, model discovery and explicit overrides. Credentials never enter the chat.</summary>
 internal sealed class ProvidersWindowComponent(ProviderRegistry providers, ModelStore models, CancellationToken shutdown)
 {
-    private static readonly Color Surface = new(30, 36, 39);
-
     public void Show(ConsoleWindowSystem system)
     {
-        var list = Choices(8);
-        list.AddItem(new ListItem("[cyan]Добавить подключение…[/]"));
-        foreach (var profile in providers.Profiles)
-            list.AddItem(new ListItem(Markup.Escape($"{profile.Name} · {profile.Kind}")) { Tag = profile.Id });
-        var hint = Label("[grey70]Enter — изменить · Esc — закрыть\nКлючи хранятся в ~/.lakecode/providers.json без шифрования, с приватными правами на Linux.[/]");
-        var window = Base(system, "Провайдеры", 76, Math.Min(18, list.Items.Count + 7))
-            .AddControl(list).AddControl(hint).Build();
-        list.ItemActivated += (_, _) =>
-        {
-            var profile = list.SelectedItem?.Tag is string id ? providers.Get(id) : null;
-            system.CloseWindow(window);
-            Edit(system, profile);
-        };
-        system.AddWindow(window);
-        window.FocusControl(list);
-    }
-
-    private void Edit(ConsoleWindowSystem system, ProviderProfile? original)
-    {
-        var name = Field("Название: ", original?.Name ?? "");
-        var url = Field("Base URL: ", original?.BaseUrl ?? "");
-        var key = Field("API key: ", "");
-        key.MaskCharacter = '*';
-        key.MaxHistoryEntries = 0;
-        key.Placeholder = original is null ? "Введите ключ" : "Пустое поле — сохранить прежний ключ";
-        var protocol = Choices(3);
-        protocol.AddItem(new ListItem("OpenAI · Responses") { Tag = (ProviderKind.OpenAI, OpenAIApiMode.Responses) });
-        protocol.AddItem(new ListItem("OpenAI · Chat Completions") { Tag = (ProviderKind.OpenAI, OpenAIApiMode.ChatCompletions) });
-        protocol.AddItem(new ListItem("Anthropic · Messages") { Tag = (ProviderKind.Anthropic, OpenAIApiMode.Responses) });
-        protocol.SelectedIndex = original?.Kind == ProviderKind.Anthropic ? 2 : original?.ApiMode == OpenAIApiMode.ChatCompletions ? 1 : 0;
-        var modelText = Field("", "");
-        modelText.Multiline = true;
-        modelText.Input = original is null ? "" : FormatModels(original.Models);
-        modelText.EnterBehavior = EnterBehavior.InsertNewline;
-        modelText.MinRows = 4;
-        modelText.MaxRows = 6;
-        modelText.MaxLength = 32000;
-        modelText.Placeholder = "Добавьте модели: одна строка на модель, формат указан выше";
+        var list = Choices(12);
+        list.VerticalAlignment = VerticalAlignment.Fill;
+        var add = Button("Добавить");
+        var edit = Button("Изменить");
+        var delete = Button("Удалить");
+        var close = Button("Закрыть");
         var status = Label("");
-        var save = Button("Сохранить");
-        var delete = Button("Удалить подключение");
-        delete.Visible = original is not null;
-        var busy = false;
-        var form = new ScrollablePanelControl
-        {
-            HorizontalAlignment = HorizontalAlignment.Stretch, VerticalAlignment = VerticalAlignment.Fill,
-            BorderStyle = BorderStyle.None, ShowScrollbar = true, AutoScroll = true
-        };
-        form.AddControl(name);
-        form.AddControl(Label("[grey70]Протокол (↑↓):[/]"));
-        form.AddControl(protocol);
-        form.AddControl(url);
-        form.AddControl(Label("[grey70]OpenAI: URL с /v1; Anthropic: корень URL (SDK добавляет /v1/messages).\nHTTP не шифрует ключ и сообщения — используйте только для доверенного локального сервера.[/]"));
-        form.AddControl(key);
-        form.AddControl(Label("[cyan]Модели[/]\n[grey70]id | имя | context | max input | max output | image: yes/no | reasoning через запятую\nOpenAI: none,low,medium,high,xhigh,max · Anthropic: none,budget:N (1024 ≤ N < max output).\nЛимиты задавайте по документации модели; они не определяются автоматически.[/]"));
-        form.AddControl(modelText);
-        var window = Base(system, original is null ? "Новое подключение" : "Настройки подключения", 96, 30)
-            .AddControl(form).AddControl(status).AddControl(save).AddControl(delete)
-            .AddControl(Label("[grey70]Tab — следующее поле · Ctrl+S — сохранить · Esc — отменить.\nИзменения применяются к новым отправкам; принятые сообщения сохраняют своё подключение.[/]"))
+        var window = Base(system, "Провайдеры", 84, 22)
+            .AddControl(list).AddControl(Buttons(add, edit, delete)).AddControl(status)
+            .AddControl(Buttons(close)).AddControl(Label("[grey70]↑ ↓ — выбор · Enter — изменить · Esc — закрыть[/]"))
             .Build();
-        window.OnClosing += (_, _) => { key.Input = ""; key.ClearHistory(); };
-        window.PreviewKeyPressed += (_, e) =>
-        {
-            if (e.KeyInfo.Key == ConsoleKey.Escape && busy) e.Handled = true;
-            if (e.KeyInfo.Key == ConsoleKey.S && e.KeyInfo.Modifiers == ConsoleModifiers.Control)
-            { e.Handled = true; _ = SaveAsync(); }
-        };
-        save.Click += (_, _) => _ = SaveAsync();
+        add.Click += (_, _) => Edit(system, null, Refresh);
+        edit.Click += (_, _) => EditSelected();
+        list.ItemActivated += (_, _) => EditSelected();
         delete.Click += (_, _) =>
         {
-            if (!busy && original is not null) ConfirmDelete(system, window, original, status);
+            if (Selected() is { } profile) ConfirmDelete(system, profile, Refresh);
         };
+        close.Click += (_, _) => system.CloseWindow(window);
+        window.PreviewKeyPressed += (_, e) =>
+        { if (e.KeyInfo.Key == ConsoleKey.Escape) { e.Handled = true; system.CloseWindow(window); } };
+        list.SelectedIndexChanged += (_, _) => edit.IsEnabled = delete.IsEnabled = Selected() is not null;
+        Refresh();
+        system.AddWindow(window);
+        window.FocusControl(list);
+
+        ProviderProfile? Selected() => list.SelectedItem?.Tag is string id
+            ? providers.Profiles.FirstOrDefault(item => item.Id == id) : null;
+        void EditSelected() { if (Selected() is { } profile) Edit(system, profile, Refresh); }
+        void Refresh()
+        {
+            var selected = list.SelectedItem?.Tag as string;
+            list.ClearItems();
+            foreach (var profile in providers.Profiles.OrderBy(item => item.Name, StringComparer.Ordinal))
+            {
+                var protocol = profile.Kind == ProviderKind.Anthropic ? "Anthropic · Messages" : $"OpenAI · {profile.ApiMode}";
+                var entries = profile.ModelEntries;
+                list.AddItem(new ListItem(Markup.Escape($"{profile.Name} · {protocol} · готово {profile.Models.Length}, всего {entries.Length}")) { Tag = profile.Id });
+                if (profile.Id == selected) list.SelectedIndex = list.Items.Count - 1;
+            }
+            if (list.Items.Count == 0) list.AddItem(new ListItem("Нет подключений. Нажмите «Добавить»."));
+            edit.IsEnabled = delete.IsEnabled = Selected() is not null;
+            status.Text = "[grey70]Подключения и ключи — ~/.lakecode/providers.json. Ключи хранятся без шифрования.[/]";
+        }
+    }
+
+    private void Edit(ConsoleWindowSystem system, ProviderProfile? original, Action changed)
+    {
+        var id = original?.Id ?? Guid.NewGuid().ToString("D");
+        var name = Field("Название: ", original?.Name ?? "");
+        var protocol = Dropdown("Протокол: ", "OpenAI · Responses", "OpenAI · Chat Completions", "Anthropic · Messages");
+        protocol.SelectedIndex = original?.Kind == ProviderKind.Anthropic ? 2 : original?.ApiMode == OpenAIApiMode.ChatCompletions ? 1 : 0;
+        var url = Field("Base URL: ", original?.BaseUrl ?? "");
+        var urlHint = Label("");
+        var key = Field("API key: ");
+        key.MaskCharacter = '*';
+        key.MaxHistoryEntries = 0;
+        key.Placeholder = original is null ? "Введите ключ" : "Пустое поле — сохранить текущий ключ";
+        var connectionForm = Form();
+        connectionForm.AddControl(name);
+        connectionForm.AddControl(protocol);
+        connectionForm.AddControl(url);
+        connectionForm.AddControl(urlHint);
+        connectionForm.AddControl(key);
+        connectionForm.AddControl(Label("[grey70]Ключ хранится локально без шифрования. HTTP не шифрует ключ и сообщения.[/]"));
+        protocol.SelectedIndexChanged += (_, _) => UpdateUrlHint();
+        UpdateUrlHint();
+
+        var discovery = original?.Discovery;
+        ProviderProfile? discoveryConnection = original;
+        var drafts = (original?.ModelOverrides ?? ImmutableDictionary<string, ModelOverride>.Empty)
+            .ToDictionary(item => item.Key, item => ProviderModelEditor.Draft.FromRule(item.Value), StringComparer.Ordinal);
+        var modelList = Choices(5);
+        var modelEditor = new ProviderModelEditor();
+        var selectedLabel = Label("");
+        var discoveryStatus = Label("");
+        var refresh = Button("Обновить список");
+        var manualId = Field("Ручной API ID: ");
+        var addManual = Button("Добавить ID");
+        var removeManual = Button("Удалить ручной ID");
+        var reset = Button("Сбросить override");
+        var modelsForm = Form();
+        modelsForm.AddControl(Buttons(refresh));
+        modelsForm.AddControl(discoveryStatus);
+        modelsForm.AddControl(modelList);
+        modelsForm.AddControl(manualId);
+        modelsForm.AddControl(Buttons(addManual, removeManual, reset));
+        modelsForm.AddControl(selectedLabel);
+        modelsForm.AddControl(modelEditor.Control);
+        var tabs = new TabControl
+        {
+            HorizontalAlignment = HorizontalAlignment.Stretch, VerticalAlignment = VerticalAlignment.Fill,
+            BackgroundColor = Surface, ForegroundColor = Color.White, Outline = false,
+            HeaderStyle = TabHeaderStyle.Separator, ActiveFocusedBackgroundColor = Highlight,
+            ActiveUnfocusedBackgroundColor = Highlight, ActiveFocusedForegroundColor = Color.White,
+            ActiveUnfocusedForegroundColor = Color.White
+        };
+        tabs.AddTab("Подключение", connectionForm, false);
+        tabs.AddTab("Модели", modelsForm, false);
+        var status = Label("");
+        var save = Button("Сохранить");
+        var cancel = Button("Отмена");
+        var busy = false;
+        var saving = false;
+        var closed = false;
+        var rebuilding = false;
+        string? currentId = null;
+        var lifetime = CancellationTokenSource.CreateLinkedTokenSource(shutdown);
+        var window = Base(system, original is null ? "Новый провайдер" : "Настройки провайдера", 94, 32)
+            .AddControl(tabs).AddControl(status).AddControl(Buttons(cancel, save))
+            .AddControl(Label("[grey70]Tab — поля · ← → — вкладки · Esc — отмена. Изменения применяются после сохранения.[/]"))
+            .Build();
+        window.OnClosing += (_, _) =>
+        {
+            closed = true;
+            lifetime.Cancel();
+            lifetime.Dispose();
+            key.Input = "";
+            key.ClearHistory();
+        };
+        window.PreviewKeyPressed += (_, e) =>
+        {
+            if (e.KeyInfo.Key != ConsoleKey.Escape) return;
+            if (protocol.IsDropdownOpen || modelEditor.DropdownOpen) return;
+            e.Handled = true;
+            if (!saving) system.CloseWindow(window);
+        };
+        cancel.Click += (_, _) => { if (!saving) system.CloseWindow(window); };
+        save.Click += (_, _) => _ = SaveAsync();
+        refresh.Click += (_, _) => _ = DiscoverAsync();
+        modelList.SelectedIndexChanged += (_, _) =>
+        {
+            if (rebuilding) return;
+            Capture();
+            LoadSelected();
+        };
+        addManual.Click += (_, _) =>
+        {
+            var apiId = manualId.Input.Trim();
+            if (!ProviderProfile.ValidModelId(apiId)) { Error("Введите корректный API ID модели."); return; }
+            Capture();
+            var draft = drafts.GetValueOrDefault(apiId) ?? ProviderModelEditor.Draft.FromRule(null);
+            drafts[apiId] = draft with { Manual = true };
+            manualId.Input = "";
+            RefreshModels(apiId);
+        };
+        removeManual.Click += (_, _) =>
+        {
+            if (currentId is null) return;
+            Capture();
+            drafts.Remove(currentId);
+            RefreshModels();
+        };
+        reset.Click += (_, _) =>
+        {
+            if (currentId is null) return;
+            Capture();
+            var manual = drafts[currentId].Manual;
+            drafts[currentId] = ProviderModelEditor.Draft.FromRule(null) with { Manual = manual };
+            modelEditor.Load(currentId, drafts[currentId]);
+        };
+        tabs.TabChanged += (_, _) => { Capture(); RefreshModels(); };
+        RefreshModels();
         system.AddWindow(window);
         window.FocusControl(name);
+
+        void UpdateUrlHint() => urlHint.Text = protocol.SelectedIndex == 2
+            ? "[grey70]Корень URL без /v1: SDK добавляет /v1/messages, discovery — /v1/models.[/]"
+            : "[grey70]Базовый URL OpenAI API (обычно с /v1). Discovery использует /models.[/]";
+
+        ProviderProfile Connection() => new()
+        {
+            Id = id, Name = name.Input.Trim(), Kind = protocol.SelectedIndex == 2 ? ProviderKind.Anthropic : ProviderKind.OpenAI,
+            ApiMode = protocol.SelectedIndex == 1 ? OpenAIApiMode.ChatCompletions : OpenAIApiMode.Responses,
+            BaseUrl = url.Input.Trim().TrimEnd('/'), ApiKey = key.Input.Length == 0 ? original?.ApiKey ?? "" : key.Input
+        };
+        bool SameConnection(ProviderProfile profile) => discoveryConnection is not null && profile.Kind == discoveryConnection.Kind &&
+            profile.BaseUrl.TrimEnd('/') == discoveryConnection.BaseUrl.TrimEnd('/') && profile.ApiKey == discoveryConnection.ApiKey;
+        void Capture()
+        {
+            if (currentId is null) return;
+            drafts[currentId] = modelEditor.Capture();
+            var row = modelList.Items.FirstOrDefault(item => item.Tag as string == currentId);
+            if (row is not null) row.Text = ModelCaption(currentId);
+        }
+        string ModelCaption(string apiId)
+        {
+            string text;
+            try
+            {
+                var rule = drafts.GetValueOrDefault(apiId)?.ToRule();
+                var connection = Connection();
+                var entry = ModelResolver.Resolve(connection with
+                {
+                    Discovery = SameConnection(connection) ? discovery : null,
+                    ModelOverrides = rule is null ? ImmutableDictionary<string, ModelOverride>.Empty
+                        : ImmutableDictionary<string, ModelOverride>.Empty.Add(apiId, rule)
+                }, apiId);
+                text = entry.Error is not null ? "Нужно настроить" : !entry.Available ? "Нет в discovery" : entry.Source;
+                if (rule?.Manual == true) text += " · вручную";
+            }
+            catch (InvalidDataException) { text = "Нужно настроить"; }
+            return Markup.Escape($"{apiId} · {text}");
+        }
+        void LoadSelected()
+        {
+            currentId = modelList.SelectedItem?.Tag as string;
+            modelEditor.Control.Visible = currentId is not null;
+            removeManual.IsEnabled = currentId is not null && discovery?.Ids.Contains(currentId, StringComparer.Ordinal) != true;
+            reset.IsEnabled = currentId is not null;
+            selectedLabel.Text = currentId is null ? "" : Markup.Escape("API ID: " + currentId);
+            if (currentId is null) return;
+            if (!drafts.ContainsKey(currentId)) drafts[currentId] = ProviderModelEditor.Draft.FromRule(null);
+            modelEditor.Load(currentId, drafts[currentId]);
+        }
+        void RefreshModels(string? select = null)
+        {
+            rebuilding = true;
+            var selected = select ?? currentId;
+            currentId = null;
+            modelList.ClearItems();
+            foreach (var apiId in (discovery?.Ids ?? []).Concat(drafts.Keys).Distinct(StringComparer.Ordinal).OrderBy(value => value, StringComparer.Ordinal))
+            {
+                modelList.AddItem(new ListItem(ModelCaption(apiId)) { Tag = apiId });
+                if (apiId == selected) modelList.SelectedIndex = modelList.Items.Count - 1;
+            }
+            if (modelList.Items.Count > 0 && modelList.SelectedIndex < 0) modelList.SelectedIndex = 0;
+            if (modelList.Items.Count == 0) modelList.AddItem(new ListItem("Обновите список или добавьте API ID вручную."));
+            discoveryStatus.Text = discovery is null ? "[grey70]Список ещё не получен. Известные ID сопоставляются с каталогом автоматически.[/]"
+                : Markup.Escape($"Получено {discovery.Ids.Length} моделей · {discovery.UpdatedAt.ToLocalTime():g}. При смене подключения обновите список.");
+            rebuilding = false;
+            LoadSelected();
+        }
+        void Busy(bool value, bool writing = false)
+        {
+            busy = value;
+            saving = value && writing;
+            tabs.IsEnabled = save.IsEnabled = !value;
+            cancel.IsEnabled = !saving;
+        }
+        void Error(string message) => status.Text = $"[yellow]{Markup.Escape(message)}[/]";
+
+        async Task DiscoverAsync()
+        {
+            if (busy) return;
+            Capture();
+            ProviderProfile connection;
+            try { connection = Connection(); connection.Validate(); }
+            catch (Exception error) { tabs.ActiveTabIndex = 0; Error(error.Message); return; }
+            Busy(true);
+            status.Text = "[grey70]Получение моделей…[/]";
+            try
+            {
+                var result = await ProviderModelDiscovery.DiscoverAsync(connection, lifetime.Token).ConfigureAwait(false);
+                system.EnqueueOnUIThread(() =>
+                {
+                    if (closed) return;
+                    discovery = result;
+                    discoveryConnection = connection;
+                    Busy(false);
+                    status.Text = "[grey70]Список получен. Настройте неизвестные модели и сохраните провайдера.[/]";
+                    RefreshModels();
+                });
+            }
+            catch (Exception error)
+            {
+                system.EnqueueOnUIThread(() =>
+                {
+                    if (closed) return;
+                    Busy(false);
+                    Error(error is InvalidDataException ? error.Message : "Не удалось получить модели. Предыдущий список и черновики сохранены.");
+                });
+            }
+        }
 
         async Task SaveAsync()
         {
             if (busy) return;
-            ProviderProfile profile;
+            Capture();
+            ProviderProfile connection;
             try
             {
-                var choice = ((ProviderKind, OpenAIApiMode))protocol.SelectedItem!.Tag!;
-                profile = new ProviderProfile
-                {
-                    Id = original?.Id ?? Guid.NewGuid().ToString("D"), Name = name.Input.Trim(),
-                    Kind = choice.Item1, ApiMode = choice.Item2, BaseUrl = url.Input.Trim().TrimEnd('/'),
-                    ApiKey = string.IsNullOrEmpty(key.Input) ? original?.ApiKey ?? "" : key.Input,
-                    Models = ParseModels(modelText.Input)
-                };
-                profile.Validate();
-                if (string.IsNullOrWhiteSpace(profile.ApiKey)) throw new InvalidDataException("Введите API-ключ.");
+                connection = Connection();
+                connection.Validate();
+                if (string.IsNullOrWhiteSpace(connection.ApiKey)) throw new InvalidDataException("Введите API-ключ.");
             }
-            catch (Exception error) { status.Text = $"[yellow]{Markup.Escape(error.Message)}[/]"; return; }
-            busy = true;
-            status.Text = "[cyan]Сохранение…[/]";
+            catch (Exception error) { tabs.ActiveTabIndex = 0; Error(error.Message); return; }
+            var rules = ImmutableDictionary.CreateBuilder<string, ModelOverride>(StringComparer.Ordinal);
+            foreach (var (apiId, draft) in drafts)
+            {
+                try
+                {
+                    if (draft.ToRule() is not { } rule) continue;
+                    var entry = ModelResolver.Resolve(connection with { ModelOverrides = ImmutableDictionary<string, ModelOverride>.Empty.Add(apiId, rule) }, apiId);
+                    if (entry.Error is not null) throw new InvalidDataException(entry.Error);
+                    rules[apiId] = rule;
+                }
+                catch (Exception error)
+                {
+                    tabs.ActiveTabIndex = 1;
+                    RefreshModels(apiId);
+                    Error($"{apiId}: {error.Message}");
+                    return;
+                }
+            }
+            var profile = connection with { ModelOverrides = rules.ToImmutable(), Discovery = SameConnection(connection) ? discovery : null };
+            Busy(true, writing: true);
+            status.Text = "[grey70]Сохранение…[/]";
             try
             {
-                await providers.SaveAsync(profile, shutdown).ConfigureAwait(false);
+                await Task.Run(() => providers.SaveAsync(profile, lifetime.Token), lifetime.Token).ConfigureAwait(false);
                 system.EnqueueOnUIThread(() =>
                 {
+                    if (closed) return;
                     models.Refresh();
-                    key.Input = "";
-                    key.ClearHistory();
+                    changed();
                     system.CloseWindow(window);
                 });
             }
             catch (Exception)
             {
-                // Storage exceptions may contain user data; do not expose credential-bearing details.
-                system.EnqueueOnUIThread(() => { busy = false; status.Text = "[yellow]Не удалось сохранить настройки. Проверьте доступ к ~/.lakecode/providers.json; поля сохранены.[/]"; });
+                system.EnqueueOnUIThread(() =>
+                {
+                    if (closed) return;
+                    Busy(false);
+                    Error("Не удалось сохранить провайдера. Проверьте доступ к ~/.lakecode/providers.json и model-cache; черновики сохранены.");
+                });
             }
         }
     }
 
-    private void ConfirmDelete(ConsoleWindowSystem system, Window editor, ProviderProfile profile, MarkupControl status)
+    private void ConfirmDelete(ConsoleWindowSystem system, ProviderProfile profile, Action changed)
     {
-        var choices = Choices(2);
-        choices.AddItem(new ListItem("Отмена"));
-        choices.AddItem(new ListItem("Удалить подключение"));
-        choices.SelectedIndex = 0;
+        var cancel = Button("Отмена");
+        var delete = Button("Удалить");
+        var status = Label("");
         var busy = false;
-        var window = Base(system, "Удаление подключения", 68, 10)
-            .AddControl(Label($"{Markup.Escape(profile.Name)}\n[grey70]История диалогов останется. После перезапуска ожидающие\nсообщения этого подключения не смогут выполняться.[/]"))
-            .AddControl(choices).Build();
-        choices.ItemActivated += async (_, _) =>
+        var window = Base(system, "Удаление провайдера", 74, 12)
+            .AddControl(Label(Markup.Escape(profile.Name)))
+            .AddControl(Label("История останется. Назначения моделей и восстановленная очередь этого провайдера станут недоступны."))
+            .AddControl(status).AddControl(Buttons(cancel, delete)).Build();
+        cancel.Click += (_, _) => { if (!busy) system.CloseWindow(window); };
+        window.PreviewKeyPressed += (_, e) =>
+        { if (e.KeyInfo.Key == ConsoleKey.Escape) { e.Handled = true; if (!busy) system.CloseWindow(window); } };
+        delete.Click += async (_, _) =>
         {
             if (busy) return;
-            if (choices.SelectedIndex == 0) { system.CloseWindow(window); return; }
             busy = true;
+            cancel.IsEnabled = delete.IsEnabled = false;
             try
             {
-                await providers.DeleteAsync(profile.Id, shutdown).ConfigureAwait(false);
-                system.EnqueueOnUIThread(() => { models.Refresh(); system.CloseWindow(window); system.CloseWindow(editor); });
+                await Task.Run(() => providers.DeleteAsync(profile.Id, shutdown), shutdown).ConfigureAwait(false);
+                system.EnqueueOnUIThread(() => { models.Refresh(); changed(); system.CloseWindow(window); });
             }
             catch (Exception)
             {
-                system.EnqueueOnUIThread(() => { system.CloseWindow(window); status.Text = "[yellow]Не удалось удалить подключение. Проверьте доступ к файлу настроек.[/]"; });
+                system.EnqueueOnUIThread(() =>
+                {
+                    busy = false;
+                    cancel.IsEnabled = delete.IsEnabled = true;
+                    status.Text = "[yellow]Не удалось удалить провайдера. Проверьте доступ к файлу настроек.[/]";
+                });
             }
         };
-        window.PreviewKeyPressed += (_, e) => { if (busy && e.KeyInfo.Key == ConsoleKey.Escape) e.Handled = true; };
         system.AddWindow(window);
-        window.FocusControl(choices);
+        window.FocusControl(cancel);
     }
 
-    private static string FormatModels(ImmutableArray<ModelInfo> values) => string.Join("\n", values.Select(model =>
-        $"{model.Id} | {model.Name} | {model.ContextWindowTokens} | {model.MaxInputTokens} | {model.MaxOutputTokens} | {(model.InputModalities.Contains(ModelModality.Image) ? "yes" : "no")} | {string.Join(',', model.ReasoningEfforts)}"));
-
-    private static ImmutableArray<ModelInfo> ParseModels(string input)
-    {
-        var values = ImmutableArray.CreateBuilder<ModelInfo>();
-        foreach (var line in input.Split('\n').Where(line => !string.IsNullOrWhiteSpace(line)))
-        {
-            var parts = line.Split('|').Select(part => part.Trim()).ToArray();
-            if (parts.Length != 7 || !int.TryParse(parts[2], NumberStyles.None, CultureInfo.InvariantCulture, out var context) ||
-                !int.TryParse(parts[3], NumberStyles.None, CultureInfo.InvariantCulture, out var maxInput) ||
-                !int.TryParse(parts[4], NumberStyles.None, CultureInfo.InvariantCulture, out var maxOutput) || parts[5] is not ("yes" or "no"))
-                throw new InvalidDataException($"Некорректная строка модели №{values.Count + 1}. Нужны 7 полей; лимиты — целые числа, image — yes/no.");
-            values.Add(new ModelInfo(parts[0], parts[1], context, maxInput, maxOutput,
-                parts[5] == "yes" ? [ModelModality.Text, ModelModality.Image] : [ModelModality.Text], [ModelModality.Text],
-                parts[6].Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries).ToImmutableArray()));
-        }
-        return values.ToImmutable();
-    }
-
-    private static PromptControl Field(string prompt, string value) => new()
-    {
-        Prompt = prompt, Input = value, UnfocusOnEnter = false, HorizontalAlignment = HorizontalAlignment.Stretch,
-        InputBackgroundColor = Color.Transparent, InputFocusedBackgroundColor = Color.Transparent,
-        Margin = new Margin(2, 0, 2, 0), MaxLength = 8192
-    };
-    private static MarkupControl Label(string text) => new(new List<string> { text }) { Wrap = true, Margin = new Margin(2, 0, 2, 0) };
-    private static ButtonControl Button(string text) => new()
-    {
-        Text = text, BackgroundColor = Color.Transparent, FocusedBackgroundColor = new Color(35, 65, 75), Margin = new Margin(2, 0, 2, 0)
-    };
-    private static ListControl Choices(int count) => new()
-    {
-        IsSelectable = true, MaxVisibleItems = count, BackgroundColor = Surface, ForegroundColor = Color.White,
-        HighlightBackgroundColor = new Color(35, 65, 75), HighlightForegroundColor = Color.White,
-        HorizontalAlignment = HorizontalAlignment.Stretch, Margin = new Margin(2, 0, 2, 0)
-    };
-    private static WindowBuilder Base(ConsoleWindowSystem system, string title, int width, int height) => new WindowBuilder(system)
-        .WithTitle(title).WithSize(width, height).Centered().AsModal().HideTitleButtons()
-        .Minimizable(false).Maximizable(false).Resizable(false).Movable(false)
-        .WithBorderStyle(BorderStyle.Rounded).WithBorderColor(new Color(80, 130, 145))
-        .WithBackgroundColor(Surface).WithForegroundColor(Color.White)
-        .OnKeyPressed((sender, e) =>
-        {
-            if (!e.Handled && e.KeyInfo.Key == ConsoleKey.Escape) { system.CloseWindow((Window)sender!); e.Handled = true; }
-        });
 }
