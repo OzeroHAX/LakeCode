@@ -133,10 +133,11 @@ internal sealed class ChatController : IDisposable
         var model = _models.SelectedModel;
         var effort = _models.SelectedReasoningEffort;
         var providerId = _models.SelectedProviderId;
+        var subagentModel = _models.SubagentModel;
         var paths = _input.GetFilePaths();
         if (paths.Length == 0)
         {
-            if (_conversation.Execute(new SubmitMessage(text, images, model.Id, effort, mode, providerId)))
+            if (_conversation.Execute(new SubmitMessage(text, images, model.Id, effort, mode, providerId, SubagentModel: subagentModel)))
                 _input.ClearDraft();
             return;
         }
@@ -167,7 +168,7 @@ internal sealed class ChatController : IDisposable
                         _input.ShowError("Черновик изменился во время чтения файлов. Отправьте его повторно.");
                         return;
                     }
-                    if (_conversation.Execute(new SubmitMessage(text, images, model.Id, effort, mode, providerId, files, mentions)))
+                    if (_conversation.Execute(new SubmitMessage(text, images, model.Id, effort, mode, providerId, files, mentions, subagentModel)))
                         _input.ClearDraft();
                 }
                 finally { operation.Dispose(); }

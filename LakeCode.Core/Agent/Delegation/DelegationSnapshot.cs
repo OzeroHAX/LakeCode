@@ -16,6 +16,11 @@ public sealed record DelegationSnapshot(string TaskId, string Task, DelegationSt
 {
     public int RequestNumber { get; init; } = 1;
     public string? Context { get; init; }
+    public string? ProviderId { get; init; }
+    public string? ProviderName { get; init; }
+    public string? ModelId { get; init; }
+    public string? ModelName { get; init; }
+    public string? ReasoningEffort { get; init; }
 }
 
 internal sealed record ParentQuestion(string Id, string Question, string Reason);

@@ -141,6 +141,7 @@ internal sealed class SessionStorage
             throw new InvalidDataException("Некорректная очередь сообщений.");
         foreach (var item in snapshot.PendingMessages)
         {
+            item.SubagentModel?.Validate();
             if (item.Files is null) throw new InvalidDataException("Некорректные файловые вложения очереди.");
             FileAttachments.Validate(item.Files);
             if (item.Mentions is null) throw new InvalidDataException("Некорректные инлайн-вложения очереди.");

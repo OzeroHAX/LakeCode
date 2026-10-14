@@ -2,6 +2,7 @@
 using LakeCode.Cli;
 using LakeCode.Core.Agent;
 using LakeCode.Core.Providers;
+using LakeCode.Core.Settings;
 using LakeCode.Core.Conversations;
 using LakeCode.Cli.State;
 using SharpConsoleUI;
@@ -12,15 +13,22 @@ using SharpConsoleUI.Configuration;
 var workspaceRoot = ConversationService.ResolveWorkspaceRoot();
 var shutdown = new CancellationTokenSource();
 ProviderRegistry providers;
-try { providers = new ProviderRegistry(); }
+AgentSettingsStorage settingsStorage;
+AgentSettings settings;
+try
+{
+    providers = new ProviderRegistry();
+    settingsStorage = new AgentSettingsStorage();
+    settings = await settingsStorage.LoadAsync(shutdown.Token);
+}
 catch (Exception error)
 {
-    Console.Error.WriteLine($"Не удалось загрузить настройки провайдеров: {error.Message}");
+    Console.Error.WriteLine($"Не удалось загрузить настройки: {error.Message}");
     return;
 }
-var modelStore = new ModelStore(providers);
+var modelStore = new ModelStore(providers, settings);
 var statisticsStore = new StatisticsStore(modelStore.SelectedModel);
-var modelsWindow = new ModelsWindowComponent(modelStore);
+var modelsWindow = new ModelsWindowComponent(modelStore, settingsStorage, shutdown.Token);
 var providersWindow = new ProvidersWindowComponent(providers, modelStore, shutdown.Token);
 var sessionsWindow = new SessionsWindowComponent();
 var conversation = new ConversationService(workspaceRoot, providers, modelStore.SelectedModel, shutdown.Token);

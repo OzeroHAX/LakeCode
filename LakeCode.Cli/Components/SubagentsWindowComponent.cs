@@ -254,6 +254,8 @@ internal sealed class SubagentsWindowComponent(ConsoleWindowSystem windowSystem)
     {
         if (_status is null || _selectedId is null || !_tasks.TryGetValue(_selectedId, out var view)) return;
         _status.Text = MarkupParser.Escape($"{DelegationMessageComponent.StatusLabel(view.Snapshot.Status)}" +
+            (view.Snapshot.ModelId is not null
+                ? $" · {view.Snapshot.ProviderName ?? view.Snapshot.ProviderId} · {view.Snapshot.ModelName ?? view.Snapshot.ModelId} · {view.Snapshot.ReasoningEffort}" : "") +
             (view.Truncated ? " · Начало ленты скрыто: удалены старые блоки." : "") +
             (view.Historical ? " · Внутренняя лента сохранённой сессии недоступна." : ""));
     }

@@ -2,6 +2,7 @@ using System.Collections.Frozen;
 using System.ComponentModel;
 using LakeCode.Core.Agent;
 using LakeCode.Core.Providers;
+using LakeCode.Core.Settings;
 
 namespace LakeCode.Cli.State;
 
@@ -16,12 +17,21 @@ internal sealed class ModelStore : INotifyPropertyChanged
         .ToFrozenDictionary(model => model.Id, StringComparer.Ordinal) ?? FrozenDictionary<string, ModelInfo>.Empty;
     public ModelInfo SelectedModel { get; private set; }
     public string SelectedReasoningEffort { get; private set; }
+    public AgentSettings Settings { get; private set; }
+    public ModelSelection? SubagentModel => Settings.SubagentModel;
+
+    public void ApplySettings(AgentSettings settings)
+    {
+        Settings = settings;
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(SubagentModel)));
+    }
 
     public event PropertyChangedEventHandler? PropertyChanged;
 
-    public ModelStore(ProviderRegistry providers)
+    public ModelStore(ProviderRegistry providers, AgentSettings settings)
     {
         Providers = providers;
+        Settings = settings;
         var profile = providers.Profiles.FirstOrDefault(profile => !profile.Models.IsEmpty);
         SelectedProviderId = profile?.Id ?? "";
         SelectedModel = profile?.Models.FirstOrDefault(model => model.Id == "gpt-6.1-sol")

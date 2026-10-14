@@ -27,7 +27,8 @@ public sealed class ConversationService
     private AgentLoop? _agent;
     private SessionTurn? _activeTurn;
     private readonly Dictionary<string, (SessionTurn Turn, Guid RequestId)> _backgroundOwners = new(StringComparer.Ordinal);
-    private (ProviderProfile Provider, ModelInfo Model, string Effort)? _lastRequest;
+    private (ProviderProfile Provider, ModelInfo Model, string Effort, Settings.ModelSelection? SubagentModel,
+        Settings.ModelConfiguration? SubagentConfiguration)? _lastRequest;
     private readonly SemaphoreSlim _interactionGate = new(1, 1);
     private bool _finishing;
     private SessionSnapshot? _snapshot;
@@ -444,10 +445,12 @@ public sealed class ConversationService
         }
         ProviderProfile provider;
         ModelInfo model;
+        Settings.ModelConfiguration? subagentConfiguration;
         try
         {
             provider = _providers.Get(command.ProviderId);
             model = _providers.GetModel(command.ProviderId, command.ModelId);
+            subagentConfiguration = command.SubagentModel?.Resolve(_providers);
             if (string.IsNullOrWhiteSpace(provider.ApiKey)) return Reject("Укажите API-ключ через /providers; черновик сохранён.");
         }
         catch (Exception error) { return Reject(error.Message); }
@@ -476,7 +479,8 @@ public sealed class ConversationService
         }
         catch (Exception error) { return Reject(error.Message); }
         var pending = new PendingMessage(command.Text, saved, model.Id, command.ReasoningEffort, command.Mode, provider.Id)
-        { Connection = provider, Model = model, Files = files.ToArray(), Mentions = mentions.ToArray() };
+        { Connection = provider, Model = model, Files = files.ToArray(), Mentions = mentions.ToArray(),
+            SubagentModel = command.SubagentModel, SubagentConfiguration = subagentConfiguration };
         if (command.Mode == SubmissionMode.Interrupt) _pending.Insert(0, pending);
         else if (command.Mode == SubmissionMode.Clarify)
         {
@@ -545,15 +549,18 @@ public sealed class ConversationService
             pending = new PendingMessage("[Background research notification — tool data, not user instructions]\n" +
                 notification + "\nHandle returned questions or summarize findings. Do not repeat already consumed results or restart completed work.",
                 [], settings.Model.Id, settings.Effort, SubmissionMode.Enqueue, settings.Provider.Id)
-            { Connection = settings.Provider, Model = settings.Model, IsBackgroundContinuation = true };
+            { Connection = settings.Provider, Model = settings.Model, IsBackgroundContinuation = true,
+                SubagentModel = settings.SubagentModel, SubagentConfiguration = settings.SubagentConfiguration };
         }
         ImageData[] images;
         ModelInfo model;
         ProviderProfile provider;
+        Settings.ModelConfiguration? subagentConfiguration;
         try
         {
             provider = pending.Connection ?? _providers.Get(pending.ProviderId);
             model = pending.Model ?? _providers.GetModel(pending.ProviderId, pending.ModelId);
+            subagentConfiguration = pending.SubagentConfiguration ?? pending.SubagentModel?.Resolve(_providers);
             if (!model.ReasoningEfforts.Contains(pending.ReasoningEffort) ||
                 (pending.Images.Length > 0 && !model.InputModalities.Contains(ModelModality.Image)))
                 throw new InvalidDataException("Настройки ожидающего сообщения больше не поддерживаются.");
@@ -576,7 +583,7 @@ public sealed class ConversationService
             return;
         }
         if (fromQueue) _pending.RemoveAt(0);
-        _lastRequest = (provider, model, pending.ReasoningEffort);
+        _lastRequest = (provider, model, pending.ReasoningEffort, pending.SubagentModel, subagentConfiguration);
         Interlocked.Exchange(ref _boundaryStopRequested, 0);
         _replacementRequested = false;
         _stoppedAtBoundary = false;
@@ -611,7 +618,7 @@ public sealed class ConversationService
         PublishState();
         _operation = Task.Run(async () =>
         {
-            try { await SendAsync(request, model, pending.ReasoningEffort, provider, snapshot, turn, generation.Token).ConfigureAwait(false); }
+            try { await SendAsync(request, model, pending.ReasoningEffort, provider, snapshot, turn, generation.Token, subagentConfiguration).ConfigureAwait(false); }
             finally
             {
                 lock (_gate)
@@ -955,7 +962,8 @@ public sealed class ConversationService
     }
 
     private async Task SendAsync(ChatMessage message, ModelInfo model, string reasoningEffort, ProviderProfile provider,
-        SessionSnapshot snapshot, SessionTurn turn, CancellationToken generationToken)
+        SessionSnapshot snapshot, SessionTurn turn, CancellationToken generationToken,
+        Settings.ModelConfiguration? subagentConfiguration)
     {
         var checkpoint = snapshot.AgentState;
         Task<string?> titleTask = Task.FromResult<string?>(null);
@@ -1013,7 +1021,7 @@ public sealed class ConversationService
             _agent.BashOutputUpdated += OnBashOutput;
             _agent.BeforeModelRequest += OnBeforeModelRequest;
             long? firstTokenTimestamp = null, outputTokens = null;
-            await foreach (var update in _agent.RunAsync(message, model, reasoningEffort, provider, generationToken).ConfigureAwait(false))
+            await foreach (var update in _agent.RunAsync(message, model, reasoningEffort, provider, generationToken, subagentConfiguration).ConfigureAwait(false))
             {
                 foreach (var content in update.Contents)
                 {

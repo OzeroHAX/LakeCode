@@ -80,7 +80,9 @@ internal sealed class DelegationCoordinator(
                 var settings = _request ?? throw new InvalidOperationException("No active parent request.");
                 var questions = new AskParentTool();
                 var child = createChild(questions, invocation.CallId);
-                job = new Job(new DelegationSnapshot(Guid.NewGuid().ToString("N"), task, DelegationStatus.Running) { Context = context },
+                job = new Job(new DelegationSnapshot(Guid.NewGuid().ToString("N"), task, DelegationStatus.Running)
+                    { Context = context, ProviderId = settings.Provider.Id, ProviderName = settings.Provider.Name,
+                        ModelId = settings.Model.Id, ModelName = settings.Model.Name, ReasoningEffort = settings.Effort },
                     invocation, child, questions, settings.Model, settings.Effort, settings.Provider,
                     CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token));
                 child.BeforeModelRequest += () =>

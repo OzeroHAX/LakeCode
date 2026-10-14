@@ -468,7 +468,8 @@ public sealed class AgentLoop : IDisposable, IAsyncDisposable
         ModelInfo model,
         string reasoningEffort,
         ProviderProfile provider,
-        [EnumeratorCancellation] CancellationToken cancellationToken = default)
+        [EnumeratorCancellation] CancellationToken cancellationToken = default,
+        Settings.ModelConfiguration? subagentConfiguration = null)
     {
         try
         {
@@ -498,7 +499,8 @@ public sealed class AgentLoop : IDisposable, IAsyncDisposable
             _historyOrigin = origin;
             var chatOptions = ProviderClientFactory.Options(provider, model, reasoningEffort, _cacheSessionId);
             if (_parentQuestions is not null) chatOptions.AllowMultipleToolCalls = false;
-            _delegation?.Configure(model, reasoningEffort, provider);
+            _delegation?.Configure(subagentConfiguration?.Model ?? model,
+                subagentConfiguration?.ReasoningEffort ?? reasoningEffort, subagentConfiguration?.Provider ?? provider);
             var options = new ChatClientAgentRunOptions(chatOptions);
 
             (string ItemId, int SummaryIndex)? previousSummary = null;

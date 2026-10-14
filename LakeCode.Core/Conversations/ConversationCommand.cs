@@ -9,7 +9,8 @@ namespace LakeCode.Core.Conversations;
 public abstract record ConversationCommand;
 public sealed record SubmitMessage(string Text, ImmutableArray<ImageData> Images, string ModelId,
     string ReasoningEffort, SubmissionMode Mode, string ProviderId = ProviderProfile.LegacyId,
-    ImmutableArray<FileAttachment> Files = default, ImmutableArray<FileMention> Mentions = default) : ConversationCommand;
+    ImmutableArray<FileAttachment> Files = default, ImmutableArray<FileMention> Mentions = default,
+    Settings.ModelSelection? SubagentModel = null) : ConversationCommand;
 public sealed record StopGeneration : ConversationCommand;
 public sealed record AskSideQuestion(string Question) : ConversationCommand;
 public sealed record CancelSideQuestion(Guid RequestId) : ConversationCommand;
