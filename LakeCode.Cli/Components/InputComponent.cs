@@ -32,8 +32,10 @@ internal sealed class InputComponent : PanelControl
         _windowSystem = windowSystem;
         _shutdown = shutdown;
         BorderStyle = BorderStyle.Rounded;
-        BorderColor = new Color(80, 130, 145);
-        Padding = new Padding(1, 0, 1, 0);
+        BorderColor = new Color(85, 85, 85);
+        BackgroundColor = new Color(26, 26, 26);
+        ForegroundColor = new Color(185, 185, 185);
+        Padding = new Padding(1, 1, 1, 1);
         Margin = new Margin(1, 1, 1, 0);
         HorizontalAlignment = HorizontalAlignment.Stretch;
 
@@ -49,8 +51,8 @@ internal sealed class InputComponent : PanelControl
             MinRows = 3,
             MaxRows = 6,
             HorizontalAlignment = HorizontalAlignment.Stretch,
-            InputBackgroundColor = Color.Transparent,
-            InputFocusedBackgroundColor = Color.Transparent
+            InputBackgroundColor = new Color(26, 26, 26),
+            InputFocusedBackgroundColor = new Color(26, 26, 26)
         };
 
         _attachmentsPanel.BorderStyle = BorderStyle.None;

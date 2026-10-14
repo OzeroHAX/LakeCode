@@ -15,6 +15,7 @@ internal sealed class AssistantMessageComponent : CollapsiblePanel
     private bool _hasResponse;
     private ToolCallGroupComponent? _activeToolGroup;
     private readonly Dictionary<string, ToolCallGroupComponent> _toolCalls = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, EvalToolCallComponent> _evalCalls = new(StringComparer.Ordinal);
 
     public AssistantMessageComponent(ConsoleWindowSystem windowSystem)
     {
@@ -58,6 +59,11 @@ internal sealed class AssistantMessageComponent : CollapsiblePanel
 
     public void UpdateToolCall(ToolCallUpdate update)
     {
+        if (_evalCalls.TryGetValue(update.CallId, out var existingEval))
+        {
+            existingEval.Update(update);
+            return;
+        }
         if (_toolCalls.TryGetValue(update.CallId, out var existing))
         {
             existing.Update(update);
@@ -69,6 +75,14 @@ internal sealed class AssistantMessageComponent : CollapsiblePanel
             _body.Visible = false;
         _body = null;
         _response.Clear();
+        if (update.Name == "eval")
+        {
+            _activeToolGroup = null;
+            var call = new EvalToolCallComponent(update);
+            _evalCalls.Add(update.CallId, call);
+            AddControl(call);
+            return;
+        }
         if (update.Name is "bash" or "write_file" or "edit_file")
         {
             _activeToolGroup = null;
@@ -101,6 +115,8 @@ internal sealed class AssistantMessageComponent : CollapsiblePanel
         _thinking.Complete();
         foreach (var group in _toolCalls.Values.Distinct())
             group.FinishPending();
+        foreach (var call in _evalCalls.Values)
+            call.FinishPending();
     }
 
     private static MarkupControl CreateBody() => new(new List<string>())
@@ -113,7 +129,7 @@ internal sealed class AssistantMessageComponent : CollapsiblePanel
     public void Complete()
     {
         FinishThinking();
-        if (!_hasResponse && _toolCalls.Count == 0)
+        if (!_hasResponse && _toolCalls.Count == 0 && _evalCalls.Count == 0)
         {
             _body!.Visible = true;
             _body.Text = "[grey]Модель завершила ответ без текста.[/]";

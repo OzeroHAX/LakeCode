@@ -47,7 +47,8 @@ internal sealed class ToolCallGroupComponent : CollapsiblePanel
         {
             var panel = new CollapsiblePanel
             {
-                HeaderStyle = CollapsibleHeaderStyle.Borderless,
+                HeaderStyle = _alwaysVisible ? CollapsibleHeaderStyle.Rounded : CollapsibleHeaderStyle.Borderless,
+                Padding = _alwaysVisible ? new Padding(1, 1, 1, 1) : new Padding(0, 0, 0, 0),
                 HorizontalAlignment = HorizontalAlignment.Stretch,
                 Collapsible = !_alwaysVisible,
                 IsExpanded = _alwaysVisible,
@@ -58,12 +59,28 @@ internal sealed class ToolCallGroupComponent : CollapsiblePanel
             {
                 Wrap = true,
                 HorizontalAlignment = HorizontalAlignment.Stretch,
-                Margin = _alwaysVisible ? new Margin(0, 0, 0, 0) : new Margin(2, 1, 2, 1)
+                Margin = _alwaysVisible ? new Margin(0, 0, 0, 0) : new Margin(2, 1, 2, 1),
+                EnableSelection = _alwaysVisible
             };
             if (_alwaysVisible)
             {
+                panel.ExpandedIcon = "";
+                panel.BorderColor = new Color(85, 85, 85);
                 panel.BackgroundColor = BackgroundColor;
+                panel.ForegroundColor = new Color(185, 185, 185);
+                panel.FocusedForegroundColor = new Color(185, 185, 185);
+                panel.FocusedBackgroundColor = new Color(45, 45, 45);
                 body.BackgroundColor = BackgroundColor;
+            }
+            if (!_alwaysVisible)
+            {
+                body.Border = BorderStyle.Rounded;
+                body.BorderColor = new Color(85, 85, 85);
+                body.Padding = new Padding(1, 1, 1, 1);
+                body.Margin = new Margin(2, 1, 0, 1);
+                body.BackgroundColor = new Color(26, 26, 26);
+                body.ForegroundColor = new Color(185, 185, 185);
+                body.EnableSelection = true;
             }
             panel.AddControl(body);
             var summary = _alwaysVisible ? $"{ToolName}: {Summarize(update)}" : Summarize(update);
@@ -78,6 +95,8 @@ internal sealed class ToolCallGroupComponent : CollapsiblePanel
             entry.Body.Visible = true;
         }
         entry.Panel.Title = MarkupParser.Escape($"{entry.Summary} · {StatusLabel(update.Status)}");
+        if (!_alwaysVisible)
+            entry.Body.Header = MarkupParser.Escape($"{ToolName}: {entry.Summary} · {StatusLabel(update.Status)}");
         entry.Body.Text = update.Status == ToolCallStatus.Completed && update.FileChange is { } change
             ? FileDiffPreview.Format(change)
             : MarkupParser.Escape(FormatBody(entry.Arguments, update.Result ?? "Running…"));
@@ -112,6 +131,8 @@ internal sealed class ToolCallGroupComponent : CollapsiblePanel
             entry.Permission?.Cancel();
             entry.Status = ToolCallStatus.Cancelled;
             entry.Panel.Title = MarkupParser.Escape($"{entry.Summary} · interrupted");
+            if (!_alwaysVisible)
+                entry.Body.Header = MarkupParser.Escape($"{ToolName}: {entry.Summary} · interrupted");
             entry.Body.Text = MarkupParser.Escape(FormatBody(entry.Arguments, "The request ended before a result was received."));
         }
         UpdateTitle();

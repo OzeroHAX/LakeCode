@@ -15,7 +15,9 @@ internal sealed class HeaderComponent : PanelControl
     public HeaderComponent(string title, string subtitle)
     {
         BorderStyle = BorderStyle.Rounded;
-        BorderColor = new (80, 130, 145);
+        BorderColor = new (85, 85, 85);
+        BackgroundColor = new SharpConsoleUI.Color(26, 26, 26);
+        ForegroundColor = new SharpConsoleUI.Color(185, 185, 185);
         Padding = new(1, 0, 1, 0);
         Margin = new (1, 0, 1, 0);
         HorizontalAlignment = HorizontalAlignment.Stretch;
@@ -25,6 +27,8 @@ internal sealed class HeaderComponent : PanelControl
         _label = new MarkupControl(new List<string>())
         {
             Height = 1,
+            BackgroundColor = BackgroundColor,
+            ForegroundColor = ForegroundColor,
             HorizontalAlignment = HorizontalAlignment.Stretch
         };
         AddControl(_label);

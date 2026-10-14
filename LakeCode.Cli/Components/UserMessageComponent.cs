@@ -10,7 +10,8 @@ internal sealed class UserMessageComponent : ScrollablePanelControl
         IReadOnlyList<LakeCode.Core.Attachments.FileAttachment>? files = null,
         IReadOnlyList<LakeCode.Core.Attachments.FileMention>? mentions = null)
     {
-        BorderStyle = BorderStyle.None;
+        BorderStyle = BorderStyle.Rounded;
+        BorderColor = new Color(85, 85, 85);
         ShowScrollbar = false;
         HorizontalAlignment = HorizontalAlignment.Stretch;
         Padding = new Padding(2, 1, 2, 1);

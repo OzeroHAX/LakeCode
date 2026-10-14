@@ -54,6 +54,7 @@ var window = new WindowBuilder(windowSystem)
     .AddControl(askHost)
     .AddControl(footer)
     .Build();
+window.BackgroundColor = new Color(26, 26, 26);
 input.Attach(window);
 stopGeneration.Attach(window);
 window.OnClosing += (_, _) => shutdown.Cancel();
