@@ -40,9 +40,15 @@ internal sealed class RewindWindowComponent(ConsoleWindowSystem windowSystem, Ch
         _list = list;
         foreach (var point in snapshot.Points)
         {
-            var text = string.Join(" ", point.Text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
+            var label = point.ToolCall is { } call ? $"{call.Name} · {ToolCallGroupComponent.Summarize(call)}" : point.Text;
+            var text = string.Join(" ", label.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
             if (text.Length > 65) text = text[..65] + "…";
-            var role = point.Kind == RewindTargetKind.User ? "Вы" : "Агент";
+            var role = point.Kind switch
+            {
+                RewindTargetKind.User => "Вы",
+                RewindTargetKind.Tool => "Тул",
+                _ => "Агент"
+            };
             var unavailable = point.UnavailableReason is null ? "" : " [grey70]· недоступно[/]";
             list.AddItem(new ListItem($"{role,-5} {MarkupParser.Escape(text)}{unavailable}") { Tag = point });
         }
@@ -69,13 +75,20 @@ internal sealed class RewindWindowComponent(ConsoleWindowSystem windowSystem, Ch
         void UpdateSelection()
         {
             if (list.SelectedItem?.Tag is not RewindPoint point) return;
-            preview.Text = MarkupParser.Escape(point.Text);
+            var previewText = point.ToolCall is { } call
+                ? $"{call.Name} · {ToolCallGroupComponent.Summarize(call)}\n{ToolCallGroupComponent.FormatArguments(call)}\n\nСтатус: {call.Status}\n{call.Result ?? "Результат не получен."}"
+                : point.Text;
+            preview.Text = MarkupParser.Escape(previewText);
             previewHost.ScrollToTop();
             _status!.Text = point.UnavailableReason is { } reason
                 ? $"[yellow]{MarkupParser.Escape(reason)}[/]"
-                : point.Kind == RewindTargetKind.User
-                    ? "[cyan]Запрос и вложения вернутся в редактор. Это сообщение и продолжение будут удалены.[/]"
-                    : "[cyan]Этот ответ останется в истории. Продолжение будет удалено; редактор будет пустым.[/]";
+                : point.Kind switch
+                {
+                    RewindTargetKind.User => "[cyan]Запрос и вложения вернутся в редактор. Это сообщение и продолжение будут удалены.[/]",
+                    RewindTargetKind.Tool when point.IncludesToolBatch => "[cyan]Все вызовы и результаты этого пакета останутся. Продолжение будет удалено; редактор будет пустым.[/]",
+                    RewindTargetKind.Tool => "[cyan]Этот вызов и результат останутся в контексте. Продолжение будет удалено; редактор будет пустым.[/]",
+                    _ => "[cyan]Этот ответ останется в истории. Продолжение будет удалено; редактор будет пустым.[/]"
+                };
         }
         list.SelectedIndexChanged += (_, _) => UpdateSelection();
         UpdateSelection();

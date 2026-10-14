@@ -175,7 +175,7 @@ internal sealed class ToolCallGroupComponent : CollapsiblePanel
         _ => throw new ArgumentOutOfRangeException(nameof(status))
     };
 
-    private static string FormatArguments(ToolCallUpdate update)
+    internal static string FormatArguments(ToolCallUpdate update)
     {
         using var arguments = JsonDocument.Parse(update.Arguments);
         return string.Join("\n", arguments.RootElement.EnumerateObject()
@@ -188,7 +188,7 @@ internal sealed class ToolCallGroupComponent : CollapsiblePanel
     private static string FormatBody(string arguments, string result) =>
         string.IsNullOrEmpty(arguments) ? result : $"{arguments}\n\n{result}";
 
-    private static string Summarize(ToolCallUpdate update)
+    internal static string Summarize(ToolCallUpdate update)
     {
         using var arguments = JsonDocument.Parse(update.Arguments);
         var root = arguments.RootElement;

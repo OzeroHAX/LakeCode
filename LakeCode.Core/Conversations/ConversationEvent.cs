@@ -10,8 +10,10 @@ namespace LakeCode.Core.Conversations;
 public abstract record ConversationEvent;
 public sealed record ConversationReplaced(ConversationView Conversation) : ConversationEvent;
 public sealed record RewindFinished(string? Error) : ConversationEvent;
+public sealed record SessionsListing(string? ActiveId) : ConversationEvent;
 public sealed record SessionsListed(ImmutableArray<SessionSummary> Sessions, ImmutableArray<string> Errors,
     string? ActiveId) : ConversationEvent;
+public sealed record SessionsListFailed(string Error) : ConversationEvent;
 public sealed record TurnStarted(string Text, ImmutableArray<ImageData> Images,
     ImmutableArray<FileAttachment> Files, ImmutableArray<FileMention> Mentions) : ConversationEvent;
 public sealed record ReasoningDelta(string Text) : ConversationEvent;

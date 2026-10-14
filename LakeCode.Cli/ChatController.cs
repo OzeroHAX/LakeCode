@@ -78,7 +78,7 @@ internal sealed class ChatController : IDisposable
         (_state.SessionId, _state.TurnCount, _conversation.GetRewindPoints());
 
     public bool RewindTo(RewindPoint point, string? sessionId, int turnCount) =>
-        CanRewind && _conversation.Execute(new RewindToTurn(point.Index, point.Kind, sessionId, turnCount));
+        CanRewind && _conversation.Execute(new RewindToTurn(point.Index, point.Kind, sessionId, turnCount, point.ToolCall?.CallId));
     public Task FinishAsync() => _conversation.FinishAsync();
 
     public void ShowOrAskSideQuestion(string question)
@@ -229,9 +229,15 @@ internal sealed class ChatController : IDisposable
                 case RewindFinished rewindFinished:
                     RewindCompleted?.Invoke(rewindFinished.Error);
                     break;
-                case SessionsListed listed:
-                    _sessionsWindow.Show(_windowSystem, listed.Sessions, listed.Errors, listed.ActiveId,
+                case SessionsListing listing:
+                    _sessionsWindow.ShowLoading(_windowSystem, listing.ActiveId,
                         id => { if (!_input.IsImporting) _conversation.Execute(new OpenSession(id)); });
+                    break;
+                case SessionsListed listed:
+                    _sessionsWindow.Update(listed.Sessions, listed.Errors, listed.ActiveId);
+                    break;
+                case SessionsListFailed failed:
+                    _sessionsWindow.ShowError(failed.Error);
                     break;
                 case TurnStarted started:
                     _content.AddUserMessage(started.Text, started.Images.Select(ImageInput.CreatePreview).ToArray(), started.Files, started.Mentions);

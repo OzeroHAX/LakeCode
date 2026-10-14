@@ -509,6 +509,7 @@ public sealed class ConversationService
         if (_busy) return false;
         _busy = true;
         PublishState();
+        Emit(new SessionsListing(_snapshot?.Id));
         _operation = Task.Run(async () =>
         {
             try
@@ -524,7 +525,15 @@ public sealed class ConversationService
                 lock (_gate) Emit(new SessionsListed(result.Sessions.ToImmutableArray(), result.Errors.ToImmutableArray(), _snapshot?.Id));
             }
             catch (OperationCanceledException) when (_shutdown.IsCancellationRequested) { }
-            catch (Exception error) { lock (_gate) Emit(new ConversationError($"Не удалось загрузить список сессий: {error.Message}")); }
+            catch (Exception error)
+            {
+                lock (_gate)
+                {
+                    var message = $"Не удалось загрузить список сессий: {error.Message}";
+                    Emit(new SessionsListFailed(message));
+                    Emit(new ConversationError(message));
+                }
+            }
             finally { lock (_gate) { _busy = false; PublishState(); } }
         });
         return true;
@@ -587,7 +596,8 @@ public sealed class ConversationService
     {
         lock (_gate)
         {
-            if (_snapshot is null) return [];
+            if (_snapshot is null || !_state.CanRewind) return [];
+            var toolBoundaries = _agent?.GetToolRewindBoundaries() ?? new Dictionary<string, int>();
             var points = ImmutableArray.CreateBuilder<RewindPoint>();
             for (var index = 0; index < _snapshot.Turns.Count; index++)
             {
@@ -597,6 +607,18 @@ public sealed class ConversationService
                     userText = $"Сообщение без текста · изображения: {turn.Images.Count} · файлы: {turn.Files.Count}";
                 points.Add(new RewindPoint(index, RewindTargetKind.User, userText,
                     turn.HistoryStart is null ? "Нет сохранённой границы контекста для этого запроса." : null));
+                foreach (var group in turn.Events.Where(item => item.ToolCall is not null)
+                             .GroupBy(item => item.ToolCall!.CallId))
+                {
+                    var call = group.Last().ToolCall!;
+                    var available = toolBoundaries.TryGetValue(call.CallId, out var toolBoundary) &&
+                        turn.HistoryStart is { } start && toolBoundary > start &&
+                        (index + 1 == _snapshot.Turns.Count ||
+                         _snapshot.Turns[index + 1].HistoryStart is { } end && toolBoundary <= end);
+                    var batch = available && toolBoundaries.Count(pair => pair.Value == toolBoundary) > 1;
+                    points.Add(new RewindPoint(index, RewindTargetKind.Tool, call.Name,
+                        available ? null : "Нет сохранённой границы после результатов этого вызова.", call, batch));
+                }
                 var answer = string.Join("\n", turn.Events.Where(item => item.Kind == "text").Select(item => item.Text));
                 if (string.IsNullOrWhiteSpace(answer)) answer = "Ответ без текста";
                 if (turn.Status != "completed") answer += "\n" + (turn.Error ?? "Ответ прерван.");
@@ -616,10 +638,29 @@ public sealed class ConversationService
         if ((command.SessionId is not null && command.SessionId != _snapshot.Id) ||
             (command.ExpectedTurnCount is { } count && count != _snapshot.Turns.Count)) return false;
         var keepAnswer = command.Kind == RewindTargetKind.Assistant;
+        var keepTool = command.Kind == RewindTargetKind.Tool;
         if (keepAnswer && index == _snapshot.Turns.Count - 1) return false;
-        var boundaryIndex = keepAnswer ? index + 1 : index;
-        if (_snapshot.Turns[boundaryIndex].HistoryStart is not { } boundary)
-            return Reject("Для этой точки нет сохранённой границы контекста.");
+        var boundaryIndex = keepAnswer || keepTool ? index + 1 : index;
+        int boundary;
+        var toolEventEnd = -1;
+        if (keepTool)
+        {
+            var point = GetRewindPoints().FirstOrDefault(point => point.Index == index &&
+                point.Kind == RewindTargetKind.Tool && point.ToolCall?.CallId == command.CallId);
+            if (point is null || point.UnavailableReason is not null || command.CallId is null || _agent is null)
+                return Reject("Для этого вызова нет сохранённой границы контекста.");
+            var boundaries = _agent.GetToolRewindBoundaries();
+            boundary = boundaries[command.CallId];
+            toolEventEnd = _snapshot.Turns[index].Events.FindLastIndex(item => item.ToolCall is { } call &&
+                boundaries.TryGetValue(call.CallId, out var end) && end <= boundary);
+            if (toolEventEnd < 0) return Reject("Не найдены события выбранного вызова.");
+        }
+        else
+        {
+            if (_snapshot.Turns[boundaryIndex].HistoryStart is not { } savedBoundary)
+                return Reject("Для этой точки нет сохранённой границы контекста.");
+            boundary = savedBoundary;
+        }
         var current = CopySnapshot(_snapshot);
         ClearSide();
         _busy = true;
@@ -640,10 +681,19 @@ public sealed class ConversationService
                 next.AgentState = await _agent.SerializeSessionAsync().ConfigureAwait(false);
                 await _agent.RestoreSessionAsync(original.Value).ConfigureAwait(false);
                 next.Turns.RemoveRange(boundaryIndex, next.Turns.Count - boundaryIndex);
-                next.DraftText = keepAnswer ? null : selected.Text;
-                next.DraftImages = keepAnswer ? [] : selected.Images;
-                next.DraftFiles = keepAnswer ? [] : selected.Files;
-                next.DraftMentions = keepAnswer ? [] : selected.Mentions;
+                if (keepTool)
+                {
+                    selected.Events.RemoveRange(toolEventEnd + 1, selected.Events.Count - toolEventEnd - 1);
+                    selected.Status = "interrupted";
+                    selected.Error = "История откатана после вызова инструмента. Ожидается уточнение пользователя; выполненные действия не отменены.";
+                    selected.Usage = null;
+                    selected.TokensPerSecond = null;
+                }
+                var keepRequest = keepAnswer || keepTool;
+                next.DraftText = keepRequest ? null : selected.Text;
+                next.DraftImages = keepRequest ? [] : selected.Images;
+                next.DraftFiles = keepRequest ? [] : selected.Files;
+                next.DraftMentions = keepRequest ? [] : selected.Mentions;
                 next.ProviderId = selected.ProviderId;
                 next.ModelId = selected.ModelId;
                 next.ModelMetadata = selected.ModelMetadata;

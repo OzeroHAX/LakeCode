@@ -28,7 +28,9 @@ internal sealed class SessionStorage
         ValidateDirectory(_root);
         var directory = Path.Combine(_root, ValidateId(snapshot.Id));
         ValidateDirectory(directory);
-        await WriteAtomicAsync(Path.Combine(directory, "session.json"), snapshot, cancellationToken);
+        var path = Path.Combine(directory, "session.json");
+        await WriteAtomicAsync(path, snapshot, cancellationToken);
+        await SaveSummaryAsync(directory, snapshot, new FileInfo(path), cancellationToken);
     }
 
     public async Task SavePendingAsync(string id, PendingMessage[] messages)
@@ -161,16 +163,76 @@ internal sealed class SessionStorage
             if (!Guid.TryParseExact(id, "D", out _)) continue;
             try
             {
-                var snapshot = await LoadAsync(id, cancellationToken);
-                if (snapshot.WorkspaceRoot == workspaceRoot)
-                    sessions.Add(new SessionSummary(id, snapshot.Title, snapshot.UpdatedAt, snapshot.Turns.Count));
+                var summary = await LoadSummaryAsync(directory, id, errors, cancellationToken);
+                if (summary.WorkspaceRoot == workspaceRoot)
+                    sessions.Add(new SessionSummary(id, summary.Title, summary.UpdatedAt, summary.Turns));
             }
-            catch (Exception error) when (error is IOException or UnauthorizedAccessException or JsonException)
+            catch (Exception error) when (error is IOException or InvalidDataException or UnauthorizedAccessException or JsonException)
             {
                 errors.Add($"{id}: {error.Message}");
             }
         }
         return (sessions.OrderByDescending(session => session.UpdatedAt).ToList(), errors);
+    }
+
+    // Recoverable metadata only: the full snapshot remains the source of truth.
+    private sealed record StoredSummary(int Version, int SchemaVersion, string FrameworkVersion,
+        string Id, string WorkspaceRoot, string Title, DateTimeOffset UpdatedAt, int Turns,
+        long SnapshotLength, long SnapshotWriteTicks);
+
+    private static Task SaveSummaryAsync(string directory, SessionSnapshot snapshot, FileInfo file,
+        CancellationToken cancellationToken) => WriteAtomicAsync(Path.Combine(directory, "summary.json"),
+        new StoredSummary(1, snapshot.SchemaVersion, snapshot.FrameworkVersion, snapshot.Id,
+            snapshot.WorkspaceRoot, snapshot.Title, snapshot.UpdatedAt, snapshot.Turns.Count,
+            file.Length, file.LastWriteTimeUtc.Ticks), cancellationToken);
+
+    private async Task<StoredSummary> LoadSummaryAsync(string directory, string id, List<string> errors,
+        CancellationToken cancellationToken)
+    {
+        ValidatePath(directory);
+        var snapshotPath = Path.Combine(directory, "session.json");
+        RejectLink(snapshotPath);
+        var file = new FileInfo(snapshotPath);
+        var length = file.Length;
+        var writeTicks = file.LastWriteTimeUtc.Ticks;
+        if (length > MaxSnapshotBytes)
+            throw new InvalidDataException("Сессия превышает лимит хранения 256 MiB.");
+        var summaryPath = Path.Combine(directory, "summary.json");
+        RejectLink(summaryPath);
+        try
+        {
+            await using var stream = new FileStream(summaryPath, FileMode.Open, FileAccess.Read,
+                FileShare.Read, 4096, FileOptions.Asynchronous | FileOptions.SequentialScan);
+            if (stream.Length <= 64 * 1024)
+            {
+                var summary = await JsonSerializer.DeserializeAsync<StoredSummary>(stream, JsonOptions, cancellationToken);
+                if (summary is { Version: 1, SchemaVersion: 1 or 2 or 3, FrameworkVersion: "1.24.0" } &&
+                    summary.Id == id && !string.IsNullOrWhiteSpace(summary.WorkspaceRoot) &&
+                    !string.IsNullOrWhiteSpace(summary.Title) && summary.Turns >= 0 &&
+                    summary.SnapshotLength == length && summary.SnapshotWriteTicks == writeTicks)
+                    return summary;
+            }
+        }
+        catch (Exception error) when (error is IOException or JsonException)
+        {
+            // Missing, stale or damaged metadata is rebuilt once from the existing snapshot.
+        }
+
+        var snapshot = await LoadAsync(id, cancellationToken);
+        file.Refresh();
+        if (file.Length != length || file.LastWriteTimeUtc.Ticks != writeTicks)
+            throw new IOException("Сессия изменилась во время чтения; обновите список.");
+        var rebuilt = new StoredSummary(1, snapshot.SchemaVersion, snapshot.FrameworkVersion, id,
+            snapshot.WorkspaceRoot, snapshot.Title, snapshot.UpdatedAt, snapshot.Turns.Count, length, writeTicks);
+        try
+        {
+            await WriteAtomicAsync(summaryPath, rebuilt, cancellationToken);
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException)
+        {
+            errors.Add($"{id}: не удалось сохранить метаданные списка: {error.Message}");
+        }
+        return rebuilt;
     }
 
     private static string ValidateId(string id) => Guid.TryParseExact(id, "D", out _)

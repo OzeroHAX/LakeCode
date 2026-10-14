@@ -301,6 +301,33 @@ public sealed class AgentLoop : IDisposable
 
     public int HistoryCount => _session is null ? 0 : _history.GetMessages(_session).Count;
 
+    /// <summary>Safe prefixes after complete tool batches. Call only between runs.</summary>
+    public IReadOnlyDictionary<string, int> GetToolRewindBoundaries()
+    {
+        var boundaries = new Dictionary<string, int>(StringComparer.Ordinal);
+        if (_session is null) return boundaries;
+        var messages = _history.GetMessages(_session);
+        var pending = new HashSet<string>(StringComparer.Ordinal);
+        var batch = new List<string>();
+        for (var index = 0; index < messages.Count; index++)
+        {
+            foreach (var content in messages[index].Contents)
+            {
+                if (content is FunctionCallContent call)
+                {
+                    if (boundaries.ContainsKey(call.CallId) || !pending.Add(call.CallId)) return boundaries;
+                    batch.Add(call.CallId);
+                }
+                else if (content is FunctionResultContent result && !pending.Remove(result.CallId))
+                    return boundaries;
+            }
+            if (pending.Count != 0 || batch.Count == 0) continue;
+            foreach (var callId in batch) boundaries.Add(callId, index + 1);
+            batch.Clear();
+        }
+        return boundaries;
+    }
+
     public void Rewind(int messageCount)
     {
         if (_session is null || messageCount < 0 || messageCount > HistoryCount)
