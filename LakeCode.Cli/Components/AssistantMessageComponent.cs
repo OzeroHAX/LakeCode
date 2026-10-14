@@ -18,6 +18,7 @@ internal sealed class AssistantMessageComponent : CollapsiblePanel
     private ToolCallGroupComponent? _activeToolGroup;
     private readonly Dictionary<string, ToolCallGroupComponent> _toolCalls = new(StringComparer.Ordinal);
     private readonly Dictionary<string, EvalToolCallComponent> _evalCalls = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, ToolCallGroupComponent> _delegations = new(StringComparer.Ordinal);
 
     public AssistantMessageComponent(ConsoleWindowSystem windowSystem)
     {
@@ -78,6 +79,13 @@ internal sealed class AssistantMessageComponent : CollapsiblePanel
             return;
         }
 
+        if (update.Delegation is { } research && _delegations.TryGetValue(research.TaskId, out var delegated))
+        {
+            _toolCalls.Add(update.CallId, delegated);
+            delegated.Update(update);
+            return;
+        }
+
         _thinking.Complete();
         if (!_hasResponse && _body is not null)
             _body.Visible = false;
@@ -99,10 +107,11 @@ internal sealed class AssistantMessageComponent : CollapsiblePanel
             AddControl(call);
             return;
         }
-        if (update.Name is "write_file" or "edit_file")
+        if (update.Name is "write_file" or "edit_file" or "delegate")
         {
             _activeToolGroup = null;
             var call = new ToolCallGroupComponent(update.Name, alwaysVisible: true);
+            if (update.Delegation is { } delegation) _delegations.Add(delegation.TaskId, call);
             _toolCalls.Add(update.CallId, call);
             AddControl(call);
             call.Update(update);

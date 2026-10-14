@@ -14,6 +14,7 @@ public sealed record ToolCallUpdate(
 {
     public FileChange? FileChange { get; init; }
     public BashExecution? BashExecution { get; init; }
+    public Delegation.DelegationSnapshot? Delegation { get; init; }
 }
 
 /// <summary>Contents associated with a successful file write; null Before means preview was unavailable.</summary>

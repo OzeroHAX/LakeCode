@@ -11,6 +11,7 @@ internal sealed record PendingMessage(
 {
     public LakeCode.Core.Attachments.FileAttachment[] Files { get; init; } = [];
     public LakeCode.Core.Attachments.FileMention[] Mentions { get; init; } = [];
+    public bool IsBackgroundContinuation { get; init; }
     [JsonIgnore] public ProviderProfile? Connection { get; init; }
     [JsonIgnore] public ModelInfo? Model { get; init; }
 }

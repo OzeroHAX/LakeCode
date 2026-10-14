@@ -32,6 +32,7 @@ internal sealed class SessionSnapshot
 internal sealed class SessionTurn
 {
     public int? HistoryStart { get; set; }
+    public bool IsBackgroundContinuation { get; set; }
     public string Text { get; set; } = "";
     public List<SavedImage> Images { get; set; } = [];
     public List<FileAttachment> Files { get; set; } = [];

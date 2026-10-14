@@ -15,10 +15,11 @@ public sealed record SessionsListed(ImmutableArray<SessionSummary> Sessions, Imm
     string? ActiveId) : ConversationEvent;
 public sealed record SessionsListFailed(string Error) : ConversationEvent;
 public sealed record TurnStarted(string Text, ImmutableArray<ImageData> Images,
-    ImmutableArray<FileAttachment> Files, ImmutableArray<FileMention> Mentions) : ConversationEvent;
+    ImmutableArray<FileAttachment> Files, ImmutableArray<FileMention> Mentions, bool IsBackgroundContinuation = false) : ConversationEvent;
 public sealed record ReasoningDelta(string Text) : ConversationEvent;
 public sealed record TextDelta(string Text) : ConversationEvent;
 public sealed record ToolCallChanged(ToolCallUpdate Call) : ConversationEvent;
+public sealed record BackgroundToolCallChanged(ToolCallUpdate Call) : ConversationEvent;
 public sealed record BashOutputChanged(BashOutputUpdate Update) : ConversationEvent;
 public sealed record TurnFinished(string Status, string? Error) : ConversationEvent;
 public sealed record ConversationError(string Message) : ConversationEvent;

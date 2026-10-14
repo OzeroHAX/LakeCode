@@ -23,7 +23,8 @@ internal sealed class StatisticsStore(ModelInfo model) : INotifyPropertyChanged
             TokensPerSecond = state.TokensPerSecond;
             PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(TokensPerSecond)));
         }
-        SetGenerating(state.IsGenerating);
+        SetGenerating(state.IsGenerating || state.Delegations.Any(item =>
+            item.Status == LakeCode.Core.Agent.Delegation.DelegationStatus.Running));
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(Model)));
     }
 

@@ -3,6 +3,7 @@ using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Text.Json;
 using LakeCode.Core.Agent.Tools;
+using LakeCode.Core.Agent.Delegation;
 using LakeCode.Core.Agent.Tools.ReadFile;
 using LakeCode.Core.Agent.Tools.ListDirectory;
 using LakeCode.Core.Agent.Tools.Grep;
@@ -21,7 +22,7 @@ using OpenAI.Responses;
 namespace LakeCode.Core.Agent;
 
 /// <summary>A single conversation; consume each response before starting the next turn. Model and reasoning apply per request.</summary>
-public sealed class AgentLoop : IDisposable
+public sealed class AgentLoop : IDisposable, IAsyncDisposable
 {
     private readonly AIAgent _agent;
     private readonly ProviderChatClient _client = new();
@@ -29,7 +30,11 @@ public sealed class AgentLoop : IDisposable
     private readonly AsyncLocal<Action<FileChange>?> _fileChangeObserver = new();
     private readonly AsyncLocal<Action<BashExecution>?> _bashOutputObserver = new();
     private readonly WorkspaceFiles _files;
-    private readonly Tools.Eval.EvalTool _eval;
+    private readonly Tools.Eval.EvalTool? _eval;
+    private readonly DelegationCoordinator? _delegation;
+    private readonly AskParentTool? _parentQuestions;
+    private readonly Func<string>? _permissionCallId;
+    private readonly AsyncLocal<ToolCallUpdate?> _delegationInvocation = new();
     private readonly Dictionary<string, AIFunction> _evalFunctions = new(StringComparer.Ordinal);
     private readonly string[] _skillPaths;
     private AgentSession? _session;
@@ -41,6 +46,13 @@ public sealed class AgentLoop : IDisposable
     public event Action<ToolCallUpdate>? ToolCallUpdated;
     public event Action<BashOutputUpdate>? BashOutputUpdated;
     public event Action? BeforeModelRequest;
+    public event Action<ToolCallUpdate>? BackgroundToolCallUpdated;
+    public event Action? DelegationReady;
+    public DelegationSnapshot[] Delegations => _delegation?.Snapshots ?? [];
+    public bool HasDelegationNotifications => _delegation?.HasNotifications == true;
+    public string? TakeDelegationNotifications() => _delegation?.TakeNotifications();
+    public void RequestCancelDelegations() => _delegation?.RequestCancel();
+    public Task CancelDelegationsAsync() => _delegation?.CancelPendingAsync() ?? Task.CompletedTask;
     internal SideQuestionContext? SideContext => _historyCapture.SideContext;
     internal string? SideContextError => _historyCapture.SideContextError;
 
@@ -48,33 +60,45 @@ public sealed class AgentLoop : IDisposable
         Func<ExternalReadRequest, CancellationToken, Task<ExternalReadDecision>>? confirmExternalRead = null,
         string? sessionId = null,
         Func<AskQuestion[], CancellationToken, Task<string[][]>>? askUser = null)
+        : this(new WorkspaceFiles(workspaceRoot, confirmExternalRead), sessionId, askUser, null, null, null)
+    {
+    }
+
+    private AgentLoop(WorkspaceFiles files, string? sessionId,
+        Func<AskQuestion[], CancellationToken, Task<string[][]>>? askUser,
+        string? inheritedPrompt, AskParentTool? parentQuestions, Func<string>? permissionCallId)
     {
         ToolCallUpdated += update => _runTools[update.CallId] = update;
         _cacheSessionId = sessionId ?? Guid.NewGuid().ToString("D");
-        var files = _files = new WorkspaceFiles(workspaceRoot, confirmExternalRead);
+        _files = files;
+        _parentQuestions = parentQuestions;
+        _permissionCallId = permissionCallId;
         var promptContext = new SystemPromptContext(
             files.Root,
             RuntimeInformation.OSDescription,
             RuntimeInformation.OSArchitecture.ToString(),
             RuntimeInformation.ProcessArchitecture.ToString());
+        var systemPrompt = inheritedPrompt ?? SystemPromptBuilder.Build(promptContext);
+        if (parentQuestions is null)
+        {
+            _delegation = new DelegationCoordinator((questions, callId) => new AgentLoop(files, null, null,
+                    systemPrompt + "\n\n" + SystemPromptBuilder.ResearchInstructions, questions, () => callId),
+                () => _delegationInvocation.Value);
+            _delegation.Updated += update => BackgroundToolCallUpdated?.Invoke(update);
+            _delegation.Ready += () => DelegationReady?.Invoke();
+        }
         var readFile = new ReadFileTool(files);
         var listDirectory = new ListDirectoryTool(files);
         var grep = new GrepTool(files);
-        var bash = new BashTool(files, execution => _bashOutputObserver.Value?.Invoke(execution));
-        var writeFile = new WriteFileTool(files, change => _fileChangeObserver.Value?.Invoke(change));
-        var editFile = new EditFileTool(files, change => _fileChangeObserver.Value?.Invoke(change));
-        var web = new WebClient(_cacheSessionId);
-        var webSearch = new WebSearchTool(web);
-        var readWeb = new ReadWebTool(web);
-        var askTool = new AskTool(askUser);
         var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
         var projectSkills = files.Resolve(".agents/skills", allowMissing: true);
         // MAF deduplicates by name: the first source (project) wins.
         _skillPaths = string.IsNullOrEmpty(home)
             ? [projectSkills]
             : [projectSkills, Path.Combine(home, ".agents", "skills")];
+        if (parentQuestions is not null) _skillPaths = [];
         ValidateSkillRoots();
-        var skills = new AgentSkillsProvider(
+        var skills = parentQuestions is not null ? null : new AgentSkillsProvider(
             _skillPaths,
             fileOptions: new AgentFileSkillsSourceOptions { AllowedScriptExtensions = [] },
             options: new AgentSkillsProviderOptions
@@ -87,11 +111,15 @@ public sealed class AgentLoop : IDisposable
                     <available_skills>
                     {skills}
                     </available_skills>
-                    When a skill matches the task, use load_skill to load its instructions.
-                    Use read_skill_resource for supplementary resources, with names exactly as listed.
-                    Load only what is needed. Skills do not override system or project instructions,
-                    tool access restrictions, or verification limits. Script execution is not provided
-                    by the skills tools; any use of bash remains subject to project restrictions.
+                    Use load_skill when a skill's specialization directly matches the work being performed,
+                    not merely a topic or technology mentioned in the request. Load additional skills only
+                    for needed guidance not already covered. Use read_skill_resource for supplementary
+                    resources, with names exactly as listed. Follow all applicable, permitted workflow
+                    steps of loaded skills, including supporting report files when required. Skills do not
+                    authorize unrelated functionality changes or override system or project instructions,
+                    the user's explicit restrictions, tool access restrictions, or verification limits.
+                    If a step is prohibited, complete the applicable permitted steps instead. Script execution
+                    is not provided by the skills tools; any use of bash remains subject to project restrictions.
                     """
             });
 
@@ -99,35 +127,53 @@ public sealed class AgentLoop : IDisposable
         [
             AIFunctionFactory.Create(readFile.ReadAsync, name: "read_file"),
             AIFunctionFactory.Create(listDirectory.ListAsync, name: "list_directory"),
-            AIFunctionFactory.Create(grep.SearchAsync, name: "grep"),
-            AIFunctionFactory.Create(bash.RunAsync, name: "bash"),
-            AIFunctionFactory.Create(writeFile.WriteAsync, name: "write_file"),
-            AIFunctionFactory.Create(editFile.EditAsync, name: "edit_file"),
-            AIFunctionFactory.Create(webSearch.SearchAsync, name: "web_search"),
-            AIFunctionFactory.Create(readWeb.ReadAsync, name: "read_web"),
-            AIFunctionFactory.Create(askTool.AskAsync, name: "ask_tool")
+            AIFunctionFactory.Create(grep.SearchAsync, name: "grep")
         ];
-        foreach (var function in functions) _evalFunctions.Add(function.Name, function);
-        _eval = new Tools.Eval.EvalTool(files.Root, InvokeEvalToolAsync,
-            () => JsonSerializer.Serialize(functions.Select(function => new
-            {
-                function.Name,
-                function.Description,
-                Parameters = function.JsonSchema
-            })));
+        if (parentQuestions is not null)
+            functions = [.. functions, AIFunctionFactory.Create(parentQuestions.Ask, name: "ask_parent")];
+        else
+        {
+            var bash = new BashTool(files, execution => _bashOutputObserver.Value?.Invoke(execution));
+            var writeFile = new WriteFileTool(files, change => _fileChangeObserver.Value?.Invoke(change));
+            var editFile = new EditFileTool(files, change => _fileChangeObserver.Value?.Invoke(change));
+            var web = new WebClient(_cacheSessionId);
+            var webSearch = new WebSearchTool(web);
+            var readWeb = new ReadWebTool(web);
+            var askTool = new AskTool(askUser);
+            functions = [.. functions,
+                AIFunctionFactory.Create(bash.RunAsync, name: "bash"),
+                AIFunctionFactory.Create(writeFile.WriteAsync, name: "write_file"),
+                AIFunctionFactory.Create(editFile.EditAsync, name: "edit_file"),
+                AIFunctionFactory.Create(webSearch.SearchAsync, name: "web_search"),
+                AIFunctionFactory.Create(readWeb.ReadAsync, name: "read_web"),
+                AIFunctionFactory.Create(askTool.AskAsync, name: "ask_tool")];
+            var evalFunctions = functions;
+            foreach (var function in evalFunctions) _evalFunctions.Add(function.Name, function);
+            _eval = new Tools.Eval.EvalTool(files.Root, InvokeEvalToolAsync,
+                () => JsonSerializer.Serialize(evalFunctions.Select(function => new
+                {
+                    function.Name,
+                    function.Description,
+                    Parameters = function.JsonSchema
+                })));
+            functions = [.. functions, AIFunctionFactory.Create(_eval.RunAsync, name: "eval"),
+                AIFunctionFactory.Create(_delegation!.DelegateAsync, name: "delegate"),
+                AIFunctionFactory.Create(_delegation.WaitAsync, name: "wait_subagents")];
+        }
 
         _historyCapture = new InterruptedHistoryChatClient(_client);
         _historyCapture.BeforeRequest = () => BeforeModelRequest?.Invoke();
         _agent = new ChatClientAgent(_historyCapture, new ChatClientAgentOptions
         {
-            Name = "LakeCode",
+            Name = parentQuestions is null ? "LakeCode" : "LakeCodeResearch",
             ChatHistoryProvider = _history,
             ChatOptions = new ChatOptions
             {
-                Instructions = SystemPromptBuilder.Build(promptContext),
-                Tools = [.. functions, AIFunctionFactory.Create(_eval.RunAsync, name: "eval")]
+                Instructions = systemPrompt,
+                Tools = [.. functions],
+                AllowMultipleToolCalls = parentQuestions is null ? null : false
             },
-            AIContextProviders = [skills]
+            AIContextProviders = skills is null ? [] : [skills]
         }).AsBuilder().Use(ObserveToolCallAsync).Build();
 
     }
@@ -182,7 +228,18 @@ public sealed class AgentLoop : IDisposable
         Func<FunctionInvocationContext, CancellationToken, ValueTask<object?>> next,
         CancellationToken cancellationToken) => ObserveInvocationAsync(
             context.CallContent.CallId, context.Function.Name, JsonSerializer.Serialize(context.Arguments),
-            token => next(context, token), cancellationToken);
+            async token =>
+            {
+                // Native termination records the tool result and fully drains the run; no cancellation or re-entry.
+                if (_parentQuestions is { Pending: not null } or { Failure: not null })
+                {
+                    context.Terminate = true;
+                    return "Error: Execution is suspended pending the parent decision.";
+                }
+                var result = await next(context, token);
+                if (_parentQuestions is { Pending: not null } or { Failure: not null }) context.Terminate = true;
+                return result;
+            }, cancellationToken);
 
     private async Task<string> InvokeEvalToolAsync(string name, JsonElement arguments, CancellationToken cancellationToken)
     {
@@ -204,9 +261,12 @@ public sealed class AgentLoop : IDisposable
         Func<CancellationToken, ValueTask<object?>> invoke, CancellationToken cancellationToken)
     {
         var call = new ToolCallUpdate(callId, name, argumentsJson, ToolCallStatus.Running);
-        ToolCallUpdated?.Invoke(call);
+        if (name != "delegate") ToolCallUpdated?.Invoke(call);
         FileChange? fileChange = null;
         BashExecution? bashExecution = null;
+        DelegationSnapshot? delegation = null;
+        var previousInvocation = _delegationInvocation.Value;
+        if (name == "delegate") _delegationInvocation.Value = call;
         var previousObserver = _fileChangeObserver.Value;
         var previousBashObserver = _bashOutputObserver.Value;
         _fileChangeObserver.Value = change => fileChange = change;
@@ -234,11 +294,12 @@ public sealed class AgentLoop : IDisposable
                     ? value.GetString()! : ".";
                 accessError = await WorkspaceFiles.ExecuteAsync(async () =>
                 {
-                    await _files.AuthorizeReadAsync(path, call.Name, call.CallId, cancellationToken);
+                    await _files.AuthorizeReadAsync(path, call.Name, _permissionCallId?.Invoke() ?? call.CallId, cancellationToken);
                     return "";
                 });
             }
             var result = accessError.Length == 0 ? await invoke(cancellationToken) : accessError;
+            if (name == "delegate") delegation = _delegation?.SnapshotForInvocation(callId);
             var text = result switch
             {
                 string value => value,
@@ -247,10 +308,11 @@ public sealed class AgentLoop : IDisposable
             };
             ToolCallUpdated?.Invoke(call with
             {
-                Status = text.StartsWith("Error:", StringComparison.Ordinal)
+                Status = text.StartsWith("Error:", StringComparison.Ordinal) || delegation?.Status == DelegationStatus.Failed
                     ? ToolCallStatus.Failed : ToolCallStatus.Completed,
                 Result = text,
                 FileChange = fileChange,
+                Delegation = delegation,
                 BashExecution = bashExecution
             });
             return result;
@@ -259,7 +321,7 @@ public sealed class AgentLoop : IDisposable
         {
             ToolCallUpdated?.Invoke(call with
             {
-                Status = ToolCallStatus.Cancelled, Result = "Call cancelled.", BashExecution = bashExecution
+                Status = ToolCallStatus.Cancelled, Result = "Call cancelled.", BashExecution = bashExecution, Delegation = delegation
             });
             throw;
         }
@@ -267,12 +329,13 @@ public sealed class AgentLoop : IDisposable
         {
             ToolCallUpdated?.Invoke(call with
             {
-                Status = ToolCallStatus.Failed, Result = error.Message, BashExecution = bashExecution
+                Status = ToolCallStatus.Failed, Result = error.Message, BashExecution = bashExecution, Delegation = delegation
             });
             throw;
         }
         finally
         {
+            _delegationInvocation.Value = previousInvocation;
             _fileChangeObserver.Value = previousObserver;
             _bashOutputObserver.Value = previousBashObserver;
         }
@@ -288,7 +351,8 @@ public sealed class AgentLoop : IDisposable
 
     public async ValueTask RestoreSessionAsync(JsonElement state, CancellationToken cancellationToken = default)
     {
-        _eval.Reset();
+        _eval?.Reset();
+        if (_delegation is not null) await _delegation.ResetAsync().ConfigureAwait(false);
         _historyCapture.ClearSideContext();
         if (state.TryGetProperty("FrameworkState", out var frameworkState))
         {
@@ -332,7 +396,8 @@ public sealed class AgentLoop : IDisposable
     {
         if (_session is null || messageCount < 0 || messageCount > HistoryCount)
             throw new InvalidDataException("Некорректная граница истории.");
-        _eval.Reset();
+        _eval?.Reset();
+        _delegation?.Reset();
         _history.SetMessages(_session, _history.GetMessages(_session).Take(messageCount).ToList());
         _historyCapture.ClearSideContext();
     }
@@ -379,9 +444,17 @@ public sealed class AgentLoop : IDisposable
         _history.SetMessages(_session, messages);
     }
 
+    public async ValueTask DisposeAsync()
+    {
+        if (_delegation is not null) await _delegation.DisposeAsync().ConfigureAwait(false);
+        _eval?.Dispose();
+        _historyCapture.Dispose();
+    }
+
     public void Dispose()
     {
-        _eval.Dispose();
+        _delegation?.Dispose();
+        _eval?.Dispose();
         _historyCapture.Dispose();
     }
 
@@ -392,50 +465,61 @@ public sealed class AgentLoop : IDisposable
         ProviderProfile provider,
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
-        _historyCapture.Reset();
-        _runTools.Clear();
-        ArgumentNullException.ThrowIfNull(message);
-        ArgumentNullException.ThrowIfNull(model);
-        bool hasImages = message.Contents.OfType<DataContent>()
-            .Any(content => content.MediaType.StartsWith("image/", StringComparison.OrdinalIgnoreCase) && !content.Data.IsEmpty);
-        if (string.IsNullOrWhiteSpace(message.Text) && !hasImages)
-            throw new ArgumentException("The message must contain text or an image.", nameof(message));
-        if (hasImages && !model.InputModalities.Contains(ModelModality.Image))
-            throw new ArgumentException("The model does not support image input.", nameof(model));
-        if (!model.ReasoningEfforts.Contains(reasoningEffort))
-            throw new ArgumentException("The model does not support this reasoning effort.", nameof(reasoningEffort));
-        // Recheck discovery roots before the context provider reads skills.
-        ValidateSkillRoots();
-        _session ??= await _agent.CreateSessionAsync(cancellationToken: cancellationToken);
-
-        if (!model.InputModalities.Contains(ModelModality.Image) && _history.GetMessages(_session)
-            .SelectMany(item => item.Contents).OfType<DataContent>().Any(content => content.MediaType.StartsWith("image/", StringComparison.OrdinalIgnoreCase)))
-            throw new ArgumentException("История содержит изображения. Выберите модель с image input или начните новую сессию.");
-        _client.Configure(provider, model, _cacheSessionId);
-        _historyCapture.ConfigureSideContext(provider, model, reasoningEffort, _cacheSessionId);
-        var origin = $"{provider.Id}|{provider.Revision}|{provider.Kind}|{provider.ApiMode}|{provider.BaseUrl.TrimEnd('/')}|{model.Id}";
-        if (_historyOrigin != origin) NormalizeHistory();
-        _historyOrigin = origin;
-        var options = new ChatClientAgentRunOptions(ProviderClientFactory.Options(provider, model, reasoningEffort, _cacheSessionId));
-
-        (string ItemId, int SummaryIndex)? previousSummary = null;
-        await foreach (var update in _agent.RunStreamingAsync(
-                           message, _session, options: options, cancellationToken: cancellationToken))
+        try
         {
-#pragma warning disable OPENAI001
-            if (update.AsChatResponseUpdate().RawRepresentation is StreamingResponseReasoningSummaryTextDeltaUpdate delta)
+            _historyCapture.Reset();
+            _runTools.Clear();
+            ArgumentNullException.ThrowIfNull(message);
+            ArgumentNullException.ThrowIfNull(model);
+            bool hasImages = message.Contents.OfType<DataContent>()
+                .Any(content => content.MediaType.StartsWith("image/", StringComparison.OrdinalIgnoreCase) && !content.Data.IsEmpty);
+            if (string.IsNullOrWhiteSpace(message.Text) && !hasImages)
+                throw new ArgumentException("The message must contain text or an image.", nameof(message));
+            if (hasImages && !model.InputModalities.Contains(ModelModality.Image))
+                throw new ArgumentException("The model does not support image input.", nameof(model));
+            if (!model.ReasoningEfforts.Contains(reasoningEffort))
+                throw new ArgumentException("The model does not support this reasoning effort.", nameof(reasoningEffort));
+            // Recheck discovery roots before the context provider reads skills.
+            ValidateSkillRoots();
+            _session ??= await _agent.CreateSessionAsync(cancellationToken: cancellationToken);
+
+            if (!model.InputModalities.Contains(ModelModality.Image) && _history.GetMessages(_session)
+                .SelectMany(item => item.Contents).OfType<DataContent>().Any(content => content.MediaType.StartsWith("image/", StringComparison.OrdinalIgnoreCase)))
+                throw new ArgumentException("История содержит изображения. Выберите модель с image input или начните новую сессию.");
+            _client.Configure(provider, model, _cacheSessionId);
+            _historyCapture.ConfigureSideContext(provider, model, reasoningEffort, _cacheSessionId);
+            var origin = $"{provider.Id}|{provider.Revision}|{provider.Kind}|{provider.ApiMode}|{provider.BaseUrl.TrimEnd('/')}|{model.Id}";
+            if (_historyOrigin != origin) NormalizeHistory();
+            _historyOrigin = origin;
+            var chatOptions = ProviderClientFactory.Options(provider, model, reasoningEffort, _cacheSessionId);
+            if (_parentQuestions is not null) chatOptions.AllowMultipleToolCalls = false;
+            _delegation?.Configure(model, reasoningEffort, provider);
+            var options = new ChatClientAgentRunOptions(chatOptions);
+
+            (string ItemId, int SummaryIndex)? previousSummary = null;
+            await foreach (var update in _agent.RunStreamingAsync(
+                               message, _session, options: options, cancellationToken: cancellationToken))
             {
-                var summary = (delta.ItemId, delta.SummaryIndex);
-                if (previousSummary is { } previous && previous != summary)
+#pragma warning disable OPENAI001
+                if (update.AsChatResponseUpdate().RawRepresentation is StreamingResponseReasoningSummaryTextDeltaUpdate delta)
                 {
-                    // Summary parts are independent Markdown; token deltas within a part are not.
-                    foreach (var content in update.Contents.OfType<TextReasoningContent>())
-                        content.Text = "\n\n" + content.Text;
+                    var summary = (delta.ItemId, delta.SummaryIndex);
+                    if (previousSummary is { } previous && previous != summary)
+                    {
+                        // Summary parts are independent Markdown; token deltas within a part are not.
+                        foreach (var content in update.Contents.OfType<TextReasoningContent>())
+                            content.Text = "\n\n" + content.Text;
+                    }
+                    previousSummary = summary;
                 }
-                previousSummary = summary;
-            }
 #pragma warning restore OPENAI001
-            yield return update;
+                yield return update;
+            }
+        }
+        finally
+        {
+            if (cancellationToken.IsCancellationRequested && _delegation is not null)
+                await _delegation.CancelPendingAsync().ConfigureAwait(false);
         }
     }
 }

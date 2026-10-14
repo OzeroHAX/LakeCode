@@ -27,6 +27,7 @@ internal sealed class ChatController : IDisposable
     private ConversationState _state;
     private AssistantMessageComponent? _response;
     private Guid? _responseRequestId;
+    private readonly Dictionary<string, AssistantMessageComponent> _responsesByCallId = new(StringComparer.Ordinal);
     private AskComponent? _question;
     private Guid? _questionId;
     private readonly Dictionary<Guid, (AssistantMessageComponent Response, string CallId)> _permissions = [];
@@ -240,7 +241,8 @@ internal sealed class ChatController : IDisposable
                     _sessionsWindow.ShowError(failed.Error);
                     break;
                 case TurnStarted started:
-                    _content.AddUserMessage(started.Text, started.Images.Select(ImageInput.CreatePreview).ToArray(), started.Files, started.Mentions);
+                    if (started.IsBackgroundContinuation) _content.AddControl(CreateBackgroundNotice());
+                    else _content.AddUserMessage(started.Text, started.Images.Select(ImageInput.CreatePreview).ToArray(), started.Files, started.Mentions);
                     _response = new AssistantMessageComponent(_windowSystem);
                     _responseRequestId = envelope.RequestId;
                     _content.AddControl(_response);
@@ -252,7 +254,18 @@ internal sealed class ChatController : IDisposable
                     _response!.AppendResponse(text.Text);
                     break;
                 case ToolCallChanged tool when IsActive(envelope):
+                    _responsesByCallId[tool.Call.CallId] = _response!;
                     _response!.UpdateToolCall(tool.Call);
+                    break;
+                case BackgroundToolCallChanged background:
+                    if (envelope.SessionId != _state.SessionId) break;
+                    if (!_responsesByCallId.TryGetValue(background.Call.CallId, out var owner))
+                    {
+                        if (!IsActive(envelope)) break;
+                        owner = _response!;
+                        _responsesByCallId.Add(background.Call.CallId, owner);
+                    }
+                    owner.UpdateToolCall(background.Call);
                     break;
                 case BashOutputChanged bash when IsActive(envelope):
                     _response!.UpdateBashOutput(bash.Update);
@@ -278,13 +291,13 @@ internal sealed class ChatController : IDisposable
                 case QuestionRequested question:
                     ShowQuestion(question);
                     break;
-                case ReadPermissionRequested permission when IsActive(envelope):
-                    var response = _response!;
+                case ReadPermissionRequested permission when _responsesByCallId.TryGetValue(permission.Request.CallId, out _):
+                    var response = _responsesByCallId[permission.Request.CallId];
                     var window = response.GetParentWindow() ?? throw new InvalidOperationException("No active window for permission request.");
                     _permissions.Add(permission.InteractionId, (response, permission.Request.CallId));
                     response.ShowReadPermission(permission.Request,
                         decision => _conversation.Execute(new ResolveReadPermission(permission.InteractionId, decision)), window);
-                    _content.ScrollToBottom();
+                    _content.ScrollChildIntoView(response);
                     break;
                 case ReadPermissionRequested permission:
                     _conversation.Execute(new FailInteraction(permission.InteractionId, "No active response for permission request."));
@@ -313,7 +326,8 @@ internal sealed class ChatController : IDisposable
         var controls = new List<IWindowControl>();
         foreach (var turn in view.Turns)
         {
-            controls.Add(new UserMessageComponent(turn.Text, turn.Images.Select(ImageInput.CreatePreview).ToArray(), turn.Files, turn.Mentions));
+            if (turn.IsBackgroundContinuation) controls.Add(CreateBackgroundNotice());
+            else controls.Add(new UserMessageComponent(turn.Text, turn.Images.Select(ImageInput.CreatePreview).ToArray(), turn.Files, turn.Mentions));
             var response = new AssistantMessageComponent(_windowSystem);
             foreach (var item in turn.Items)
             {
@@ -326,6 +340,7 @@ internal sealed class ChatController : IDisposable
             controls.Add(response);
         }
         var draftImages = view.DraftImages.Select(ImageInput.CreatePreview).ToArray();
+        _responsesByCallId.Clear();
         ((IControlHost)_content).ClearControls();
         foreach (var control in controls) _content.AddControl(control);
         _response = null;
@@ -347,6 +362,10 @@ internal sealed class ChatController : IDisposable
         _content.ScrollToBottom();
         _focusInput();
     }
+
+    private static MarkupControl CreateBackgroundNotice() => new(new List<string>
+    { "[grey70]Уведомление фоновых исследований[/]" })
+    { HorizontalAlignment = SharpConsoleUI.Layout.HorizontalAlignment.Stretch, Wrap = true };
 
     private void ShowQuestion(QuestionRequested request)
     {
@@ -391,5 +410,6 @@ internal sealed class ChatController : IDisposable
         _btw.Closed -= RestoreFocusAfterSide;
         if (_questionId is { } id) HideInteraction(id);
         foreach (var permissionId in _permissions.Keys.ToArray()) HideInteraction(permissionId);
+        _responsesByCallId.Clear();
     }
 }

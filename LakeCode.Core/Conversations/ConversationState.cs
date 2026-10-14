@@ -19,11 +19,12 @@ public sealed record ConversationState(long Revision, string? SessionId, string?
     RequestStatistics? Statistics, double? TokensPerSecond)
 {
     public SideQuestionState SideQuestions { get; init; } = new(0, false, []);
+    public ImmutableArray<Agent.Delegation.DelegationSnapshot> Delegations { get; init; } = [];
 }
 
 public sealed record TranscriptItem(string Kind, string? Text, ToolCallUpdate? ToolCall);
 public sealed record TurnView(string Text, ImmutableArray<ImageData> Images,
-    ImmutableArray<TranscriptItem> Items, string Status, string? Error, ImmutableArray<FileAttachment> Files, ImmutableArray<FileMention> Mentions);
+    ImmutableArray<TranscriptItem> Items, string Status, string? Error, ImmutableArray<FileAttachment> Files, ImmutableArray<FileMention> Mentions, bool IsBackgroundContinuation = false);
 public sealed record ConversationView(string? SessionId, string? ModelId, string? ReasoningEffort,
     ImmutableArray<TurnView> Turns, string DraftText, ImmutableArray<ImageData> DraftImages, string? ProviderId,
     ImmutableArray<FileAttachment> DraftFiles, ImmutableArray<FileMention> DraftMentions);

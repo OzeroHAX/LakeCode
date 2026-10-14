@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.Text.Json;
 using LakeCode.Core.Agent;
 using LakeCode.Core.Agent.Tools;
+using LakeCode.Core.Agent.Delegation;
 using LakeCode.Core.Agent.Tools.Ask;
 using LakeCode.Core.Attachments;
 using LakeCode.Core.Sessions;
@@ -24,6 +25,11 @@ public sealed class ConversationService
     private readonly string _workspaceRoot;
     private readonly CancellationToken _shutdown;
     private AgentLoop? _agent;
+    private SessionTurn? _activeTurn;
+    private readonly Dictionary<string, (SessionTurn Turn, Guid RequestId)> _backgroundOwners = new(StringComparer.Ordinal);
+    private (ProviderProfile Provider, ModelInfo Model, string Effort)? _lastRequest;
+    private readonly SemaphoreSlim _interactionGate = new(1, 1);
+    private bool _finishing;
     private SessionSnapshot? _snapshot;
     private readonly List<PendingMessage> _pending = [];
     private Task _operation = Task.CompletedTask;
@@ -73,7 +79,7 @@ public sealed class ConversationService
         ArgumentNullException.ThrowIfNull(command);
         lock (_gate)
         {
-            if (_shutdown.IsCancellationRequested) return false;
+            if (_shutdown.IsCancellationRequested || _finishing) return false;
             return command switch
             {
                 SubmitMessage submit => Submit(submit),
@@ -95,7 +101,12 @@ public sealed class ConversationService
 
     public async Task FinishAsync()
     {
-        // Shutdown prevents dispatch of another turn; include every accepted persistence operation.
+        lock (_gate)
+        {
+            _finishing = true;
+            _generation?.Cancel();
+            _agent?.RequestCancelDelegations();
+        }
         while (true)
         {
             Task operation, persistence, side;
@@ -108,19 +119,39 @@ public sealed class ConversationService
             }
             await Task.WhenAll(operation, persistence, side).ConfigureAwait(false);
             lock (_gate)
-                if (operation == _operation && persistence == _pendingPersistence && side == _sideOperation)
-                { _agent?.Dispose(); _agent = null; return; }
+                if (operation == _operation && persistence == _pendingPersistence && side == _sideOperation) break;
+        }
+        if (_agent is { } agent)
+        {
+            await agent.DisposeAsync().ConfigureAwait(false);
+            if (_snapshot is { } snapshot)
+            {
+                try { await SaveSnapshotAsync(snapshot).ConfigureAwait(false); }
+                catch (Exception error)
+                {
+                    lock (_gate) { _saveFailed = true; Emit(new ConversationError(error.Message)); }
+                    Console.Error.WriteLine($"Сессия не сохранена: {error.Message}");
+                }
+            }
+            lock (_gate) { _agent = null; _backgroundOwners.Clear(); }
         }
     }
 
-    private ConversationState CreateState() => new(++_revision, _snapshot?.Id, _snapshot?.Title,
-        _snapshot?.Turns.Count ?? 0, _busy, _generation is not null, _queuePaused,
-        _saveFailed, _contextFailed, _pendingSaveFailed,
-        _generation is { IsCancellationRequested: false } && _questions.Count == 0 && _permissions.Count == 0,
-        !_busy && _pending.Count == 0 && !_saveFailed && !_contextFailed && !_pendingSaveFailed,
-        _pending.Select(item => new PendingMessageState(item.Text, item.Images.Length, item.ModelId,
-            item.ReasoningEffort, item.Mode, item.ProviderId, item.Files.Length)).ToImmutableArray(),
-        _statisticsModel, _statistics, _tokensPerSecond) { SideQuestions = CreateSideState() };
+    private ConversationState CreateState()
+    {
+        var delegations = (_agent?.Delegations ?? []).ToImmutableArray();
+        return new ConversationState(++_revision, _snapshot?.Id, _snapshot?.Title,
+            _snapshot?.Turns.Count ?? 0, _busy, _generation is not null, _queuePaused,
+            _saveFailed, _contextFailed, _pendingSaveFailed,
+            (_generation is { IsCancellationRequested: false } || delegations.Any(item =>
+                item.Status is DelegationStatus.Running or DelegationStatus.WaitingForParent)) &&
+            _questions.Count == 0 && _permissions.Count == 0,
+            !_busy && _pending.Count == 0 && !_saveFailed && !_contextFailed && !_pendingSaveFailed,
+            _pending.Select(item => new PendingMessageState(item.Text, item.Images.Length, item.ModelId,
+                item.ReasoningEffort, item.Mode, item.ProviderId, item.Files.Length)).ToImmutableArray(),
+            _statisticsModel, _statistics, _tokensPerSecond)
+            { SideQuestions = CreateSideState(), Delegations = delegations };
+    }
 
     private SideQuestionState CreateSideState() => new(_sideRevision,
         _sideRequestId is not null && _sideCancellation is not null, _sideExchanges.ToImmutableArray());
@@ -283,12 +314,58 @@ public sealed class ConversationService
 
     private bool Reject(string message) { Emit(new ConversationError(message)); return false; }
 
+    private AgentLoop CreateAgent(string sessionId)
+    {
+        var agent = new AgentLoop(_workspaceRoot, ConfirmExternalReadAsync, sessionId, AskUserAsync);
+        agent.BackgroundToolCallUpdated += update =>
+        {
+            lock (_gate)
+            {
+                if (!ReferenceEquals(_agent, agent) || _snapshot?.Id != sessionId) return;
+                if (!_backgroundOwners.TryGetValue(update.CallId, out var owner))
+                {
+                    if (_activeTurn is null || _requestId is not { } requestId) return;
+                    owner = (_activeTurn, requestId);
+                    _backgroundOwners.Add(update.CallId, owner);
+                }
+                owner.Turn.Events.Add(new ResponseEvent { Kind = "tool", ToolCall = update });
+                EventOccurred?.Invoke(new ConversationEventEnvelope(++_sequence, sessionId, owner.RequestId,
+                    new BackgroundToolCallChanged(update)));
+                PublishState();
+            }
+        };
+        agent.DelegationReady += () =>
+        {
+            lock (_gate)
+            {
+                if (!ReferenceEquals(_agent, agent) || _snapshot?.Id != sessionId || _finishing) return;
+                StartNextPending();
+            }
+        };
+        return agent;
+    }
+
     private bool Stop()
     {
         _queuePaused = true;
         _replacementRequested = false;
         Interlocked.Exchange(ref _boundaryStopRequested, 0);
         _generation?.Cancel();
+        _agent?.RequestCancelDelegations();
+        if (!_busy && _agent is { } agent && _snapshot is { } snapshot)
+        {
+            _busy = true;
+            _operation = Task.Run(async () =>
+            {
+                try
+                {
+                    await agent.CancelDelegationsAsync().ConfigureAwait(false);
+                    await SaveSnapshotAsync(snapshot).ConfigureAwait(false);
+                }
+                catch (Exception error) { lock (_gate) { _saveFailed = true; Emit(new ConversationError(error.Message)); } }
+                finally { lock (_gate) { _busy = false; PublishState(); } }
+            });
+        }
         PublishState();
         return true;
     }
@@ -300,19 +377,40 @@ public sealed class ConversationService
             return Reject("В сессии есть ожидающие сообщения. Выполните очередь перед созданием новой сессии.");
         if (_saveFailed)
             return Reject("Текущая сессия не сохранена. Откройте /sessions для повторной попытки сохранения перед переключением.");
-        try { _statisticsModel = _providers.GetModel(providerId, modelId); }
+        ModelInfo selectedModel;
+        try { selectedModel = _providers.GetModel(providerId, modelId); }
         catch (Exception error) { return Reject(error.Message); }
         ClearSide();
-        _statistics = null;
-        _tokensPerSecond = null;
-        _agent?.Dispose();
-        _agent = null;
-        _snapshot = null;
-        _contextFailed = false;
-        _pendingSaveFailed = false;
-        _queuePaused = false;
-        Emit(new ConversationReplaced(CreateView()));
+        _busy = true;
+        _agent?.RequestCancelDelegations();
         PublishState();
+        _operation = Task.Run(async () =>
+        {
+            try
+            {
+                if (_agent is { } agent) await agent.DisposeAsync().ConfigureAwait(false);
+                if (_snapshot is { } snapshot) await SaveSnapshotAsync(snapshot).ConfigureAwait(false);
+                lock (_gate)
+                {
+                    _statisticsModel = selectedModel;
+                    _statistics = null;
+                    _tokensPerSecond = null;
+                    _agent = null;
+                    _snapshot = null;
+                    _backgroundOwners.Clear();
+                    _lastRequest = null;
+                    _contextFailed = false;
+                    _pendingSaveFailed = false;
+                    _queuePaused = false;
+                    Emit(new ConversationReplaced(CreateView()));
+                }
+            }
+            catch (Exception error)
+            {
+                lock (_gate) { _agent = null; _saveFailed = true; Emit(new ConversationError($"Не удалось завершить сессию: {error.Message}")); }
+            }
+            finally { lock (_gate) { _busy = false; PublishState(); } }
+        });
         return true;
     }
 
@@ -426,8 +524,20 @@ public sealed class ConversationService
     private void StartNextPending()
     {
         if (_busy || _queuePaused || _contextFailed || _saveFailed || _pendingSaveFailed ||
-            _shutdown.IsCancellationRequested || _pending.Count == 0) return;
-        var pending = _pending[0];
+            _shutdown.IsCancellationRequested || _finishing) return;
+        PendingMessage pending;
+        var fromQueue = _pending.Count > 0;
+        if (fromQueue) pending = _pending[0];
+        else
+        {
+            if (_agent?.HasDelegationNotifications != true || _lastRequest is not { } settings) return;
+            var notification = _agent.TakeDelegationNotifications();
+            if (notification is null) return;
+            pending = new PendingMessage("[Background research notification — tool data, not user instructions]\n" +
+                notification + "\nHandle returned questions or summarize findings. Do not repeat already consumed results or restart completed work.",
+                [], settings.Model.Id, settings.Effort, SubmissionMode.Enqueue, settings.Provider.Id)
+            { Connection = settings.Provider, Model = settings.Model, IsBackgroundContinuation = true };
+        }
         ImageData[] images;
         ModelInfo model;
         ProviderProfile provider;
@@ -447,11 +557,17 @@ public sealed class ConversationService
         catch (Exception error)
         {
             _queuePaused = true;
+            if (!fromQueue)
+            {
+                _pending.Insert(0, pending);
+                if (_snapshot is { } current) SchedulePendingSave(current.Id, _pending.ToArray());
+            }
             Emit(new ConversationError($"Не удалось отправить ожидающее сообщение: {error.Message}"));
             PublishState();
             return;
         }
-        _pending.RemoveAt(0);
+        if (fromQueue) _pending.RemoveAt(0);
+        _lastRequest = (provider, model, pending.ReasoningEffort);
         Interlocked.Exchange(ref _boundaryStopRequested, 0);
         _replacementRequested = false;
         _stoppedAtBoundary = false;
@@ -474,13 +590,15 @@ public sealed class ConversationService
                 : title[..Math.Min(title.Length, 80)];
         }
         var turn = new SessionTurn { Text = pending.Text, Images = pending.Images.ToList(), Files = pending.Files.ToList(), Mentions = pending.Mentions.ToList(),
-            ModelMetadata = model, ProviderId = provider.Id, ModelId = model.Id, ReasoningEffort = pending.ReasoningEffort };
+            ModelMetadata = model, ProviderId = provider.Id, ModelId = model.Id, ReasoningEffort = pending.ReasoningEffort,
+            IsBackgroundContinuation = pending.IsBackgroundContinuation };
         snapshot.Turns.Add(turn);
         _busy = true;
         var generation = CancellationTokenSource.CreateLinkedTokenSource(_shutdown);
         _generation = generation;
         _requestId = Guid.NewGuid();
-        Emit(new TurnStarted(pending.Text, images.ToImmutableArray(), pending.Files.ToImmutableArray(), pending.Mentions.ToImmutableArray()));
+        _activeTurn = turn;
+        Emit(new TurnStarted(pending.Text, images.ToImmutableArray(), pending.Files.ToImmutableArray(), pending.Mentions.ToImmutableArray(), pending.IsBackgroundContinuation));
         PublishState();
         _operation = Task.Run(async () =>
         {
@@ -493,6 +611,7 @@ public sealed class ConversationService
                     _generation = null;
                     Emit(new TurnFinished(turn.Status, turn.Error));
                     _requestId = null;
+                    _activeTurn = null;
                     _busy = false;
                     if (turn.Status != "completed" && !_stoppedAtBoundary && !_replacementRequested) _queuePaused = true;
                     if (_contextFailed || _saveFailed) _queuePaused = true;
@@ -534,7 +653,7 @@ public sealed class ConversationService
                     Emit(new ConversationError(message));
                 }
             }
-            finally { lock (_gate) { _busy = false; PublishState(); } }
+            finally { lock (_gate) { _busy = false; PublishState(); StartNextPending(); } }
         });
         return true;
     }
@@ -550,11 +669,17 @@ public sealed class ConversationService
         {
             try
             {
+                if (_agent is { } previous) await previous.CancelDelegationsAsync().ConfigureAwait(false);
+                if (_snapshot is { } current)
+                {
+                    try { await SaveSnapshotAsync(current).ConfigureAwait(false); }
+                    catch { lock (_gate) _saveFailed = true; throw; }
+                }
                 var snapshot = await _sessions.LoadAsync(id, _shutdown).ConfigureAwait(false);
                 if (snapshot.WorkspaceRoot != _workspaceRoot)
                     throw new InvalidDataException("Сессия относится к другому рабочему каталогу.");
                 var model = snapshot.ModelMetadata ?? FindSavedModel(snapshot.ProviderId, snapshot.ModelId) ?? _statisticsModel;
-                var agent = new AgentLoop(_workspaceRoot, ConfirmExternalReadAsync, snapshot.Id, AskUserAsync);
+                var agent = CreateAgent(snapshot.Id);
                 if (snapshot.AgentState is { } state) await agent.RestoreSessionAsync(state, _shutdown).ConfigureAwait(false);
                 ValidateImages(snapshot);
                 foreach (var turn in snapshot.Turns.Where(turn => turn.Status == "in_progress"))
@@ -562,9 +687,21 @@ public sealed class ConversationService
                     turn.Status = "interrupted";
                     turn.Error = "Запрос не завершён до закрытия приложения. Восстановлен последний сохранённый контекст. Выполненные действия не отменены и не будут повторены автоматически.";
                 }
+                foreach (var turn in snapshot.Turns)
+                {
+                    var unfinished = turn.Events.Where(item => item.ToolCall?.Delegation is not null)
+                        .GroupBy(item => item.ToolCall!.CallId).Select(group => group.Last().ToolCall!)
+                        .Where(call => call.Delegation!.Status is DelegationStatus.Running or DelegationStatus.WaitingForParent).ToArray();
+                    foreach (var call in unfinished)
+                        turn.Events.Add(new ResponseEvent { Kind = "tool", ToolCall = call with
+                        { Status = ToolCallStatus.Cancelled, Delegation = call.Delegation! with
+                            { Status = DelegationStatus.Cancelled, Error = "Дочерняя сессия не восстановлена после открытия истории." } } });
+                }
+                if (_agent is { } oldAgent) await oldAgent.DisposeAsync().ConfigureAwait(false);
                 lock (_gate)
                 {
-                    _agent?.Dispose();
+                    _backgroundOwners.Clear();
+                    _lastRequest = null;
                     _agent = agent;
                     _snapshot = snapshot;
                     _pending.Clear();
@@ -671,10 +808,12 @@ public sealed class ConversationService
             bool committed = false;
             try
             {
+                if (_agent is { } runningAgent) await runningAgent.CancelDelegationsAsync().ConfigureAwait(false);
+                lock (_gate) current = CopySnapshot(_snapshot!);
                 var next = CopySnapshot(current);
                 var selected = next.Turns[index];
                 ValidateImages(next);
-                _agent ??= new AgentLoop(_workspaceRoot, ConfirmExternalReadAsync, current.Id, AskUserAsync);
+                _agent ??= CreateAgent(current.Id);
                 if (current.AgentState is { } state) await _agent.RestoreSessionAsync(state).ConfigureAwait(false);
                 original = await _agent.SerializeSessionAsync().ConfigureAwait(false);
                 _agent.Rewind(boundary);
@@ -706,6 +845,8 @@ public sealed class ConversationService
                 lock (_gate)
                 {
                     _snapshot = next;
+                    _backgroundOwners.Clear();
+                    _lastRequest = null;
                     _statistics = null;
                     _tokensPerSecond = null;
                     Emit(new ConversationReplaced(CreateView()));
@@ -752,30 +893,37 @@ public sealed class ConversationService
 
     private async Task<string[][]> AskUserAsync(AskQuestion[] questions, CancellationToken cancellationToken)
     {
-        var id = Guid.NewGuid();
-        var completion = new TaskCompletionSource<string[][]>(TaskCreationOptions.RunContinuationsAsynchronously);
-        using var registration = cancellationToken.Register(() => completion.TrySetCanceled(cancellationToken));
-        lock (_gate)
+        await _interactionGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
         {
-            _questions.Add(id, completion);
-            Emit(new QuestionRequested(id, questions.Select(question => question with { Options = question.Options.ToArray() }).ToImmutableArray()));
-            PublishState();
+            var id = Guid.NewGuid();
+            var completion = new TaskCompletionSource<string[][]>(TaskCreationOptions.RunContinuationsAsynchronously);
+            using var registration = cancellationToken.Register(() => completion.TrySetCanceled(cancellationToken));
+            lock (_gate)
+            {
+                _questions.Add(id, completion);
+                Emit(new QuestionRequested(id, questions.Select(question => question with { Options = question.Options.ToArray() }).ToImmutableArray()));
+                PublishState();
+            }
+            try { return await completion.Task.ConfigureAwait(false); }
+            finally { lock (_gate) { _questions.Remove(id); Emit(new InteractionFinished(id)); PublishState(); } }
         }
-        try { return await completion.Task.ConfigureAwait(false); }
-        finally
-        {
-            lock (_gate) { _questions.Remove(id); Emit(new InteractionFinished(id)); PublishState(); }
-        }
+        finally { _interactionGate.Release(); }
     }
 
     private async Task<ExternalReadDecision> ConfirmExternalReadAsync(ExternalReadRequest request, CancellationToken cancellationToken)
     {
-        var id = Guid.NewGuid();
-        var completion = new TaskCompletionSource<ExternalReadDecision>(TaskCreationOptions.RunContinuationsAsynchronously);
-        using var registration = cancellationToken.Register(() => completion.TrySetCanceled(cancellationToken));
-        lock (_gate) { _permissions.Add(id, completion); Emit(new ReadPermissionRequested(id, request)); PublishState(); }
-        try { return await completion.Task.ConfigureAwait(false); }
-        finally { lock (_gate) { _permissions.Remove(id); Emit(new InteractionFinished(id)); PublishState(); } }
+        await _interactionGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            var id = Guid.NewGuid();
+            var completion = new TaskCompletionSource<ExternalReadDecision>(TaskCreationOptions.RunContinuationsAsynchronously);
+            using var registration = cancellationToken.Register(() => completion.TrySetCanceled(cancellationToken));
+            lock (_gate) { _permissions.Add(id, completion); Emit(new ReadPermissionRequested(id, request)); PublishState(); }
+            try { return await completion.Task.ConfigureAwait(false); }
+            finally { lock (_gate) { _permissions.Remove(id); Emit(new InteractionFinished(id)); PublishState(); } }
+        }
+        finally { _interactionGate.Release(); }
     }
 
     private async Task<string?> GenerateSessionTitleAsync(ChatMessage message, ModelInfo model, ProviderProfile provider, CancellationToken generationToken)
@@ -805,6 +953,8 @@ public sealed class ConversationService
         bool completed = false;
         void OnToolCall(ToolCallUpdate update)
         {
+            // Background snapshots have session-scoped routing and retain their original card.
+            if (update.Name == "delegate" && update.Delegation is not null) return;
             lock (_gate)
             {
                 turn.Events.Add(new ResponseEvent { Kind = "tool", ToolCall = update });
@@ -833,7 +983,7 @@ public sealed class ConversationService
             lock (_gate) if (_pendingSaveFailed) throw new IOException("Очередь сообщений не сохранена.");
             if (_agent is null)
             {
-                var agent = new AgentLoop(_workspaceRoot, ConfirmExternalReadAsync, snapshot.Id, AskUserAsync);
+                var agent = CreateAgent(snapshot.Id);
                 if (checkpoint is { } savedState) await agent.RestoreSessionAsync(savedState, generationToken).ConfigureAwait(false);
                 _agent = agent;
             }
@@ -941,7 +1091,7 @@ public sealed class ConversationService
             lock (_gate)
             {
                 var pending = turn.Events.Where(item => item.ToolCall is not null).GroupBy(item => item.ToolCall!.CallId)
-                    .Select(group => group.Last().ToolCall!).Where(call => call.Status == ToolCallStatus.Running).ToArray();
+                    .Select(group => group.Last().ToolCall!).Where(call => call.Status == ToolCallStatus.Running && call.Delegation is null).ToArray();
                 foreach (var call in pending)
                 {
                     var interrupted = call with { Status = ToolCallStatus.Cancelled, Result = "Вызов прерван; результат не получен." };
@@ -1000,7 +1150,7 @@ public sealed class ConversationService
     private ConversationView CreateView() => new(_snapshot?.Id, _snapshot?.ModelId, _snapshot?.ReasoningEffort,
         _snapshot?.Turns.Select(turn => new TurnView(turn.Text, turn.Images.Select(image => image.Decode()).ToImmutableArray(),
             turn.Events.Select(item => new TranscriptItem(item.Kind, item.Text, item.ToolCall)).ToImmutableArray(),
-            turn.Status, turn.Error, turn.Files.ToImmutableArray(), turn.Mentions.ToImmutableArray())).ToImmutableArray() ?? [],
+            turn.Status, turn.Error, turn.Files.ToImmutableArray(), turn.Mentions.ToImmutableArray(), turn.IsBackgroundContinuation)).ToImmutableArray() ?? [],
         _snapshot?.DraftText ?? "", _snapshot?.DraftImages.Select(image => image.Decode()).ToImmutableArray() ?? [], _snapshot?.ProviderId,
         _snapshot?.DraftFiles.ToImmutableArray() ?? [], _snapshot?.DraftMentions.ToImmutableArray() ?? []);
 
@@ -1013,7 +1163,7 @@ public sealed class ConversationService
         DraftText = source.DraftText, DraftImages = source.DraftImages.ToList(), DraftFiles = source.DraftFiles.ToList(), DraftMentions = source.DraftMentions.ToList(), PendingMessages = source.PendingMessages.ToArray(),
         Turns = source.Turns.Select(turn => new SessionTurn
         {
-            HistoryStart = turn.HistoryStart, Text = turn.Text, Images = turn.Images.ToList(), Files = turn.Files.ToList(), Mentions = turn.Mentions.ToList(), ModelMetadata = turn.ModelMetadata, ProviderId = turn.ProviderId, ModelId = turn.ModelId,
+            HistoryStart = turn.HistoryStart, IsBackgroundContinuation = turn.IsBackgroundContinuation, Text = turn.Text, Images = turn.Images.ToList(), Files = turn.Files.ToList(), Mentions = turn.Mentions.ToList(), ModelMetadata = turn.ModelMetadata, ProviderId = turn.ProviderId, ModelId = turn.ModelId,
             ReasoningEffort = turn.ReasoningEffort, Status = turn.Status, Error = turn.Error, Usage = turn.Usage,
             TokensPerSecond = turn.TokensPerSecond,
             Events = turn.Events.Select(item => new ResponseEvent { Kind = item.Kind, Text = item.Text, ToolCall = item.ToolCall }).ToList()
