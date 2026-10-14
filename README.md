@@ -1,54 +1,44 @@
 # LakeCode
 
-Проект вообще не готов к использованию. Я просто по фану делаю своего агента на вайбкоде.
+A terminal coding agent built with C# and .NET 10. Powered by **Microsoft Agent Framework**, with a terminal interface built using **[SharpConsoleUI](https://github.com/nickprotop/ConsoleEx)**.
 
-## Установка команды `lakecode` в Linux
+The project is under active development and is not ready for regular use yet. I'm building it for fun, through vibe coding, but with a specific goal: to make my own everyday work tool, not just release another coding agent.
 
-Нужны Bash, .NET SDK 10 и доступ к NuGet для восстановления зависимостей.
-Установщик рассчитан на Linux с glibc (в том числе Fedora), архитектуры x64 и ARM64;
-Alpine/musl и другие ОС этим скриптом не поддерживаются.
+## Suggestions and contributions
 
-Из корня репозитория:
+Suggestions, feedback, and PRs are welcome — I'll consider them all. That said, I'm building LakeCode primarily around my own tasks and workflow. I can't promise to add every proposed feature: what matters most to me is having a tool I enjoy using every day.
+
+## Installation
+
+Supports Linux with glibc on x64 and ARM64. Requires Bash, the .NET 10 SDK, and access to NuGet.
+
+From the repository root:
 
 ```bash
 bash scripts/install.sh
 ```
 
-Скрипт выполняет `dotnet publish` в конфигурации Release: эта команда восстанавливает
-зависимости, собирает CLI вместе с Core и публикует результат. Используется
-self-contained публикация с исполняемым apphost: .NET Runtime включён в поставку,
-поэтому отдельно устанавливать его для запуска не нужно. Это увеличивает размер
-установки; системные нативные библиотеки Linux по-прежнему необходимы.
-Trimming и single-file упаковка отключены.
-
-Файлы устанавливаются в `~/.local/share/lakecode`, а символическая ссылка на
-исполняемый файл — в `~/.local/bin/lakecode`. `sudo` не нужен. Чужую команду с таким
-же именем установщик не перезаписывает.
-
-Если `~/.local/bin` ещё не входит в `PATH`, добавьте в `~/.bashrc`:
+The command is installed in `~/.local/bin`, and the .NET Runtime is bundled with the application. If that directory isn't already in your `PATH`, add this to `~/.bashrc` and open a new terminal:
 
 ```bash
 export PATH="$HOME/.local/bin:$PATH"
 ```
 
-Выполните эту же строку в текущем Bash или откройте новый терминал. Скрипт сам
-не редактирует shell-конфигурацию. Если Bash запомнил прежний путь к команде,
-выполните `hash -r`.
-
-Запускайте из каталога проекта, с которым хотите работать:
+Run LakeCode from the project directory you want to work in:
 
 ```bash
 cd /path/to/your/project
 lakecode
 ```
 
-Символическая ссылка не меняет текущий рабочий каталог. Для настройки подключения
-в интерфейсе есть команда `/providers`. API-ключи в установщик не передаются.
+Configure your provider using the `/providers` command in the interface.
 
-### Обновление
+To update, close LakeCode, update the source, and run the install script again. Your settings and sessions are preserved.
 
-Завершите запущенный LakeCode, обновите исходники и повторите
-`bash scripts/install.sh`. Публикация обновляет тот же каталог; атомарная замена
-и откат версии не предусмотрены. Если публикация прервана, повторите установку
-до следующего запуска. Установщик не очищает пользовательские настройки и сессии
-и не удаляет каталог исходников: SDK и исходники нужны для последующих сборок.
+## Thanks
+
+Special thanks to the author of **[SharpConsoleUI](https://github.com/nickprotop/ConsoleEx)** for continuing to develop the project and merging PRs so quickly. The library lets me focus on my tool instead of building a terminal interface from scratch.
+
+## License
+
+LakeCode is licensed under the [Apache License 2.0](LICENSE). Third-party components are distributed under their own licenses.
