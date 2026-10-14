@@ -20,6 +20,7 @@ public sealed record ReasoningDelta(string Text) : ConversationEvent;
 public sealed record TextDelta(string Text) : ConversationEvent;
 public sealed record ToolCallChanged(ToolCallUpdate Call) : ConversationEvent;
 public sealed record BackgroundToolCallChanged(ToolCallUpdate Call) : ConversationEvent;
+public sealed record DelegationActivityChanged(Agent.Delegation.DelegationActivity Activity) : ConversationEvent;
 public sealed record BashOutputChanged(BashOutputUpdate Update) : ConversationEvent;
 public sealed record TurnFinished(string Status, string? Error) : ConversationEvent;
 public sealed record ConversationError(string Message) : ConversationEvent;

@@ -34,6 +34,7 @@ var mainContent = new MainContentComponent();
 using var input = new InputComponent(windowSystem, shutdown.Token);
 var footer = new FooterComponent(windowSystem, modelStore, statisticsStore, workspaceRoot);
 using var btw = new BtwWindowComponent(windowSystem);
+using var subagents = new SubagentsWindowComponent(windowSystem);
 var askHost = new SharpConsoleUI.Controls.PanelControl
 {
     Visible = false,
@@ -68,7 +69,7 @@ window.PreviewKeyPressed += (_, e) =>
 };
 chat = new ChatController(
     windowSystem, mainContent, header, input, statisticsStore, modelStore,
-    () => window.FocusControl(input.Editor), sessionsWindow, askHost, conversation, workspaceRoot, btw);
+    () => window.FocusControl(input.Editor), sessionsWindow, askHost, conversation, workspaceRoot, btw, subagents);
 
 windowSystem.AddWindow(window);
 using var rewindWindow = new RewindWindowComponent(windowSystem, chat);

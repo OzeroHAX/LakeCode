@@ -12,6 +12,10 @@ public enum DelegationStatus
 /// <summary>Presentation snapshot, not the child's conversation or provider configuration.</summary>
 public sealed record DelegationSnapshot(string TaskId, string Task, DelegationStatus Status,
     string? QuestionId = null, string? Question = null, string? Reason = null,
-    string? Answer = null, string? Result = null, string? Error = null);
+    string? Answer = null, string? Result = null, string? Error = null)
+{
+    public int RequestNumber { get; init; } = 1;
+    public string? Context { get; init; }
+}
 
 internal sealed record ParentQuestion(string Id, string Question, string Reason);

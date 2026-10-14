@@ -46,7 +46,9 @@ public sealed class AgentLoop : IDisposable, IAsyncDisposable
     public event Action<ToolCallUpdate>? ToolCallUpdated;
     public event Action<BashOutputUpdate>? BashOutputUpdated;
     public event Action? BeforeModelRequest;
+    internal event Action<ChatResponse>? ResponseCompleted;
     public event Action<ToolCallUpdate>? BackgroundToolCallUpdated;
+    public event Action<DelegationActivity>? DelegationActivityUpdated;
     public event Action? DelegationReady;
     public DelegationSnapshot[] Delegations => _delegation?.Snapshots ?? [];
     public bool HasDelegationNotifications => _delegation?.HasNotifications == true;
@@ -85,6 +87,7 @@ public sealed class AgentLoop : IDisposable, IAsyncDisposable
                     systemPrompt + "\n\n" + SystemPromptBuilder.ResearchInstructions, questions, () => callId),
                 () => _delegationInvocation.Value);
             _delegation.Updated += update => BackgroundToolCallUpdated?.Invoke(update);
+            _delegation.Activity += activity => DelegationActivityUpdated?.Invoke(activity);
             _delegation.Ready += () => DelegationReady?.Invoke();
         }
         var readFile = new ReadFileTool(files);
@@ -162,6 +165,8 @@ public sealed class AgentLoop : IDisposable, IAsyncDisposable
         }
 
         _historyCapture = new InterruptedHistoryChatClient(_client);
+        if (parentQuestions is not null)
+            _historyCapture.ResponseCompleted = response => ResponseCompleted?.Invoke(response);
         _historyCapture.BeforeRequest = () => BeforeModelRequest?.Invoke();
         _agent = new ChatClientAgent(_historyCapture, new ChatClientAgentOptions
         {

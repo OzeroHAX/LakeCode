@@ -328,10 +328,19 @@ public sealed class ConversationService
                     owner = (_activeTurn, requestId);
                     _backgroundOwners.Add(update.CallId, owner);
                 }
-                owner.Turn.Events.Add(new ResponseEvent { Kind = "tool", ToolCall = update });
+                // Store exchanges where they occurred, rather than rewriting the original turn.
+                (_snapshot.Turns.LastOrDefault() ?? owner.Turn).Events.Add(new ResponseEvent { Kind = "tool", ToolCall = update });
                 EventOccurred?.Invoke(new ConversationEventEnvelope(++_sequence, sessionId, owner.RequestId,
                     new BackgroundToolCallChanged(update)));
                 PublishState();
+            }
+        };
+        agent.DelegationActivityUpdated += activity =>
+        {
+            lock (_gate)
+            {
+                if (!ReferenceEquals(_agent, agent) || _snapshot?.Id != sessionId) return;
+                Emit(new DelegationActivityChanged(activity));
             }
         };
         agent.DelegationReady += () =>

@@ -39,6 +39,7 @@ internal sealed class DelegationCoordinator(
     private bool _disposed;
 
     public event Action<ToolCallUpdate>? Updated;
+    public event Action<DelegationActivity>? Activity;
     public event Action? Ready;
 
     public DelegationSnapshot[] Snapshots { get { lock (_gate) return _jobs.Values.Select(job => job.Snapshot).ToArray(); } }
@@ -79,12 +80,27 @@ internal sealed class DelegationCoordinator(
                 var settings = _request ?? throw new InvalidOperationException("No active parent request.");
                 var questions = new AskParentTool();
                 var child = createChild(questions, invocation.CallId);
-                job = new Job(new DelegationSnapshot(Guid.NewGuid().ToString("N"), task, DelegationStatus.Running),
+                job = new Job(new DelegationSnapshot(Guid.NewGuid().ToString("N"), task, DelegationStatus.Running) { Context = context },
                     invocation, child, questions, settings.Model, settings.Effort, settings.Provider,
                     CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token));
                 child.BeforeModelRequest += () =>
                 {
                     if (++job.ModelRequests > 32) throw new InvalidOperationException("Research exhausted its 32 model requests.");
+                };
+                child.ToolCallUpdated += update => Activity?.Invoke(new DelegationActivity(job.Snapshot.TaskId, "tool", ToolCall: update));
+                child.ResponseCompleted += response =>
+                {
+                    foreach (var completedMessage in response.Messages)
+                    {
+                        foreach (var content in completedMessage.Contents)
+                        {
+                            if (content is TextReasoningContent reasoning && !string.IsNullOrEmpty(reasoning.Text))
+                                Activity?.Invoke(new DelegationActivity(job.Snapshot.TaskId, "thinking", reasoning.Text));
+                            else if (content is TextContent text && !string.IsNullOrEmpty(text.Text))
+                                Activity?.Invoke(new DelegationActivity(job.Snapshot.TaskId, "text", text.Text));
+                        }
+                        Activity?.Invoke(new DelegationActivity(job.Snapshot.TaskId, "message_end"));
+                    }
                 };
                 _jobs.Add(job.Snapshot.TaskId, job);
                 message = new ChatMessage(ChatRole.User, $"# Research assignment\n{task}\n\n# Parent context\n{context ?? "No additional context."}");
@@ -101,7 +117,8 @@ internal sealed class DelegationCoordinator(
                 job.Questions.AcceptAnswer();
                 job.NotificationPending = false;
                 job.Settled = false;
-                job.Snapshot = job.Snapshot with { Status = DelegationStatus.Running, Answer = answer, Result = null, Error = null };
+                job.Snapshot = job.Snapshot with { Status = DelegationStatus.Running, Answer = answer, Result = null, Error = null,
+                    RequestNumber = job.Snapshot.RequestNumber + 1 };
             }
             _invocations[invocation.CallId] = job.Snapshot.TaskId;
             started = job.Snapshot;
@@ -115,7 +132,11 @@ internal sealed class DelegationCoordinator(
             _operations.Add(job.Operation);
             SignalChanged();
         }
-        try { Publish(job.Origin, started); }
+        try
+        {
+            Publish(getInvocation() ?? job.Origin, started);
+            Activity?.Invoke(new DelegationActivity(started.TaskId, "request", message.Text));
+        }
         finally { start.TrySetResult(); }
         return Task.FromResult(JsonSerializer.Serialize(Output(started)));
     }
@@ -193,12 +214,14 @@ internal sealed class DelegationCoordinator(
         {
             var result = new StringBuilder();
             await foreach (var update in job.Child!.RunAsync(message, job.Model, job.Effort, job.Provider, timeout.Token).ConfigureAwait(false))
+            {
                 foreach (var text in update.Contents.OfType<TextContent>())
                 {
                     if ((long)result.Length + text.Text.Length > 32_000)
                         throw new InvalidDataException("Research result exceeds 32000 characters; no truncated result was accepted.");
                     result.Append(text.Text);
                 }
+            }
             timeout.Token.ThrowIfCancellationRequested();
             if (job.Questions.Failure is { } failure) throw new InvalidOperationException(failure);
             if (job.Questions.Pending is { } question)

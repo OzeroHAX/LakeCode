@@ -9,6 +9,7 @@ internal sealed class InterruptedHistoryChatClient(IChatClient inner) : Delegati
     private List<ChatMessage>? _request;
     private readonly List<ChatResponseUpdate> _updates = [];
     public Action? BeforeRequest { get; set; }
+    public Action<ChatResponse>? ResponseCompleted { get; set; }
     private SideQuestionContext? _sideContext;
     private string? _sideContextError;
     private LakeCode.Core.Providers.ProviderProfile? _provider;
@@ -78,6 +79,8 @@ internal sealed class InterruptedHistoryChatClient(IChatClient inner) : Delegati
             _updates.Add(update.Clone());
             yield return update;
         }
+        cancellationToken.ThrowIfCancellationRequested();
+        if (ResponseCompleted is { } completed) completed(_updates.ToChatResponse());
         // A completed final answer is appended, never substituted for the cached request prefix.
         // Tool-call responses remain excluded until MAF supplies their results in the next request.
         if (requestContext is not null)

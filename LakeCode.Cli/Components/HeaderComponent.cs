@@ -11,6 +11,8 @@ internal sealed class HeaderComponent : PanelControl
     private readonly MarkupControl _label;
     private readonly string _title;
     private readonly string _subtitle;
+    private readonly ButtonControl _subagents;
+    public event Action? SubagentsRequested;
 
     public HeaderComponent(string title, string subtitle)
     {
@@ -31,8 +33,32 @@ internal sealed class HeaderComponent : PanelControl
             ForegroundColor = ForegroundColor,
             HorizontalAlignment = HorizontalAlignment.Stretch
         };
-        AddControl(_label);
+        _subagents = new ButtonControl
+        {
+            Text = "Сабагенты", Visible = false, HorizontalAlignment = HorizontalAlignment.Right,
+            BackgroundColor = BackgroundColor, ForegroundColor = new SharpConsoleUI.Color(155, 195, 205),
+            FocusedBackgroundColor = new SharpConsoleUI.Color(35, 65, 75)
+        };
+        _subagents.Click += (_, _) => SubagentsRequested?.Invoke();
+        var row = new HorizontalGridControl { HorizontalAlignment = HorizontalAlignment.Stretch };
+        var titleColumn = new ColumnContainer(row) { FlexFactor = 1 };
+        titleColumn.AddContent(_label);
+        var tasksColumn = new ColumnContainer(row) { FlexFactor = 0 };
+        tasksColumn.AddContent(_subagents);
+        row.AddColumn(titleColumn);
+        row.AddColumn(tasksColumn);
+        AddControl(row);
         SetSessionTitle(null);
+    }
+
+    public void SetDelegations(IReadOnlyCollection<LakeCode.Core.Agent.Delegation.DelegationSnapshot> tasks)
+    {
+        _subagents.Visible = tasks.Count > 0;
+        var running = tasks.Count(task => task.Status == LakeCode.Core.Agent.Delegation.DelegationStatus.Running);
+        var waiting = tasks.Count(task => task.Status == LakeCode.Core.Agent.Delegation.DelegationStatus.WaitingForParent);
+        var failed = tasks.Count(task => task.Status == LakeCode.Core.Agent.Delegation.DelegationStatus.Failed);
+        _subagents.Text = $"Сабагенты · {running} работают" +
+            (waiting == 0 ? "" : $" · {waiting} ждут") + (failed == 0 ? "" : $" · ошибок: {failed}");
     }
 
     public void SetSessionTitle(string? sessionTitle)

@@ -18,12 +18,13 @@ internal sealed class AssistantMessageComponent : CollapsiblePanel
     private ToolCallGroupComponent? _activeToolGroup;
     private readonly Dictionary<string, ToolCallGroupComponent> _toolCalls = new(StringComparer.Ordinal);
     private readonly Dictionary<string, EvalToolCallComponent> _evalCalls = new(StringComparer.Ordinal);
-    private readonly Dictionary<string, ToolCallGroupComponent> _delegations = new(StringComparer.Ordinal);
+    private bool _continuation;
 
-    public AssistantMessageComponent(ConsoleWindowSystem windowSystem)
+    public AssistantMessageComponent(ConsoleWindowSystem windowSystem, bool readOnly = false)
     {
         _windowSystem = windowSystem;
         _thinking = new ThinkingComponent(windowSystem);
+        if (readOnly) _thinking.Complete();
         Collapsible = false;
         ShowHeader = false;
         HeaderStyle = CollapsibleHeaderStyle.Borderless;
@@ -37,8 +38,16 @@ internal sealed class AssistantMessageComponent : CollapsiblePanel
         AddControl(_body);
     }
 
+    public void SuspendForDelegation()
+    {
+        _thinking.Complete();
+        _continuation = true;
+        if (!_hasResponse && _body is not null) _body.Visible = false;
+    }
+
     public void AppendReasoning(string text)
     {
+        Visible = true;
         _thinking.AppendReasoning(text);
         if (!_hasResponse && _body is not null)
             _body.Visible = false;
@@ -48,6 +57,7 @@ internal sealed class AssistantMessageComponent : CollapsiblePanel
 
     public void AppendResponse(string text)
     {
+        Visible = true;
         _thinking.Complete();
         _activeToolGroup = null;
         if (_body is null)
@@ -63,6 +73,7 @@ internal sealed class AssistantMessageComponent : CollapsiblePanel
 
     public void UpdateToolCall(ToolCallUpdate update)
     {
+        Visible = true;
         if (_bashCalls.TryGetValue(update.CallId, out var existingBash))
         {
             existingBash.Update(update);
@@ -76,13 +87,6 @@ internal sealed class AssistantMessageComponent : CollapsiblePanel
         if (_toolCalls.TryGetValue(update.CallId, out var existing))
         {
             existing.Update(update);
-            return;
-        }
-
-        if (update.Delegation is { } research && _delegations.TryGetValue(research.TaskId, out var delegated))
-        {
-            _toolCalls.Add(update.CallId, delegated);
-            delegated.Update(update);
             return;
         }
 
@@ -107,11 +111,10 @@ internal sealed class AssistantMessageComponent : CollapsiblePanel
             AddControl(call);
             return;
         }
-        if (update.Name is "write_file" or "edit_file" or "delegate")
+        if (update.Name is "write_file" or "edit_file")
         {
             _activeToolGroup = null;
             var call = new ToolCallGroupComponent(update.Name, alwaysVisible: true);
-            if (update.Delegation is { } delegation) _delegations.Add(delegation.TaskId, call);
             _toolCalls.Add(update.CallId, call);
             AddControl(call);
             call.Update(update);
@@ -161,7 +164,7 @@ internal sealed class AssistantMessageComponent : CollapsiblePanel
     public void Complete()
     {
         FinishThinking();
-        if (!_hasResponse && _toolCalls.Count == 0 && _evalCalls.Count == 0 && _bashCalls.Count == 0)
+        if (!_continuation && !_hasResponse && _toolCalls.Count == 0 && _evalCalls.Count == 0 && _bashCalls.Count == 0)
         {
             _body!.Visible = true;
             _body.Text = "[grey]Модель завершила ответ без текста.[/]";
@@ -170,6 +173,7 @@ internal sealed class AssistantMessageComponent : CollapsiblePanel
 
     public void ShowError(string message)
     {
+        Visible = true;
         FinishThinking();
         var error = new MarkupControl(new List<string>
         {

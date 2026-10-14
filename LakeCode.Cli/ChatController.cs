@@ -20,6 +20,10 @@ internal sealed class ChatController : IDisposable
     private readonly Action _focusInput;
     private readonly SessionsWindowComponent _sessionsWindow;
     private readonly BtwWindowComponent _btw;
+    private readonly SubagentsWindowComponent _subagents;
+    private readonly Dictionary<string, DelegationMessageComponent> _delegationBlocks = new(StringComparer.Ordinal);
+    private readonly Dictionary<Guid, DelegationMessageComponent> _delegationPermissions = [];
+    private readonly List<AssistantMessageComponent> _turnSegments = [];
     private Guid? _shownSideRequestId;
     private readonly PanelControl _askHost;
     private readonly ConversationService _conversation;
@@ -43,7 +47,7 @@ internal sealed class ChatController : IDisposable
     public ChatController(ConsoleWindowSystem windowSystem, MainContentComponent mainContent,
         HeaderComponent header, InputComponent input, StatisticsStore statistics, ModelStore models,
         Action focusInput, SessionsWindowComponent sessionsWindow, PanelControl askHost,
-        ConversationService conversation, string workspaceRoot, BtwWindowComponent btw)
+        ConversationService conversation, string workspaceRoot, BtwWindowComponent btw, SubagentsWindowComponent subagents)
     {
         _workspaceRoot = workspaceRoot;
         _windowSystem = windowSystem;
@@ -55,6 +59,9 @@ internal sealed class ChatController : IDisposable
         _focusInput = focusInput;
         _sessionsWindow = sessionsWindow;
         _btw = btw;
+        _subagents = subagents;
+        _subagents.ReturnToChat += RestoreFocusAfterSide;
+        _header.SubagentsRequested += ShowSubagents;
         _btw.CancelRequested += CancelSideQuestion;
         _btw.ClearRequested += ClearSideQuestions;
         _btw.Closed += RestoreFocusAfterSide;
@@ -100,11 +107,16 @@ internal sealed class ChatController : IDisposable
         if (_conversation.Execute(new AskSideQuestion(question))) _input.ClearDraft();
     }
 
+    private void ShowSubagents()
+    {
+        if (_input.GetParentWindow() is { } parent) _subagents.Show(parent);
+    }
+
     private void CancelSideQuestion(Guid id) => _conversation.Execute(new CancelSideQuestion(id));
     private void ClearSideQuestions() => _conversation.Execute(new ClearSideQuestions());
     private void RestoreFocusAfterSide()
     {
-        if (!_disposed && _question is null && _permissions.Count == 0) _focusInput();
+        if (!_disposed && _question is null && _permissions.Count == 0 && _delegationPermissions.Count == 0) _focusInput();
     }
 
     private void SendMessage(SubmissionMode mode)
@@ -200,6 +212,7 @@ internal sealed class ChatController : IDisposable
         _state = state;
         _btw.Apply(state.SideQuestions);
         _header.SetSessionTitle(state.Title);
+        _header.SetDelegations(_subagents.Tasks);
         _input.SetSending(state.IsBusy && !state.IsGenerating);
         _statistics.Apply(state);
         _input.ShowPending(state.PendingMessages.Select(item =>
@@ -243,7 +256,9 @@ internal sealed class ChatController : IDisposable
                 case TurnStarted started:
                     if (started.IsBackgroundContinuation) _content.AddControl(CreateBackgroundNotice());
                     else _content.AddUserMessage(started.Text, started.Images.Select(ImageInput.CreatePreview).ToArray(), started.Files, started.Mentions);
+                    _turnSegments.Clear();
                     _response = new AssistantMessageComponent(_windowSystem);
+                    _turnSegments.Add(_response);
                     _responseRequestId = envelope.RequestId;
                     _content.AddControl(_response);
                     break;
@@ -254,23 +269,23 @@ internal sealed class ChatController : IDisposable
                     _response!.AppendResponse(text.Text);
                     break;
                 case ToolCallChanged tool when IsActive(envelope):
-                    _responsesByCallId[tool.Call.CallId] = _response!;
-                    _response!.UpdateToolCall(tool.Call);
+                    if (tool.Call.Delegation is not null) { ShowDelegation(tool.Call); break; }
+                    if (!_responsesByCallId.TryGetValue(tool.Call.CallId, out var toolOwner))
+                        _responsesByCallId[tool.Call.CallId] = toolOwner = _response!;
+                    toolOwner.UpdateToolCall(tool.Call);
                     break;
                 case BackgroundToolCallChanged background:
-                    if (envelope.SessionId != _state.SessionId) break;
-                    if (!_responsesByCallId.TryGetValue(background.Call.CallId, out var owner))
-                    {
-                        if (!IsActive(envelope)) break;
-                        owner = _response!;
-                        _responsesByCallId.Add(background.Call.CallId, owner);
-                    }
-                    owner.UpdateToolCall(background.Call);
+                    if (envelope.SessionId == _state.SessionId) ShowDelegation(background.Call);
+                    break;
+                case DelegationActivityChanged activity:
+                    if (envelope.SessionId == _state.SessionId) _subagents.Append(activity.Activity);
                     break;
                 case BashOutputChanged bash when IsActive(envelope):
-                    _response!.UpdateBashOutput(bash.Update);
+                    if (_responsesByCallId.TryGetValue(bash.Update.CallId, out var bashOwner))
+                        bashOwner.UpdateBashOutput(bash.Update);
                     break;
                 case TurnFinished finished when IsActive(envelope):
+                    foreach (var segment in _turnSegments) segment.FinishThinking();
                     if (finished.Status == "completed") _response!.Complete();
                     else _response!.ShowError(finished.Error ?? "Запрос прерван.");
                     _response = null;
@@ -291,10 +306,21 @@ internal sealed class ChatController : IDisposable
                 case QuestionRequested question:
                     ShowQuestion(question);
                     break;
+                case ReadPermissionRequested permission when _delegationBlocks.TryGetValue(permission.Request.CallId, out var block):
+                    var permissionWindow = _input.GetParentWindow() ?? throw new InvalidOperationException("No active window for permission request.");
+                    _delegationPermissions.Add(permission.InteractionId, block);
+                    _subagents.SetInteractionActive(true);
+                    _windowSystem.SetActiveWindow(permissionWindow);
+                    block.ShowReadPermission(permission.Request,
+                        decision => _conversation.Execute(new ResolveReadPermission(permission.InteractionId, decision)), permissionWindow);
+                    _content.ScrollChildIntoView(block);
+                    break;
                 case ReadPermissionRequested permission when _responsesByCallId.TryGetValue(permission.Request.CallId, out _):
                     var response = _responsesByCallId[permission.Request.CallId];
                     var window = response.GetParentWindow() ?? throw new InvalidOperationException("No active window for permission request.");
                     _permissions.Add(permission.InteractionId, (response, permission.Request.CallId));
+                    _subagents.SetInteractionActive(true);
+                    _windowSystem.SetActiveWindow(window);
                     response.ShowReadPermission(permission.Request,
                         decision => _conversation.Execute(new ResolveReadPermission(permission.InteractionId, decision)), window);
                     _content.ScrollChildIntoView(response);
@@ -317,6 +343,31 @@ internal sealed class ChatController : IDisposable
         }
     }
 
+    private DelegationMessageComponent CreateDelegationBlock(LakeCode.Core.Agent.Delegation.DelegationSnapshot task,
+        string kind, string text) => new(task, kind, text, () =>
+        {
+            if (_input.GetParentWindow() is { } parent) _subagents.Show(parent, task.TaskId);
+        });
+
+    private void ShowDelegation(LakeCode.Core.Agent.ToolCallUpdate call)
+    {
+        if (call.Delegation is not { } task) return;
+        var exchange = _subagents.Apply(task);
+        _header.SetDelegations(_subagents.Tasks);
+        if (exchange is not { } item) return;
+        _response?.SuspendForDelegation();
+        var block = CreateDelegationBlock(task, item.Kind, item.Text);
+        _delegationBlocks[call.CallId] = block;
+        _content.AddControl(block);
+        if (_response is not null)
+        {
+            _response = new AssistantMessageComponent(_windowSystem) { Visible = false };
+            _response.SuspendForDelegation();
+            _turnSegments.Add(_response);
+            _content.AddControl(_response);
+        }
+    }
+
     private bool IsActive(ConversationEventEnvelope envelope) =>
         _response is not null && _responseRequestId == envelope.RequestId;
 
@@ -324,22 +375,53 @@ internal sealed class ChatController : IDisposable
     {
         // Construct first, so failed preview/rendering doesn't clear the previous transcript.
         var controls = new List<IWindowControl>();
+        var exchanges = new HashSet<string>(StringComparer.Ordinal);
+        var tasks = new List<LakeCode.Core.Agent.Delegation.DelegationSnapshot>();
         foreach (var turn in view.Turns)
         {
             if (turn.IsBackgroundContinuation) controls.Add(CreateBackgroundNotice());
             else controls.Add(new UserMessageComponent(turn.Text, turn.Images.Select(ImageInput.CreatePreview).ToArray(), turn.Files, turn.Mentions));
             var response = new AssistantMessageComponent(_windowSystem);
+            controls.Add(response);
+            var segments = new List<AssistantMessageComponent> { response };
+            var owners = new Dictionary<string, AssistantMessageComponent>(StringComparer.Ordinal);
             foreach (var item in turn.Items)
             {
                 if (item.Kind == "thinking") response.AppendReasoning(item.Text!);
                 else if (item.Kind == "text") response.AppendResponse(item.Text!);
-                else if (item.ToolCall is { } call) response.UpdateToolCall(call);
+                else if (item.ToolCall?.Delegation is { } task)
+                {
+                    tasks.Add(task);
+                    if (SubagentsWindowComponent.ProjectExchange(task, exchanges) is not { } exchange) continue;
+                    response.SuspendForDelegation();
+                    controls.Add(CreateDelegationBlock(task, exchange.Kind, exchange.Text));
+                    response = new AssistantMessageComponent(_windowSystem) { Visible = false };
+                    response.SuspendForDelegation();
+                    segments.Add(response);
+                    controls.Add(response);
+                }
+                else if (item.ToolCall is { } call)
+                {
+                    if (!owners.TryGetValue(call.CallId, out var owner)) owners.Add(call.CallId, owner = response);
+                    owner.UpdateToolCall(call);
+                }
             }
+            foreach (var segment in segments) segment.FinishThinking();
             if (turn.Status == "completed") response.Complete();
             else response.ShowError(turn.Error ?? "Запрос не завершён.");
-            controls.Add(response);
         }
         var draftImages = view.DraftImages.Select(ImageInput.CreatePreview).ToArray();
+        _subagents.Reset();
+        foreach (var task in tasks.GroupBy(task => task.TaskId).Select(group => group.Last()))
+            _subagents.Apply(task.Status is LakeCode.Core.Agent.Delegation.DelegationStatus.Running or
+                LakeCode.Core.Agent.Delegation.DelegationStatus.WaitingForParent
+                ? task with { Status = LakeCode.Core.Agent.Delegation.DelegationStatus.Cancelled,
+                    Error = "Сабагент не восстановлен после открытия сессии или отката истории." }
+                : task);
+        _header.SetDelegations(_subagents.Tasks);
+        _delegationBlocks.Clear();
+        _delegationPermissions.Clear();
+        _turnSegments.Clear();
         _responsesByCallId.Clear();
         ((IControlHost)_content).ClearControls();
         foreach (var control in controls) _content.AddControl(control);
@@ -371,6 +453,8 @@ internal sealed class ChatController : IDisposable
     {
         var window = _input.GetParentWindow() ?? throw new InvalidOperationException("No active window for question.");
         _questionId = request.InteractionId;
+        _subagents.SetInteractionActive(true);
+        _windowSystem.SetActiveWindow(window);
         _question = new AskComponent(request.Questions.ToArray(), answers =>
         {
             HideInteraction(request.InteractionId);
@@ -384,8 +468,13 @@ internal sealed class ChatController : IDisposable
 
     private void HideInteraction(Guid id)
     {
+        if (_delegationPermissions.Remove(id, out var delegation)) delegation.CancelReadPermission();
         if (_permissions.Remove(id, out var permission)) permission.Response.CancelReadPermission(permission.CallId);
-        if (_questionId != id) return;
+        if (_questionId != id)
+        {
+            _subagents.SetInteractionActive(_questionId is not null || _permissions.Count > 0 || _delegationPermissions.Count > 0);
+            return;
+        }
         if (_question is { } question)
         {
             question.Cancel();
@@ -394,6 +483,7 @@ internal sealed class ChatController : IDisposable
         }
         _question = null;
         _questionId = null;
+        _subagents.SetInteractionActive(_permissions.Count > 0 || _delegationPermissions.Count > 0);
         _askHost.Visible = false;
         _input.Visible = true;
         _focusInput();
@@ -408,8 +498,12 @@ internal sealed class ChatController : IDisposable
         _btw.CancelRequested -= CancelSideQuestion;
         _btw.ClearRequested -= ClearSideQuestions;
         _btw.Closed -= RestoreFocusAfterSide;
+        _header.SubagentsRequested -= ShowSubagents;
+        _subagents.ReturnToChat -= RestoreFocusAfterSide;
         if (_questionId is { } id) HideInteraction(id);
-        foreach (var permissionId in _permissions.Keys.ToArray()) HideInteraction(permissionId);
+        foreach (var permissionId in _permissions.Keys.Concat(_delegationPermissions.Keys).ToArray()) HideInteraction(permissionId);
+        _delegationBlocks.Clear();
+        _turnSegments.Clear();
         _responsesByCallId.Clear();
     }
 }
