@@ -1,43 +1,43 @@
-# Работа над LakeCode
+# Working on LakeCode
 
-## Изучение и проверка
+## Discovery and verification
 
-- Не использовать индексатор и не создавать или обновлять индекс проекта.
-- Использовать LSP для работы с символами и диагностики, если он доступен.
-- Не создавать и не запускать тесты.
-- Не запускать приложение, форматтеры и другие проверки через команды, кроме сборки. Приложение я проверяю сам.
-- После любой правки перед финальным ответом выполнить из корня репозитория:
+- Do not use an indexer or create or update a project index.
+- Use LSP for symbols and diagnostics when available.
+- Do not create or run tests.
+- Do not run the application, formatters, or other command-based checks except builds. The user checks the application manually.
+- After any edit, before the final response, run from the repository root:
   `dotnet build LakeCode.Cli/LakeCode.Cli.csproj`.
-- Ошибки сборки, вызванные правкой, исправить и повторить сборку.
-- Пришедшую позже диагностику LSP учитывать и исправлять ошибки без запуска приложения.
+- Fix build errors introduced by the edit and rebuild.
+- Address delayed LSP diagnostics without launching the application.
 
-## Архитектура
+## Architecture
 
-- Основа агента — Microsoft Agent Framework (MAF); точка входа — `LakeCode.Core/Agent/AgentLoop.cs`.
-- `LakeCode.Core` не зависит от CLI и SharpConsoleUI. CLI подключает ядро через ProjectReference.
-- `ConversationService` владеет агентом, очередью, отменой, сессиями, rewind и сохранением; только сервис читает основной агентный поток.
-- Контракты ядра разделены: команды `ConversationCommand`, упорядоченные события `ConversationEvent`, снимок `ConversationState`.
-- Подписчики уведомлений только ставят обновления в очередь представления, не блокируют и не бросают исключения. `ChatController` переводит их на UI-поток.
-- Компоненты UI собирать в `LakeCode.Cli/Program.cs`; clipboard, PixelBuffer и превью оставлять в CLI, оригинальные данные вложений — в ядре.
-- Профили подключений и создание транспорта находятся в `LakeCode.Core/Providers`; общая логика не должна зависеть от одного провайдера, endpoint или API mode.
-- `LakeCode.Eval.Contracts` и `LakeCode.Eval.Worker` обслуживают C# eval.
+- The agent uses Microsoft Agent Framework (MAF); entry point: `LakeCode.Core/Agent/AgentLoop.cs`.
+- `LakeCode.Core` has no CLI or SharpConsoleUI dependency. CLI references Core via ProjectReference.
+- `ConversationService` owns the agent, queue, cancellation, sessions, rewind, and persistence; only this service consumes the main agent stream.
+- Core contracts are separate: `ConversationCommand` commands, ordered `ConversationEvent` events, and `ConversationState` snapshots.
+- Notification subscribers only enqueue view updates, never block or throw. `ChatController` dispatches updates to the UI thread.
+- Compose UI components in `LakeCode.Cli/Program.cs`; keep clipboard, PixelBuffer, and previews in CLI, original attachment data in Core.
+- Connection profiles and transport creation live in `LakeCode.Core/Providers`; shared logic must not depend on a single provider, endpoint, or API mode.
+- `LakeCode.Eval.Contracts` and `LakeCode.Eval.Worker` support C# eval.
 
-## Инварианты реализации
+## Implementation invariants
 
-- Один `AgentLoop` хранит одну сессию; основные запросы выполнять последовательно и полностью читать поток ответа.
-- Подключение, модель, reasoning и данные сообщения фиксируются при отправке; изменения настроек не меняют принятый запрос.
-- Отмена и rewind не откатывают выполненные побочные эффекты.
-- `SystemPromptBuilder` читает глобальный `~/.agents/AGENTS.md`, затем проектный `AGENTS.md` один раз при создании сессии, перед фиксированным контекстом окружения. Отсутствующие и пустые файлы пропускаются; другие ошибки чтения не скрываются.
-- Настройки провайдеров в `~/.lakecode/providers.json` содержат ключи без шифрования; сохранять ограничения доступа. Ключи не включать в сохраняемые сессии и очередь сообщений.
-- Общие файловые ограничения реализованы в `LakeCode.Core/Agent/tools/WorkspaceFiles.cs`.
-- Запись файлов должна оставаться атомарной, сохранять применимые права и не оставлять частичный результат при отмене до фиксации.
-- Изображения отправлять оригинальными байтами, не превью; проверять формат, лимиты и поддержку моделью. Ошибки подготовки вложений не должны терять черновик.
+- Each `AgentLoop` holds one session; run main requests sequentially and fully consume each response stream.
+- Connection, model, reasoning, and message data are captured at submission; later settings changes do not affect accepted requests.
+- Cancellation and rewind do not undo completed side effects.
+- `SystemPromptBuilder` reads global `~/.agents/AGENTS.md`, then project `AGENTS.md`, once at session creation, before the fixed environment context. Skip missing or empty files; propagate other read errors.
+- Provider settings in `~/.lakecode/providers.json` store unencrypted keys; preserve access restrictions. Never include keys in persisted sessions or message queues.
+- Shared file restrictions live in `LakeCode.Core/Agent/tools/WorkspaceFiles.cs`.
+- File writes must remain atomic, preserve applicable permissions, and leave no partial result if cancelled before commit.
+- Send original image bytes, not previews; validate format, limits, and model support. Attachment preparation failures must preserve the draft.
 
-## UI и документация
+## UI and documentation
 
-- Использовать SharpConsoleUI и подходящие стандартные контролы вместо собственной отрисовки; поддерживать единый стиль компонентов.
-- Сохранять порядок текста и вызовов инструментов, отдельно показывать reasoning, ошибки и отмену; закрытые provider-specific данные не отображать.
-- Не блокировать UI чтением файлов, clipboard или агентным потоком. Ручные действия пользователя должны иметь приоритет над автоматическим поведением.
-- Подробности контрактов, провайдеров, сохранения и делегирования: `LakeCode.Core/README.md`; реализация UI — `LakeCode.Cli/Components` и `ChatController.cs`.
-- Для изменений MAF читать `.agents/skills/microsoft-agent-framework/SKILL.md` и его `references/dotnet.md`; для официальной документации использовать skill `microsoft-docs`.
-- Не дублировать здесь общие правила системного промпта, версии зависимостей, каталоги моделей, числовые лимиты и историю UI-доработок.
+- Use SharpConsoleUI and suitable standard controls instead of custom rendering; keep component styling consistent.
+- Preserve text and tool-call order; display reasoning, errors, and cancellation separately. Do not display private provider-specific data.
+- Do not block the UI with file reads, clipboard access, or agent streaming. Manual user actions take precedence over automatic behavior.
+- Contracts, providers, persistence, and delegation: `LakeCode.Core/README.md`; UI implementation: `LakeCode.Cli/Components` and `ChatController.cs`.
+- For MAF changes, read `.agents/skills/microsoft-agent-framework/SKILL.md` and its `references/dotnet.md`; use the `microsoft-docs` skill for official documentation.
+- Do not duplicate general system-prompt rules, dependency versions, model catalogs, numeric limits, or UI change history here.
