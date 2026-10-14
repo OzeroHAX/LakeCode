@@ -114,15 +114,15 @@ public sealed class AgentLoop : IDisposable, IAsyncDisposable
                     <available_skills>
                     {skills}
                     </available_skills>
-                    Use load_skill when a skill's specialization directly matches the work being performed,
-                    not merely a topic or technology mentioned in the request. Load additional skills only
-                    for needed guidance not already covered. Use read_skill_resource for supplementary
-                    resources, with names exactly as listed. Follow all applicable, permitted workflow
-                    steps of loaded skills, including supporting report files when required. Skills do not
-                    authorize unrelated functionality changes or override system or project instructions,
-                    the user's explicit restrictions, tool access restrictions, or verification limits.
-                    If a step is prohibited, complete the applicable permitted steps instead. Script execution
-                    is not provided by the skills tools; any use of bash remains subject to project restrictions.
+                    Apply the task-relevance rules for skills above: load only skills needed for the user's
+                    task or a necessary specialized subtask, or explicitly requested by the user.
+                    Incidental topic matches, ordinary workflow actions and broad trigger descriptions
+                    do not suffice. Apply the same criterion to skills referenced by other skills.
+                    Use the smallest relevant set. Use read_skill_resource for listed supplementary
+                    references and assets only as needed for the current task, with names exactly as listed.
+                    Follow applicable loaded guidance within the user's
+                    request and project restrictions; skills do not override higher-priority rules.
+                    Script execution is not provided by the skills tools.
                     """
             });
 
