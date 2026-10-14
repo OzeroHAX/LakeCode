@@ -61,11 +61,14 @@ internal static class ProviderClientFactory
                     StoredOutputEnabled = false,
                     ReasoningOptions = new ResponseReasoningOptions
                     {
-                        ReasoningEffortLevel = new ResponseReasoningEffortLevel(effort),
-                        ReasoningSummaryVerbosity = title || effort == "none" ? null : ResponseReasoningSummaryVerbosity.Auto
+                        ReasoningEffortLevel = new ResponseReasoningEffortLevel(effort)
                     }
                 };
-                if (!title && effort != "none") raw.IncludedProperties.Add(IncludedResponseProperty.ReasoningEncryptedContent);
+                if (!title && effort != "none")
+                {
+                    raw.ReasoningOptions.ReasoningSummaryVerbosity = ResponseReasoningSummaryVerbosity.Auto;
+                    raw.IncludedProperties.Add(IncludedResponseProperty.ReasoningEncryptedContent);
+                }
                 raw.Patch.Set("$.prompt_cache_key"u8, sessionId);
                 return raw;
             };
