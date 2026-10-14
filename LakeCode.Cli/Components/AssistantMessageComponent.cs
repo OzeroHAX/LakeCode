@@ -11,6 +11,8 @@ internal sealed class AssistantMessageComponent : CollapsiblePanel
 {
     private readonly StringBuilder _response = new();
     private readonly ThinkingComponent _thinking;
+    private readonly ConsoleWindowSystem _windowSystem;
+    private readonly Dictionary<string, BashToolCallComponent> _bashCalls = new(StringComparer.Ordinal);
     private MarkupControl? _body;
     private bool _hasResponse;
     private ToolCallGroupComponent? _activeToolGroup;
@@ -19,6 +21,7 @@ internal sealed class AssistantMessageComponent : CollapsiblePanel
 
     public AssistantMessageComponent(ConsoleWindowSystem windowSystem)
     {
+        _windowSystem = windowSystem;
         _thinking = new ThinkingComponent(windowSystem);
         Collapsible = false;
         ShowHeader = false;
@@ -59,6 +62,11 @@ internal sealed class AssistantMessageComponent : CollapsiblePanel
 
     public void UpdateToolCall(ToolCallUpdate update)
     {
+        if (_bashCalls.TryGetValue(update.CallId, out var existingBash))
+        {
+            existingBash.Update(update);
+            return;
+        }
         if (_evalCalls.TryGetValue(update.CallId, out var existingEval))
         {
             existingEval.Update(update);
@@ -83,7 +91,15 @@ internal sealed class AssistantMessageComponent : CollapsiblePanel
             AddControl(call);
             return;
         }
-        if (update.Name is "bash" or "write_file" or "edit_file")
+        if (update.Name == "bash")
+        {
+            _activeToolGroup = null;
+            var call = new BashToolCallComponent(_windowSystem, update);
+            _bashCalls.Add(update.CallId, call);
+            AddControl(call);
+            return;
+        }
+        if (update.Name is "write_file" or "edit_file")
         {
             _activeToolGroup = null;
             var call = new ToolCallGroupComponent(update.Name, alwaysVisible: true);
@@ -102,6 +118,11 @@ internal sealed class AssistantMessageComponent : CollapsiblePanel
         _activeToolGroup.Update(update);
     }
 
+    public void UpdateBashOutput(BashOutputUpdate update)
+    {
+        if (_bashCalls.TryGetValue(update.CallId, out var call)) call.UpdateOutput(update.Execution);
+    }
+
     public void ShowReadPermission(ExternalReadRequest request, Action<ExternalReadDecision> complete,
         Window window) => _toolCalls[request.CallId].ShowReadPermission(request, complete, window);
 
@@ -117,6 +138,8 @@ internal sealed class AssistantMessageComponent : CollapsiblePanel
             group.FinishPending();
         foreach (var call in _evalCalls.Values)
             call.FinishPending();
+        foreach (var call in _bashCalls.Values)
+            call.FinishPending();
     }
 
     private static MarkupControl CreateBody() => new(new List<string>())
@@ -129,7 +152,7 @@ internal sealed class AssistantMessageComponent : CollapsiblePanel
     public void Complete()
     {
         FinishThinking();
-        if (!_hasResponse && _toolCalls.Count == 0 && _evalCalls.Count == 0)
+        if (!_hasResponse && _toolCalls.Count == 0 && _evalCalls.Count == 0 && _bashCalls.Count == 0)
         {
             _body!.Visible = true;
             _body.Text = "[grey]Модель завершила ответ без текста.[/]";

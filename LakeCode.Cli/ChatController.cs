@@ -31,6 +31,8 @@ internal sealed class ChatController : IDisposable
     private Guid? _questionId;
     private readonly Dictionary<Guid, (AssistantMessageComponent Response, string CallId)> _permissions = [];
     private bool _disposed;
+    private readonly object _bashOutputGate = new();
+    private readonly Dictionary<string, ConversationEventEnvelope> _pendingBashOutput = new(StringComparer.Ordinal);
 
     public bool CanRewind => _state.CanRewind && !_input.IsImporting &&
         string.IsNullOrWhiteSpace(_input.Editor.Input) && !_input.HasAttachments && !_btw.IsOpen;
@@ -161,7 +163,30 @@ internal sealed class ChatController : IDisposable
     }
 
     private void OnStateChanged(ConversationState state) => Enqueue(() => ApplyState(state));
-    private void OnEvent(ConversationEventEnvelope envelope) => Enqueue(() => ApplyEvent(envelope));
+    private void OnEvent(ConversationEventEnvelope envelope)
+    {
+        if (envelope.Event is not BashOutputChanged bash)
+        {
+            Enqueue(() => ApplyEvent(envelope));
+            return;
+        }
+        lock (_bashOutputGate)
+        {
+            var queued = _pendingBashOutput.ContainsKey(bash.Update.CallId);
+            _pendingBashOutput[bash.Update.CallId] = envelope;
+            if (queued) return;
+        }
+        // One pending UI notification per command, even if rendering temporarily falls behind.
+        Enqueue(() =>
+        {
+            ConversationEventEnvelope latest;
+            lock (_bashOutputGate)
+            {
+                if (!_pendingBashOutput.Remove(bash.Update.CallId, out latest!)) return;
+            }
+            ApplyEvent(latest);
+        });
+    }
     private void Enqueue(Action action) => _windowSystem.EnqueueOnUIThread(() =>
     {
         if (!_disposed) action();
@@ -222,6 +247,9 @@ internal sealed class ChatController : IDisposable
                     break;
                 case ToolCallChanged tool when IsActive(envelope):
                     _response!.UpdateToolCall(tool.Call);
+                    break;
+                case BashOutputChanged bash when IsActive(envelope):
+                    _response!.UpdateBashOutput(bash.Update);
                     break;
                 case TurnFinished finished when IsActive(envelope):
                     if (finished.Status == "completed") _response!.Complete();

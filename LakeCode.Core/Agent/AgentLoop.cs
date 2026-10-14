@@ -27,6 +27,7 @@ public sealed class AgentLoop : IDisposable
     private readonly ProviderChatClient _client = new();
     private readonly string _cacheSessionId;
     private readonly AsyncLocal<Action<FileChange>?> _fileChangeObserver = new();
+    private readonly AsyncLocal<Action<BashExecution>?> _bashOutputObserver = new();
     private readonly WorkspaceFiles _files;
     private readonly Tools.Eval.EvalTool _eval;
     private readonly Dictionary<string, AIFunction> _evalFunctions = new(StringComparer.Ordinal);
@@ -38,6 +39,7 @@ public sealed class AgentLoop : IDisposable
     private readonly Dictionary<string, ToolCallUpdate> _runTools = new(StringComparer.Ordinal);
 
     public event Action<ToolCallUpdate>? ToolCallUpdated;
+    public event Action<BashOutputUpdate>? BashOutputUpdated;
     public event Action? BeforeModelRequest;
     internal SideQuestionContext? SideContext => _historyCapture.SideContext;
     internal string? SideContextError => _historyCapture.SideContextError;
@@ -58,7 +60,7 @@ public sealed class AgentLoop : IDisposable
         var readFile = new ReadFileTool(files);
         var listDirectory = new ListDirectoryTool(files);
         var grep = new GrepTool(files);
-        var bash = new BashTool(files);
+        var bash = new BashTool(files, execution => _bashOutputObserver.Value?.Invoke(execution));
         var writeFile = new WriteFileTool(files, change => _fileChangeObserver.Value?.Invoke(change));
         var editFile = new EditFileTool(files, change => _fileChangeObserver.Value?.Invoke(change));
         var web = new WebClient(_cacheSessionId);
@@ -204,8 +206,15 @@ public sealed class AgentLoop : IDisposable
         var call = new ToolCallUpdate(callId, name, argumentsJson, ToolCallStatus.Running);
         ToolCallUpdated?.Invoke(call);
         FileChange? fileChange = null;
+        BashExecution? bashExecution = null;
         var previousObserver = _fileChangeObserver.Value;
+        var previousBashObserver = _bashOutputObserver.Value;
         _fileChangeObserver.Value = change => fileChange = change;
+        _bashOutputObserver.Value = execution =>
+        {
+            bashExecution = execution;
+            BashOutputUpdated?.Invoke(new BashOutputUpdate(callId, execution));
+        };
         try
         {
             var accessError = "";
@@ -241,23 +250,31 @@ public sealed class AgentLoop : IDisposable
                 Status = text.StartsWith("Error:", StringComparison.Ordinal)
                     ? ToolCallStatus.Failed : ToolCallStatus.Completed,
                 Result = text,
-                FileChange = fileChange
+                FileChange = fileChange,
+                BashExecution = bashExecution
             });
             return result;
         }
         catch (OperationCanceledException)
         {
-            ToolCallUpdated?.Invoke(call with { Status = ToolCallStatus.Cancelled, Result = "Call cancelled." });
+            ToolCallUpdated?.Invoke(call with
+            {
+                Status = ToolCallStatus.Cancelled, Result = "Call cancelled.", BashExecution = bashExecution
+            });
             throw;
         }
         catch (Exception error)
         {
-            ToolCallUpdated?.Invoke(call with { Status = ToolCallStatus.Failed, Result = error.Message });
+            ToolCallUpdated?.Invoke(call with
+            {
+                Status = ToolCallStatus.Failed, Result = error.Message, BashExecution = bashExecution
+            });
             throw;
         }
         finally
         {
             _fileChangeObserver.Value = previousObserver;
+            _bashOutputObserver.Value = previousBashObserver;
         }
     }
 

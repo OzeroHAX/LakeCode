@@ -761,6 +761,11 @@ public sealed class ConversationService
                 Emit(new ToolCallChanged(update));
             }
         }
+        void OnBashOutput(BashOutputUpdate update)
+        {
+            // Live snapshots are presentation events, not repeated entries in the saved history.
+            lock (_gate) Emit(new BashOutputChanged(update));
+        }
         void OnBeforeModelRequest()
         {
             if (Interlocked.Exchange(ref _boundaryStopRequested, 0) == 0) return;
@@ -796,6 +801,7 @@ public sealed class ConversationService
             }
             await SaveSnapshotAsync(snapshot, generationToken).ConfigureAwait(false);
             _agent.ToolCallUpdated += OnToolCall;
+            _agent.BashOutputUpdated += OnBashOutput;
             _agent.BeforeModelRequest += OnBeforeModelRequest;
             long? firstTokenTimestamp = null, outputTokens = null;
             await foreach (var update in _agent.RunAsync(message, model, reasoningEffort, provider, generationToken).ConfigureAwait(false))
@@ -856,7 +862,12 @@ public sealed class ConversationService
         }
         finally
         {
-            if (_agent is not null) { _agent.ToolCallUpdated -= OnToolCall; _agent.BeforeModelRequest -= OnBeforeModelRequest; }
+            if (_agent is not null)
+            {
+                _agent.ToolCallUpdated -= OnToolCall;
+                _agent.BashOutputUpdated -= OnBashOutput;
+                _agent.BeforeModelRequest -= OnBeforeModelRequest;
+            }
             if (!completed)
             {
                 try

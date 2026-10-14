@@ -17,6 +17,7 @@ public sealed record TurnStarted(string Text, ImmutableArray<ImageData> Images,
 public sealed record ReasoningDelta(string Text) : ConversationEvent;
 public sealed record TextDelta(string Text) : ConversationEvent;
 public sealed record ToolCallChanged(ToolCallUpdate Call) : ConversationEvent;
+public sealed record BashOutputChanged(BashOutputUpdate Update) : ConversationEvent;
 public sealed record TurnFinished(string Status, string? Error) : ConversationEvent;
 public sealed record ConversationError(string Message) : ConversationEvent;
 public sealed record SideQuestionsChanged(SideQuestionState State) : ConversationEvent;

@@ -13,6 +13,7 @@ public sealed record ToolCallUpdate(
     string CallId, string Name, string Arguments, ToolCallStatus Status, string? Result = null)
 {
     public FileChange? FileChange { get; init; }
+    public BashExecution? BashExecution { get; init; }
 }
 
 /// <summary>Contents associated with a successful file write; null Before means preview was unavailable.</summary>

@@ -5,7 +5,7 @@ using System.Text.RegularExpressions;
 
 namespace LakeCode.Core.Agent.Tools.Bash;
 
-internal sealed class BashTool(WorkspaceFiles files)
+internal sealed class BashTool(WorkspaceFiles files, Action<BashExecution> reportOutput)
 {
     [Description("Run a non-interactive bash command and return its exit code, stdout and stderr after completion. No background jobs, polling or interactive input. Output is limited to 32000 characters. Inline Python and JavaScript execution is prohibited; rewrite inline code in C# and use eval. Running script files and modules is allowed. Bash is not sandboxed and has the application's OS permissions.")]
     public Task<string> RunAsync(
@@ -47,8 +47,12 @@ internal sealed class BashTool(WorkspaceFiles files)
         }
         process.StandardInput.Close();
 
-        var stdout = ReadOutputAsync(process.StandardOutput, cancellationToken);
-        var stderr = ReadOutputAsync(process.StandardError, cancellationToken);
+        var capture = new BashOutputCapture(reportOutput);
+        capture.Publish();
+        using var outputUpdates = new CancellationTokenSource();
+        var pump = capture.PumpAsync(outputUpdates.Token);
+        var stdout = ReadOutputAsync(process.StandardOutput, capture, cancellationToken);
+        var stderr = ReadOutputAsync(process.StandardError, capture, cancellationToken);
         try
         {
             await Task.WhenAll(process.WaitForExitAsync(cancellationToken), stdout, stderr);
@@ -66,6 +70,12 @@ internal sealed class BashTool(WorkspaceFiles files)
             }
             await process.WaitForExitAsync(CancellationToken.None);
             throw;
+        }
+        finally
+        {
+            await outputUpdates.CancelAsync();
+            await pump;
+            capture.Publish(force: true, exitCode: process.HasExited ? process.ExitCode : null);
         }
 
         var status = process.ExitCode == 0 ? "Exit code: 0" : $"Error: Exit code: {process.ExitCode}";
@@ -155,7 +165,8 @@ internal sealed class BashTool(WorkspaceFiles files)
         return false;
     }
 
-    private static async Task<string> ReadOutputAsync(StreamReader reader, CancellationToken cancellationToken)
+    private static async Task<string> ReadOutputAsync(StreamReader reader, BashOutputCapture capture,
+        CancellationToken cancellationToken)
     {
         const int limit = WorkspaceFiles.MaxOutputCharacters / 2;
         var output = new StringBuilder();
@@ -164,6 +175,7 @@ internal sealed class BashTool(WorkspaceFiles files)
         int count;
         while ((count = await reader.ReadAsync(buffer.AsMemory(), cancellationToken)) != 0)
         {
+            capture.Append(buffer.AsSpan(0, count));
             var retained = Math.Min(count, limit - output.Length);
             output.Append(buffer, 0, retained);
             truncated |= retained < count;
