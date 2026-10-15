@@ -31,7 +31,7 @@ var statisticsStore = new StatisticsStore(modelStore.SelectedModel);
 var modelsWindow = new ModelsWindowComponent(modelStore, settingsStorage, shutdown.Token);
 var providersWindow = new ProvidersWindowComponent(providers, modelStore, shutdown.Token);
 var sessionsWindow = new SessionsWindowComponent();
-var conversation = new ConversationService(workspaceRoot, providers, modelStore.SelectedModel, shutdown.Token);
+var conversation = new ConversationService(workspaceRoot, providers, modelStore.SelectedModel, shutdown.Token, settingsStorage);
 
 var windowSystem = new ConsoleWindowSystem(
     new NetConsoleDriver(RenderMode.Buffer),
@@ -41,6 +41,7 @@ var header = new HeaderComponent("LakeCode", "Coding agent");
 var mainContent = new MainContentComponent();
 using var input = new InputComponent(windowSystem, shutdown.Token);
 var footer = new FooterComponent(windowSystem, modelStore, statisticsStore, workspaceRoot);
+footer.ModelsRequested += () => modelsWindow.Show(windowSystem);
 using var btw = new BtwWindowComponent(windowSystem);
 using var subagents = new SubagentsWindowComponent(windowSystem);
 var askHost = new SharpConsoleUI.Controls.PanelControl

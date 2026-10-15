@@ -18,6 +18,7 @@ internal sealed class ModelsWindowComponent(ModelStore store, AgentSettingsStora
         var main = CreatePage(false, new ModelSelection(store.SelectedProviderId, store.SelectedModel.Id, store.SelectedReasoningEffort));
         var planning = CreatePage(true, store.PlanModel);
         var children = CreatePage(true, store.SubagentModel);
+        var classifier = new ClassifierModelPage(store.Providers, store.Settings.Classifier);
         var tabs = new TabControl
         {
             HorizontalAlignment = HorizontalAlignment.Stretch, VerticalAlignment = VerticalAlignment.Fill,
@@ -28,6 +29,7 @@ internal sealed class ModelsWindowComponent(ModelStore store, AgentSettingsStora
         tabs.AddTab("Основной агент", main.Panel, false);
         tabs.AddTab("Планирование", planning.Panel, false);
         tabs.AddTab("Сабагенты", children.Panel, false);
+        tabs.AddTab("Классификатор", classifier.Panel, false);
         var status = Label("");
         var cancel = Button("Отмена");
         var apply = Button("Применить");
@@ -36,7 +38,7 @@ internal sealed class ModelsWindowComponent(ModelStore store, AgentSettingsStora
         buttons.Margin = new Margin(2, 1, 2, 0);
         var busy = false;
         var window = new WindowBuilder(windowSystem)
-            .WithTitle("Выбор модели").WithSize(76, 24)
+            .WithTitle("Выбор модели").WithSize(88, 28)
             .Centered().AsModal().HideTitleButtons()
             .Minimizable(false).Maximizable(false).Resizable(false).Movable(false)
             .WithBorderStyle(BorderStyle.Rounded).WithBorderColor(new Color(80, 130, 145))
@@ -50,7 +52,7 @@ internal sealed class ModelsWindowComponent(ModelStore store, AgentSettingsStora
         {
             if (e.KeyInfo.Key != ConsoleKey.Escape) return;
             // Let an open dropdown consume Esc before closing the dialog.
-            if (main.Effort.IsDropdownOpen || planning.Effort.IsDropdownOpen || children.Effort.IsDropdownOpen) return;
+            if (main.Effort.IsDropdownOpen || planning.Effort.IsDropdownOpen || children.Effort.IsDropdownOpen || classifier.DropdownOpen) return;
             e.Handled = true;
             if (!busy) windowSystem.CloseWindow(window);
         };
@@ -60,17 +62,24 @@ internal sealed class ModelsWindowComponent(ModelStore store, AgentSettingsStora
         async Task ApplyAsync()
         {
             if (busy) return;
-            ModelSelection mainSelection;
+            ModelSelection? mainSelection;
             AgentSettings settings;
             try
             {
-                mainSelection = main.Selection ?? throw new InvalidOperationException("Выберите модель основного агента.");
-                var model = store.Providers.GetModel(mainSelection.ProviderId, mainSelection.ModelId);
-                if (!model.ReasoningEfforts.Contains(mainSelection.ReasoningEffort))
-                    throw new InvalidOperationException("Выберите поддерживаемый reasoning основного агента.");
+                mainSelection = main.Selection;
+                if (mainSelection is not null)
+                {
+                    var model = store.Providers.GetModel(mainSelection.ProviderId, mainSelection.ModelId);
+                    if (!model.ReasoningEfforts.Contains(mainSelection.ReasoningEffort))
+                        throw new InvalidOperationException("Выберите поддерживаемый reasoning основного агента.");
+                }
                 planning.Selection?.Resolve(store.Providers, "планирования");
                 children.Selection?.Resolve(store.Providers);
-                settings = store.Settings with { PlanModel = planning.Selection, SubagentModel = children.Selection };
+                settings = store.Settings with
+                {
+                    PlanModel = planning.Selection, SubagentModel = children.Selection,
+                    Classifier = classifier.Capture(store.Providers)
+                };
             }
             catch (Exception error) { ShowError(error); return; }
             busy = true;
@@ -80,12 +89,15 @@ internal sealed class ModelsWindowComponent(ModelStore store, AgentSettingsStora
             status.Text = "[cyan]Применение…[/]";
             try
             {
-                if (settings.SubagentModel != store.SubagentModel || settings.PlanModel != store.PlanModel)
+                if (settings.SubagentModel != store.SubagentModel || settings.PlanModel != store.PlanModel || settings.Classifier != store.Settings.Classifier)
                     await Task.Run(() => settingsStorage.SaveAsync(settings, shutdown), shutdown).ConfigureAwait(false);
                 windowSystem.EnqueueOnUIThread(() =>
                 {
-                    store.SelectModel(mainSelection.ProviderId, mainSelection.ModelId);
-                    store.SelectReasoningEffort(mainSelection.ReasoningEffort);
+                    if (mainSelection is not null)
+                    {
+                        store.SelectModel(mainSelection.ProviderId, mainSelection.ModelId);
+                        store.SelectReasoningEffort(mainSelection.ReasoningEffort);
+                    }
                     store.ApplySettings(settings);
                     windowSystem.CloseWindow(window);
                 });

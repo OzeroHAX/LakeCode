@@ -31,6 +31,8 @@ public sealed class AgentLoop : IDisposable, IAsyncDisposable
     private bool _planSubmitted;
     internal Func<ExecutionApprovalRequest, CancellationToken, Task<bool>>? ConfirmExecution { get; init; }
     internal Func<string, ImplementationPlan>? SavePlan { get; init; }
+    internal Func<ExecutionApprovalRequest, CancellationToken, Task<ExecutionApproval.ExecutionAssessment>>? AssessExecution { get; init; }
+    internal Func<bool>? IsExecutionClassifierEnabled { get; init; }
 
     private bool IsToolAllowed(string name) => _parentQuestions is not null
         ? name is "read_file" or "list_directory" or "grep" or "ask_parent"
@@ -294,7 +296,8 @@ public sealed class AgentLoop : IDisposable, IAsyncDisposable
     {
         var call = new ToolCallUpdate(callId, name, argumentsJson,
             _mode == AgentMode.Plan && name is ("bash" or "eval")
-                ? ToolCallStatus.AwaitingApproval : ToolCallStatus.Running);
+                ? IsExecutionClassifierEnabled?.Invoke() == true ? ToolCallStatus.Classifying : ToolCallStatus.AwaitingApproval
+                : ToolCallStatus.Running);
         if (name != "delegate") ToolCallUpdated?.Invoke(call);
         FileChange? fileChange = null;
         BashExecution? bashExecution = null;
@@ -324,12 +327,23 @@ public sealed class AgentLoop : IDisposable, IAsyncDisposable
                     accessError = "Error: Nonempty command/code is required.";
                 else if (_mode == AgentMode.Plan)
                 {
-                    ToolCallUpdated?.Invoke(call with { Status = ToolCallStatus.AwaitingApproval });
                     using (callId.StartsWith("eval-", StringComparison.Ordinal) ? _eval?.PauseTimeout() : null)
                     {
-                        if (ConfirmExecution is null || !await ConfirmExecution(
-                                new ExecutionApprovalRequest(callId, name, description.GetString()!, argumentsJson), cancellationToken))
-                            accessError = "Error: Execution denied by user or approval unavailable. Action was not executed. Do not retry through another tool.";
+                        var request = new ExecutionApprovalRequest(callId, name, description.GetString()!, argumentsJson);
+                        var assessment = AssessExecution is null
+                            ? new ExecutionApproval.ExecutionAssessment(ExecutionApproval.ExecutionDecision.AskUser, "Классификатор недоступен.")
+                            : await AssessExecution(request, cancellationToken);
+                        cancellationToken.ThrowIfCancellationRequested();
+                        call = call with { Assessment = assessment };
+                        if (assessment.Decision == ExecutionApproval.ExecutionDecision.Deny)
+                            accessError = "Error: Execution denied by policy. " + assessment.Reason + " Action was not executed. Do not bypass through another tool.";
+                        else if (assessment.Decision == ExecutionApproval.ExecutionDecision.AskUser)
+                        {
+                            ToolCallUpdated?.Invoke(call with { Status = ToolCallStatus.AwaitingApproval });
+                            var allowed = ConfirmExecution is not null && await ConfirmExecution(request with { Assessment = assessment }, cancellationToken);
+                            call = call with { Assessment = assessment with { ManualAllowed = allowed } };
+                            if (!allowed) accessError = "Error: Execution denied by user or approval unavailable. Action was not executed. Do not retry through another tool.";
+                        }
                     }
                     cancellationToken.ThrowIfCancellationRequested();
                     if (accessError.Length == 0) ToolCallUpdated?.Invoke(call with { Status = ToolCallStatus.Running });

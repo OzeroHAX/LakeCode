@@ -6,13 +6,15 @@ public enum ToolCallStatus
     Completed,
     Failed,
     Cancelled,
-    AwaitingApproval
+    AwaitingApproval,
+    Classifying
 }
 
 /// <summary>A snapshot of an actual local function invocation, identified across start and finish.</summary>
 public sealed record ToolCallUpdate(
     string CallId, string Name, string Arguments, ToolCallStatus Status, string? Result = null)
 {
+    public ExecutionApproval.ExecutionAssessment? Assessment { get; init; }
     public FileChange? FileChange { get; init; }
     public BashExecution? BashExecution { get; init; }
     public Delegation.DelegationSnapshot? Delegation { get; init; }

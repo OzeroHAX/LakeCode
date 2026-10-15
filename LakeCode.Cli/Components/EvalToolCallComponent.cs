@@ -13,6 +13,9 @@ internal sealed class EvalToolCallComponent : CollapsiblePanel
     private const int ResultCharacterLimit = 2000;
     private readonly MarkupControl _code;
     private readonly MarkupControl _result;
+    private readonly ExecutionAssessmentComponent _assessment = new();
+    private readonly PanelControl _approvalHost = new() { HorizontalAlignment = HorizontalAlignment.Stretch };
+    private ExecutionApprovalComponent? _approval;
     private readonly string _options;
     private ToolCallStatus _status;
 
@@ -42,7 +45,9 @@ internal sealed class EvalToolCallComponent : CollapsiblePanel
         var code = root.TryGetProperty("code", out var value) ? value.GetString() ?? "" : "";
         _options = string.Join(" · ", root.EnumerateObject()
             .Where(property => property.Name is not ("code" or "description"))
-            .Select(property => $"{property.Name}: {property.Value}"));
+            .Select(property => $"{property.Name}: {property.Value}")
+            .Concat(root.TryGetProperty("timeout", out _) ? [] : new[] { "timeout: 30" })
+            .Concat(root.TryGetProperty("reset", out _) ? [] : new[] { "reset: false" }));
 
         _code = CreateBody();
         _code.Margin = new Margin(0, 0, 0, 1);
@@ -52,6 +57,11 @@ internal sealed class EvalToolCallComponent : CollapsiblePanel
         _code.Text = MarkdownToMarkup.Convert($"{fence}csharp\n{code}\n{fence}");
         _result = CreateBody();
         AddControl(_code);
+        var parameters = CreateBody();
+        parameters.Text = MarkupParser.Escape("Параметры: " + _options);
+        AddControl(parameters);
+        AddControl(_assessment);
+        AddControl(_approvalHost);
         AddControl(_result);
         Update(update);
     }
@@ -59,15 +69,26 @@ internal sealed class EvalToolCallComponent : CollapsiblePanel
     public void Update(ToolCallUpdate update)
     {
         _status = update.Status;
-        var result = update.Result ?? (update.Status == ToolCallStatus.AwaitingApproval ? "Код ещё не исполнялся; ожидает разрешения." : update.Status == ToolCallStatus.Running
+        _assessment.Update(update.Assessment);
+        if (_status is not (ToolCallStatus.Classifying or ToolCallStatus.AwaitingApproval)) _approval?.Cancel();
+        var result = update.Result ?? (update.Status == ToolCallStatus.Classifying ? "Проверка Jev; код ещё не исполнялся." : update.Status == ToolCallStatus.AwaitingApproval ? "Код ещё не исполнялся; ожидает разрешения." : update.Status == ToolCallStatus.Running
             ? "Running…" : "No result received.");
         ShowResult(result);
     }
 
+    public ExecutionApprovalComponent ShowApproval(Action<bool> complete)
+    {
+        IsExpanded = true;
+        _approval = new ExecutionApprovalComponent(complete);
+        _approvalHost.AddControl(_approval);
+        return _approval;
+    }
+
     public void FinishPending()
     {
-        if (_status is not (ToolCallStatus.Running or ToolCallStatus.AwaitingApproval)) return;
+        if (_status is not (ToolCallStatus.Running or ToolCallStatus.AwaitingApproval or ToolCallStatus.Classifying)) return;
         _status = ToolCallStatus.Cancelled;
+        _approval?.Cancel();
         ShowResult("The request ended before a result was received.");
     }
 
@@ -75,6 +96,7 @@ internal sealed class EvalToolCallComponent : CollapsiblePanel
     {
         var (label, color) = _status switch
         {
+            ToolCallStatus.Classifying => ("проверка Jev", "cyan"),
             ToolCallStatus.Running => ("running", "grey"),
             ToolCallStatus.AwaitingApproval => ("ожидает подтверждения", "yellow"),
             ToolCallStatus.Completed => ("done", "green"),
@@ -82,9 +104,9 @@ internal sealed class EvalToolCallComponent : CollapsiblePanel
             ToolCallStatus.Cancelled => ("cancelled", "yellow"),
             _ => throw new ArgumentOutOfRangeException(nameof(_status))
         };
-        var options = string.IsNullOrEmpty(_options) ? "" : $" · {MarkupParser.Escape(_options)}";
         Title = $"[bold]eval · C#[/] · [{color}]{label}[/]";
-        _result.Text = $"[bold]Результат[/]{options}\n{MarkupParser.Escape(PreviewResult(result))}";
+        _result.Visible = _status is not (ToolCallStatus.Classifying or ToolCallStatus.AwaitingApproval);
+        _result.Text = $"[bold]Результат[/]\n{MarkupParser.Escape(PreviewResult(result))}";
     }
 
     private static string PreviewResult(string result)

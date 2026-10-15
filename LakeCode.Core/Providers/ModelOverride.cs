@@ -50,6 +50,8 @@ public static class ModelResolver
 {
     public static ResolvedProviderModel Resolve(ProviderProfile profile, string apiId)
     {
+        if (profile.Kind == ProviderKind.TypeSafe)
+            return new(apiId, null, "Классификация", false, "System One не является чат-моделью.");
         profile.ModelOverrides.TryGetValue(apiId, out var rule);
         var available = rule?.Manual == true || profile.Discovery?.Ids.Contains(apiId, StringComparer.Ordinal) == true;
         try

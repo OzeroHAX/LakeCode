@@ -18,7 +18,7 @@ internal sealed class EvalTool(string root, Func<string, JsonElement, Cancellati
     private bool _disposed;
     private ExecutionBudget? _budget;
 
-    // Human approval waits do not consume the execution budget.
+    // Classifier and human approval waits do not consume the execution budget.
     internal IDisposable? PauseTimeout() => _budget?.Pause();
 
     private sealed class ExecutionBudget(CancellationTokenSource source, TimeSpan duration)
@@ -51,7 +51,7 @@ internal sealed class EvalTool(string root, Func<string, JsonElement, Cancellati
     public async Task<string> RunAsync(
         [Description("C# script; top-level await is supported. Default imports: System, System.IO, System.Linq, System.Collections.Generic, System.Threading.Tasks, System.Text.Json and System.Text.Json.Nodes.")] string code,
         [Description("Required: explain the action, its purpose for this task, and expected side effects (files, network, data). Shown to the user before execution.")] string description,
-        [Description("Execution timeout in seconds, including tool execution and worker startup, excluding manual execution-approval waits; 1–3600, default 30. Timeout destroys worker state.")] int timeout = 30,
+        [Description("Execution timeout in seconds, including tool execution and worker startup, excluding classifier and manual execution-approval waits; 1–3600, default 30. Timeout destroys worker state.")] int timeout = 30,
         [Description("Restart the C# worker before execution, discarding previous variables.")] bool reset = false,
         CancellationToken cancellationToken = default)
     {

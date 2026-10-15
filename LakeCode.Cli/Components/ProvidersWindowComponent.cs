@@ -49,9 +49,10 @@ internal sealed class ProvidersWindowComponent(ProviderRegistry providers, Model
             list.ClearItems();
             foreach (var profile in providers.Profiles.OrderBy(item => item.Name, StringComparer.Ordinal))
             {
-                var protocol = profile.Kind == ProviderKind.Anthropic ? "Anthropic · Messages" : $"OpenAI · {profile.ApiMode}";
-                var entries = profile.ModelEntries;
-                list.AddItem(new ListItem(Markup.Escape($"{profile.Name} · {protocol} · готово {profile.Models.Length}, всего {entries.Length}")) { Tag = profile.Id });
+                var protocol = profile.Kind switch { ProviderKind.TypeSafe => "TypeSafe · System One", ProviderKind.Anthropic => "Anthropic · Messages", _ => $"OpenAI · {profile.ApiMode}" };
+                var total = profile.Kind == ProviderKind.TypeSafe ? profile.ClassificationModels.Length : profile.ModelEntries.Length;
+                var ready = profile.Kind == ProviderKind.TypeSafe ? profile.ClassificationModels.Count(m => m.IsVersioned) : profile.Models.Length;
+                list.AddItem(new ListItem(Markup.Escape($"{profile.Name} · {protocol} · готово {ready}, всего {total}")) { Tag = profile.Id });
                 if (profile.Id == selected) list.SelectedIndex = list.Items.Count - 1;
             }
             if (list.Items.Count == 0) list.AddItem(new ListItem("Нет подключений. Нажмите «Добавить»."));
@@ -64,8 +65,8 @@ internal sealed class ProvidersWindowComponent(ProviderRegistry providers, Model
     {
         var id = original?.Id ?? Guid.NewGuid().ToString("D");
         var name = Field("Название: ", original?.Name ?? "");
-        var protocol = Dropdown("Протокол: ", "OpenAI · Responses", "OpenAI · Chat Completions", "Anthropic · Messages");
-        protocol.SelectedIndex = original?.Kind == ProviderKind.Anthropic ? 2 : original?.ApiMode == OpenAIApiMode.ChatCompletions ? 1 : 0;
+        var protocol = Dropdown("Протокол: ", "OpenAI · Responses", "OpenAI · Chat Completions", "Anthropic · Messages", "TypeSafe · System One");
+        protocol.SelectedIndex = original?.Kind == ProviderKind.TypeSafe ? 3 : original?.Kind == ProviderKind.Anthropic ? 2 : original?.ApiMode == OpenAIApiMode.ChatCompletions ? 1 : 0;
         var url = Field("Base URL: ", original?.BaseUrl ?? "");
         var urlHint = Label("");
         var key = Field("API key: ");
@@ -86,6 +87,8 @@ internal sealed class ProvidersWindowComponent(ProviderRegistry providers, Model
         ProviderProfile? discoveryConnection = original;
         var drafts = (original?.ModelOverrides ?? ImmutableDictionary<string, ModelOverride>.Empty)
             .ToDictionary(item => item.Key, item => ProviderModelEditor.Draft.FromRule(item.Value), StringComparer.Ordinal);
+        var classificationIds = (original?.ManualClassificationModels ?? []).ToHashSet(StringComparer.Ordinal);
+        var editingClassifier = protocol.SelectedIndex == 3;
         var modelList = Choices(5);
         var modelEditor = new ProviderModelEditor();
         var selectedLabel = Label("");
@@ -155,6 +158,14 @@ internal sealed class ProvidersWindowComponent(ProviderRegistry providers, Model
             var apiId = manualId.Input.Trim();
             if (!ProviderProfile.ValidModelId(apiId)) { Error("Введите корректный API ID модели."); return; }
             Capture();
+            if (editingClassifier)
+            {
+                if (!ClassificationModel.IsVersionedId(apiId)) { Error("Укажите фиксированный ID jev-X.Y.Z, а не алиас."); return; }
+                classificationIds.Add(apiId);
+                manualId.Input = "";
+                RefreshModels(apiId);
+                return;
+            }
             var draft = drafts.GetValueOrDefault(apiId) ?? ProviderModelEditor.Draft.FromRule(null);
             drafts[apiId] = draft with { Manual = true };
             manualId.Input = "";
@@ -164,7 +175,8 @@ internal sealed class ProvidersWindowComponent(ProviderRegistry providers, Model
         {
             if (currentId is null) return;
             Capture();
-            drafts.Remove(currentId);
+            if (editingClassifier) classificationIds.Remove(currentId);
+            else drafts.Remove(currentId);
             RefreshModels();
         };
         reset.Click += (_, _) =>
@@ -176,31 +188,50 @@ internal sealed class ProvidersWindowComponent(ProviderRegistry providers, Model
             modelEditor.Load(currentId, drafts[currentId]);
         };
         tabs.TabChanged += (_, _) => { Capture(); RefreshModels(); };
+        protocol.SelectedIndexChanged += (_, _) =>
+        {
+            Capture();
+            editingClassifier = protocol.SelectedIndex == 3;
+            currentId = null;
+            RefreshModels();
+        };
         RefreshModels();
         system.AddWindow(window);
         window.FocusControl(name);
 
-        void UpdateUrlHint() => urlHint.Text = protocol.SelectedIndex == 2
-            ? "[grey70]Корень URL без /v1: SDK добавляет /v1/messages, discovery — /v1/models.[/]"
-            : "[grey70]Базовый URL OpenAI API (обычно с /v1). Discovery использует /models.[/]";
+        void UpdateUrlHint()
+        {
+            urlHint.Text = protocol.SelectedIndex switch
+            {
+                3 => "[grey70]TypeSafe: https://api.typesafe.ai/v1 · discovery /models, классификация /systemone.[/]",
+                2 => "[grey70]Корень URL без /v1: SDK добавляет /v1/messages, discovery — /v1/models.[/]",
+                _ => "[grey70]Базовый URL OpenAI API (обычно с /v1). Discovery использует /models.[/]"
+            };
+            url.Placeholder = protocol.SelectedIndex == 3 ? "https://api.typesafe.ai/v1" : "";
+        }
 
         ProviderProfile Connection() => new()
         {
-            Id = id, Name = name.Input.Trim(), Kind = protocol.SelectedIndex == 2 ? ProviderKind.Anthropic : ProviderKind.OpenAI,
+            Id = id, Name = name.Input.Trim(), Kind = protocol.SelectedIndex switch { 3 => ProviderKind.TypeSafe, 2 => ProviderKind.Anthropic, _ => ProviderKind.OpenAI },
             ApiMode = protocol.SelectedIndex == 1 ? OpenAIApiMode.ChatCompletions : OpenAIApiMode.Responses,
             BaseUrl = url.Input.Trim().TrimEnd('/'), ApiKey = key.Input.Length == 0 ? original?.ApiKey ?? "" : key.Input
         };
         bool SameConnection(ProviderProfile profile) => discoveryConnection is not null && profile.Kind == discoveryConnection.Kind &&
             profile.BaseUrl.TrimEnd('/') == discoveryConnection.BaseUrl.TrimEnd('/') && profile.ApiKey == discoveryConnection.ApiKey;
+        DiscoveredModels? CurrentDiscovery() => SameConnection(Connection()) ? discovery : null;
         void Capture()
         {
-            if (currentId is null) return;
+            if (currentId is null || editingClassifier) return;
             drafts[currentId] = modelEditor.Capture();
             var row = modelList.Items.FirstOrDefault(item => item.Tag as string == currentId);
             if (row is not null) row.Text = ModelCaption(currentId);
         }
         string ModelCaption(string apiId)
         {
+            if (editingClassifier)
+                return Markup.Escape($"{apiId} · Классификация" +
+                    (ClassificationModel.IsVersionedId(apiId) ? " · фиксированная версия" : " · алиас, для назначения нужен ID версии") +
+                    (classificationIds.Contains(apiId) ? " · вручную" : ""));
             string text;
             try
             {
@@ -221,11 +252,13 @@ internal sealed class ProvidersWindowComponent(ProviderRegistry providers, Model
         void LoadSelected()
         {
             currentId = modelList.SelectedItem?.Tag as string;
-            modelEditor.Control.Visible = currentId is not null;
-            removeManual.IsEnabled = currentId is not null && discovery?.Ids.Contains(currentId, StringComparer.Ordinal) != true;
-            reset.IsEnabled = currentId is not null;
+            modelEditor.Control.Visible = currentId is not null && !editingClassifier;
+            removeManual.IsEnabled = currentId is not null && (editingClassifier
+                ? classificationIds.Contains(currentId) : CurrentDiscovery()?.Ids.Contains(currentId, StringComparer.Ordinal) != true);
+            reset.Visible = !editingClassifier;
+            reset.IsEnabled = currentId is not null && !editingClassifier;
             selectedLabel.Text = currentId is null ? "" : Markup.Escape("API ID: " + currentId);
-            if (currentId is null) return;
+            if (currentId is null || editingClassifier) return;
             if (!drafts.ContainsKey(currentId)) drafts[currentId] = ProviderModelEditor.Draft.FromRule(null);
             modelEditor.Load(currentId, drafts[currentId]);
         }
@@ -235,15 +268,19 @@ internal sealed class ProvidersWindowComponent(ProviderRegistry providers, Model
             var selected = select ?? currentId;
             currentId = null;
             modelList.ClearItems();
-            foreach (var apiId in (discovery?.Ids ?? []).Concat(drafts.Keys).Distinct(StringComparer.Ordinal).OrderBy(value => value, StringComparer.Ordinal))
+            var visibleDiscovery = CurrentDiscovery();
+            IEnumerable<string> manualIds = editingClassifier ? classificationIds : drafts.Keys;
+            foreach (var apiId in (visibleDiscovery?.Ids ?? []).Concat(manualIds).Distinct(StringComparer.Ordinal).OrderBy(value => value, StringComparer.Ordinal))
             {
                 modelList.AddItem(new ListItem(ModelCaption(apiId)) { Tag = apiId });
                 if (apiId == selected) modelList.SelectedIndex = modelList.Items.Count - 1;
             }
             if (modelList.Items.Count > 0 && modelList.SelectedIndex < 0) modelList.SelectedIndex = 0;
             if (modelList.Items.Count == 0) modelList.AddItem(new ListItem("Обновите список или добавьте API ID вручную."));
-            discoveryStatus.Text = discovery is null ? "[grey70]Список ещё не получен. Известные ID сопоставляются с каталогом автоматически.[/]"
-                : Markup.Escape($"Получено {discovery.Ids.Length} моделей · {discovery.UpdatedAt.ToLocalTime():g}. При смене подключения обновите список.");
+            discoveryStatus.Text = editingClassifier
+                ? "[grey70]System One: discovery может вернуть только алиасы. Для классификатора добавьте фиксированный ID, например jev-1.13.0. Reasoning и чат-параметры не нужны.[/]"
+                : visibleDiscovery is null ? "[grey70]Список ещё не получен. Известные ID сопоставляются с каталогом автоматически.[/]"
+                : Markup.Escape($"Получено {visibleDiscovery.Ids.Length} моделей · {visibleDiscovery.UpdatedAt.ToLocalTime():g}. При смене подключения обновите список.");
             rebuilding = false;
             LoadSelected();
         }
@@ -302,7 +339,7 @@ internal sealed class ProvidersWindowComponent(ProviderRegistry providers, Model
             }
             catch (Exception error) { tabs.ActiveTabIndex = 0; Error(error.Message); return; }
             var rules = ImmutableDictionary.CreateBuilder<string, ModelOverride>(StringComparer.Ordinal);
-            foreach (var (apiId, draft) in drafts)
+            foreach (var (apiId, draft) in editingClassifier ? new Dictionary<string, ProviderModelEditor.Draft>() : drafts)
             {
                 try
                 {
@@ -319,7 +356,11 @@ internal sealed class ProvidersWindowComponent(ProviderRegistry providers, Model
                     return;
                 }
             }
-            var profile = connection with { ModelOverrides = rules.ToImmutable(), Discovery = SameConnection(connection) ? discovery : null };
+            var profile = connection with
+            {
+                ModelOverrides = rules.ToImmutable(), Discovery = SameConnection(connection) ? discovery : null,
+                ManualClassificationModels = editingClassifier ? classificationIds.OrderBy(id => id, StringComparer.Ordinal).ToImmutableArray() : []
+            };
             Busy(true, writing: true);
             status.Text = "[grey70]Сохранение…[/]";
             try

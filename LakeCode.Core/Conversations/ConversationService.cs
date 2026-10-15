@@ -21,6 +21,8 @@ public sealed class ConversationService
 {
     private readonly object _gate = new();
     private readonly ProviderRegistry _providers;
+    private readonly Settings.AgentSettingsStorage? _settings;
+    private ExecutionApproval.ClassifierConfiguration _activeClassifier = new(new(), null, null);
     private readonly SessionStorage _sessions = new();
     private readonly string _workspaceRoot;
     private readonly CancellationToken _shutdown;
@@ -28,7 +30,7 @@ public sealed class ConversationService
     private SessionTurn? _activeTurn;
     private readonly Dictionary<string, (SessionTurn Turn, Guid RequestId)> _backgroundOwners = new(StringComparer.Ordinal);
     private (ProviderProfile Provider, ModelInfo Model, string Effort, Settings.ModelSelection? SubagentModel,
-        Settings.ModelConfiguration? SubagentConfiguration, AgentMode AgentMode)? _lastRequest;
+        Settings.ModelConfiguration? SubagentConfiguration, AgentMode AgentMode, ExecutionApproval.ClassifierConfiguration Classifier)? _lastRequest;
     private readonly SemaphoreSlim _interactionGate = new(1, 1);
     private bool _finishing;
     private SessionSnapshot? _snapshot;
@@ -61,10 +63,11 @@ public sealed class ConversationService
     public static string ResolveWorkspaceRoot() => WorkspaceFiles.ResolveRoot();
 
     public ConversationService(string workspaceRoot, ProviderRegistry providers,
-        ModelInfo initialModel, CancellationToken shutdown = default)
+        ModelInfo initialModel, CancellationToken shutdown = default, Settings.AgentSettingsStorage? settings = null)
     {
         _workspaceRoot = Path.GetFullPath(workspaceRoot);
         _providers = providers;
+        _settings = settings;
         _statisticsModel = initialModel;
         _shutdown = shutdown;
         _state = CreateState();
@@ -325,7 +328,11 @@ public sealed class ConversationService
     private AgentLoop CreateAgent(string sessionId)
     {
         var agent = new AgentLoop(_workspaceRoot, ConfirmExternalReadAsync, sessionId, AskUserAsync)
-        { ConfirmExecution = ConfirmExecutionAsync, SavePlan = SavePlan };
+        { ConfirmExecution = ConfirmExecutionAsync, SavePlan = SavePlan,
+            IsExecutionClassifierEnabled = () => _activeClassifier.Settings.Enabled,
+            AssessExecution = (request, token) => ExecutionApproval.JevExecutionClassifier.AssessAsync(
+                request, _activeClassifier, _providers.Profiles.Select(p => p.ApiKey)
+                    .Concat(_lastRequest is { } last ? new[] { last.Provider.ApiKey } : []), token) };
         agent.BackgroundToolCallUpdated += update =>
         {
             lock (_gate)
@@ -556,6 +563,7 @@ public sealed class ConversationService
         var pending = new PendingMessage(command.Text, saved, model.Id, command.ReasoningEffort, command.Mode, provider.Id)
         { Connection = provider, Model = model, Files = files.ToArray(), Mentions = mentions.ToArray(),
             AgentMode = command.AgentMode, ExecutingPlanId = executingPlanId,
+            ClassifierConfiguration = (_settings?.Current.Classifier ?? new ExecutionApproval.ClassifierSettings()).Capture(_providers),
             SubagentModel = command.SubagentModel, SubagentConfiguration = subagentConfiguration };
         if (command.Mode == SubmissionMode.Interrupt) _pending.Insert(0, pending);
         else if (command.Mode == SubmissionMode.Clarify)
@@ -626,6 +634,7 @@ public sealed class ConversationService
                 notification + "\nHandle returned questions or summarize findings. Do not repeat already consumed results or restart completed work.",
                 [], settings.Model.Id, settings.Effort, SubmissionMode.Enqueue, settings.Provider.Id)
             { Connection = settings.Provider, Model = settings.Model, IsBackgroundContinuation = true, AgentMode = settings.AgentMode,
+                ClassifierConfiguration = settings.Classifier,
                 SubagentModel = settings.SubagentModel, SubagentConfiguration = settings.SubagentConfiguration };
         }
         ImageData[] images;
@@ -659,7 +668,8 @@ public sealed class ConversationService
             return;
         }
         if (fromQueue) _pending.RemoveAt(0);
-        _lastRequest = (provider, model, pending.ReasoningEffort, pending.SubagentModel, subagentConfiguration, pending.AgentMode);
+        _activeClassifier = pending.ClassifierConfiguration ?? (_settings?.Current.Classifier ?? new ExecutionApproval.ClassifierSettings()).Capture(_providers);
+        _lastRequest = (provider, model, pending.ReasoningEffort, pending.SubagentModel, subagentConfiguration, pending.AgentMode, _activeClassifier);
         Interlocked.Exchange(ref _boundaryStopRequested, 0);
         _replacementRequested = false;
         _stoppedAtBoundary = false;
@@ -1186,7 +1196,7 @@ public sealed class ConversationService
             lock (_gate)
             {
                 var pending = turn.Events.Where(item => item.ToolCall is not null).GroupBy(item => item.ToolCall!.CallId)
-                    .Select(group => group.Last().ToolCall!).Where(call => (call.Status is ToolCallStatus.Running or ToolCallStatus.AwaitingApproval) && call.Delegation is null).ToArray();
+                    .Select(group => group.Last().ToolCall!).Where(call => (call.Status is ToolCallStatus.Running or ToolCallStatus.AwaitingApproval or ToolCallStatus.Classifying) && call.Delegation is null).ToArray();
                 foreach (var call in pending)
                 {
                     var interrupted = call with { Status = ToolCallStatus.Cancelled, Result = "Вызов прерван; результат не получен." };

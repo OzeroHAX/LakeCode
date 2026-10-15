@@ -258,6 +258,7 @@ internal sealed class ToolCallGroupComponent : CollapsiblePanel
 
     private static string StatusLabel(ToolCallStatus status) => status switch
     {
+        ToolCallStatus.Classifying => "проверка Jev",
         ToolCallStatus.Running => "running",
         ToolCallStatus.AwaitingApproval => "ожидает подтверждения",
         ToolCallStatus.Completed => "done",

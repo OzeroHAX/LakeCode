@@ -12,6 +12,9 @@ namespace LakeCode.Cli.Components;
 internal sealed class BashToolCallComponent : CollapsiblePanel
 {
     private readonly ConsoleWindowSystem _windowSystem;
+    private readonly ExecutionAssessmentComponent _assessment = new();
+    private readonly PanelControl _approvalHost = new() { HorizontalAlignment = HorizontalAlignment.Stretch };
+    private ExecutionApprovalComponent? _approval;
     private readonly MarkupControl _activity = new(new List<string>());
     private readonly MarkupControl _output = new(new List<string>());
     private readonly ScrollablePanelControl _viewport = new();
@@ -62,6 +65,8 @@ internal sealed class BashToolCallComponent : CollapsiblePanel
         _activity.ForegroundColor = new Color(155, 155, 155);
         _activity.Margin = new Margin(0, 0, 0, 1);
         AddControl(_activity);
+        AddControl(_assessment);
+        AddControl(_approvalHost);
 
         // Same bounded auto-sizing viewport as UserMessageComponent; no fixed Height.
         _viewport.BorderStyle = BorderStyle.None;
@@ -114,13 +119,23 @@ internal sealed class BashToolCallComponent : CollapsiblePanel
     public void Update(ToolCallUpdate update)
     {
         _status = update.Status;
+        _assessment.Update(update.Assessment);
+        if (_status is not (ToolCallStatus.Classifying or ToolCallStatus.AwaitingApproval)) _approval?.Cancel();
         _result = update.Result;
         _execution = update.BashExecution ?? _execution;
         if (_status == ToolCallStatus.Running) _spinner.Start();
-        else if (_status == ToolCallStatus.AwaitingApproval) _spinner.Stop();
+        else if (_status is ToolCallStatus.AwaitingApproval or ToolCallStatus.Classifying) _spinner.Stop();
         else StopActivity();
         if (!_paused) ShowOutput();
         RenderStatus();
+    }
+
+    public ExecutionApprovalComponent ShowApproval(Action<bool> complete)
+    {
+        IsExpanded = true;
+        _approval = new ExecutionApprovalComponent(complete);
+        _approvalHost.AddControl(_approval);
+        return _approval;
     }
 
     public void UpdateOutput(BashExecution execution)
@@ -133,9 +148,10 @@ internal sealed class BashToolCallComponent : CollapsiblePanel
 
     public void FinishPending()
     {
-        if (_status is not (ToolCallStatus.Running or ToolCallStatus.AwaitingApproval)) return;
+        if (_status is not (ToolCallStatus.Running or ToolCallStatus.AwaitingApproval or ToolCallStatus.Classifying)) return;
         _status = ToolCallStatus.Cancelled;
         _result = "Запрос завершён до получения результата команды.";
+        _approval?.Cancel();
         StopActivity();
         if (!_paused) ShowOutput();
         RenderStatus();
@@ -143,6 +159,8 @@ internal sealed class BashToolCallComponent : CollapsiblePanel
 
     private void ShowOutput()
     {
+        _viewport.Visible = _status is not (ToolCallStatus.Classifying or ToolCallStatus.AwaitingApproval);
+        if (!_viewport.Visible) return;
         var text = _execution is null ? BashOutputText.Normalize(_result ?? "Вывод пока не поступал.")
             : BashOutputText.Normalize(_execution.Output);
         if (_execution?.Truncated == true) text += "\n[Вывод ограничен 32 000 символами.]";
@@ -165,6 +183,7 @@ internal sealed class BashToolCallComponent : CollapsiblePanel
         if (_disposed) return;
         var (label, color) = _status switch
         {
+            ToolCallStatus.Classifying => ("проверка Jev", "cyan"),
             ToolCallStatus.Running => ("выполняется", "cyan"),
             ToolCallStatus.AwaitingApproval => ("ожидает подтверждения", "yellow"),
             ToolCallStatus.Completed => ("завершено", "green"),
@@ -177,12 +196,12 @@ internal sealed class BashToolCallComponent : CollapsiblePanel
         var duration = TimeSpan.FromSeconds(Math.Max(0, seconds));
         var time = $"{(int)duration.TotalMinutes:00}:{duration.Seconds:00}";
         var exit = _status != ToolCallStatus.Running && _execution?.ExitCode is { } code ? $" · exit {code}" : "";
-        Title = $"[bold]Bash[/] · [{color}]{label}{(_status == ToolCallStatus.Running ? " " + _frame : "")}[/] · {time}{exit}";
-        var activity = _status == ToolCallStatus.AwaitingApproval ? "команда ещё не запущена" : _status == ToolCallStatus.Running
+        Title = $"[bold]Bash[/] · [{color}]{label}{(_status == ToolCallStatus.Running ? " " + _frame : "")}[/]{(_execution is null ? "" : " · " + time)}{exit}";
+        var activity = _status is ToolCallStatus.AwaitingApproval or ToolCallStatus.Classifying ? "команда ещё не запущена" : _status == ToolCallStatus.Running
             ? _execution?.LastOutputAt is { } last
                 ? $"последний вывод {Math.Max(0, (int)(DateTimeOffset.UtcNow - last).TotalSeconds)} с назад"
                 : _execution is null ? "запуск команды…" : "процесс запущен · вывод пока не поступал"
-            : "полученный вывод сохранён";
+            : _execution is null ? "команда не запускалась" : "полученный вывод сохранён";
         var activityText = MarkupParser.Escape($"{_directory} · {activity}" + (_paused ? " · обновление лога приостановлено" : ""));
         if (_activity.Text != activityText) _activity.Text = activityText;
         _follow.Visible = _paused || !_viewport.AutoScroll;

@@ -17,6 +17,8 @@ internal static class ProviderClientFactory
     public static IChatClient Create(ProviderProfile profile, ModelInfo model, string sessionId)
     {
         profile.Validate();
+        if (profile.Kind == ProviderKind.TypeSafe)
+            throw new InvalidOperationException("System One поддерживает классификацию, не чат. Выберите чат-модель в /models.");
         if (string.IsNullOrWhiteSpace(profile.ApiKey))
             throw new InvalidOperationException("Не задан API-ключ. Настройте подключение через /providers.");
         if (profile.Kind == ProviderKind.Anthropic)
@@ -33,6 +35,8 @@ internal static class ProviderClientFactory
 
     public static ChatOptions Options(ProviderProfile profile, ModelInfo model, string effort, string sessionId, bool title = false)
     {
+        if (profile.Kind == ProviderKind.TypeSafe)
+            throw new InvalidOperationException("System One не поддерживает чат-параметры.");
         var options = new ChatOptions { ModelId = model.Id, MaxOutputTokens = title ? 1024 : model.MaxOutputTokens };
         if (profile.Kind == ProviderKind.Anthropic)
         {

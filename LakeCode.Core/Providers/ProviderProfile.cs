@@ -4,7 +4,7 @@ using LakeCode.Core.Agent;
 
 namespace LakeCode.Core.Providers;
 
-public enum ProviderKind { OpenAI, Anthropic }
+public enum ProviderKind { OpenAI, Anthropic, TypeSafe }
 public enum OpenAIApiMode { Responses, ChatCompletions }
 
 /// <summary>Immutable connection snapshot. Never include credentials in conversation state or diagnostics.</summary>
@@ -20,7 +20,11 @@ public sealed record ProviderProfile
     public const int MaxModels = 10000;
     [JsonRequired] public ImmutableDictionary<string, ModelOverride> ModelOverrides { get; init; } = ImmutableDictionary<string, ModelOverride>.Empty;
     [JsonIgnore] public DiscoveredModels? Discovery { get; init; }
-    [JsonIgnore] public ImmutableArray<ResolvedProviderModel> ModelEntries => ModelResolver.ResolveAll(this);
+    public ImmutableArray<string> ManualClassificationModels { get; init; } = [];
+    [JsonIgnore] public ImmutableArray<ClassificationModel> ClassificationModels => Kind == ProviderKind.TypeSafe
+        ? (Discovery?.Ids ?? []).Concat(ManualClassificationModels).Distinct(StringComparer.Ordinal)
+            .OrderBy(id => id, StringComparer.Ordinal).Select(id => new ClassificationModel(id)).ToImmutableArray() : [];
+    [JsonIgnore] public ImmutableArray<ResolvedProviderModel> ModelEntries => Kind == ProviderKind.TypeSafe ? [] : ModelResolver.ResolveAll(this);
     [JsonIgnore] public ImmutableArray<ModelInfo> Models => ModelEntries
         .Where(item => item.Available && item.Model is not null).Select(item => item.Model!).ToImmutableArray();
 
@@ -43,6 +47,12 @@ public sealed record ProviderProfile
         if (Discovery is { } discovery && (discovery.Ids.IsDefault || discovery.Ids.Length > MaxModels ||
             discovery.Ids.Any(id => !ValidModelId(id)) || discovery.Ids.Distinct(StringComparer.Ordinal).Count() != discovery.Ids.Length))
             throw new InvalidDataException("Некорректный список обнаруженных моделей.");
+        if (ManualClassificationModels.IsDefault || ManualClassificationModels.Length > MaxModels ||
+            ManualClassificationModels.Any(id => !ClassificationModel.IsVersionedId(id)) ||
+            ManualClassificationModels.Distinct(StringComparer.Ordinal).Count() != ManualClassificationModels.Length ||
+            (Kind != ProviderKind.TypeSafe && !ManualClassificationModels.IsEmpty) ||
+            (Kind == ProviderKind.TypeSafe && ModelOverrides.Count != 0))
+            throw new InvalidDataException("Модели System One должны иметь фиксированный ID jev-X.Y.Z и не содержать чат-настроек.");
         foreach (var (id, rule) in ModelOverrides)
         {
             var entry = ModelResolver.Resolve(this, id);
@@ -54,7 +64,7 @@ public sealed record ProviderProfile
 
     public void ValidateModel(ModelInfo model)
     {
-        if (!ValidModelId(model.Id) || string.IsNullOrWhiteSpace(model.Name) || model.Name.Any(char.IsControl) ||
+        if (Kind == ProviderKind.TypeSafe || !ValidModelId(model.Id) || string.IsNullOrWhiteSpace(model.Name) || model.Name.Any(char.IsControl) ||
             model.ContextWindowTokens <= 0 || model.MaxInputTokens <= 0 || model.MaxOutputTokens <= 0 ||
             model.MaxInputTokens > model.ContextWindowTokens || model.MaxOutputTokens > model.ContextWindowTokens ||
             model.InputModalities.IsDefaultOrEmpty || !model.InputModalities.Contains(ModelModality.Text) ||

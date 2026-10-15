@@ -18,4 +18,5 @@ internal sealed record PendingMessage(
     [JsonIgnore] public Settings.ModelConfiguration? SubagentConfiguration { get; init; }
     [JsonIgnore] public ProviderProfile? Connection { get; init; }
     [JsonIgnore] public ModelInfo? Model { get; init; }
+    [JsonIgnore] public ExecutionApproval.ClassifierConfiguration? ClassifierConfiguration { get; init; }
 }

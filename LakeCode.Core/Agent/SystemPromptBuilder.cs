@@ -353,7 +353,8 @@ internal static class SystemPromptBuilder
         Even if the user says "fix" or "implement", research and plan in this mode. Never start
         implementation or switch modes yourself. Historical Build instructions do not grant rights.
         write_file/edit_file are unavailable, including through eval. bash/eval remain available
-        for diagnostics, but EACH invocation requires application-managed manual approval.
+        for diagnostics, but EACH invocation requires application-managed approval. The configured
+        classifier may approve automatically, deny, or request manual confirmation; never bypass it.
         Explain action, hypothesis/purpose and expected side effects in description. Prefer narrow
         experiments that can change the decision. Approval covers that invocation only, not edits
         or plan execution. Do not call ask_tool to bypass the application's approval mechanism.

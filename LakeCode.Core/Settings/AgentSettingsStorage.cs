@@ -8,6 +8,8 @@ public sealed class AgentSettingsStorage
     private const int MaxBytes = 1024 * 1024;
     private static readonly JsonSerializerOptions Options = new() { WriteIndented = true };
     public string FilePath { get; }
+    private AgentSettings _current = new();
+    public AgentSettings Current => Volatile.Read(ref _current);
 
     public AgentSettingsStorage()
     {
@@ -34,6 +36,7 @@ public sealed class AgentSettingsStorage
             throw new InvalidDataException("Повреждён settings.json. Исправьте файл; настройки не были сброшены.");
         }
         settings.Validate();
+        Volatile.Write(ref _current, settings);
         return settings;
     }
 
@@ -66,6 +69,7 @@ public sealed class AgentSettingsStorage
                 File.SetUnixFileMode(temporary, File.GetUnixFileMode(FilePath));
             cancellationToken.ThrowIfCancellationRequested();
             File.Move(temporary, FilePath, overwrite: true);
+            Volatile.Write(ref _current, settings);
         }
         finally { if (File.Exists(temporary)) File.Delete(temporary); }
     }

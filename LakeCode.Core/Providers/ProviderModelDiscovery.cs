@@ -50,11 +50,12 @@ public static class ProviderModelDiscovery
                 }
                 using var document = JsonDocument.Parse(buffer.ToArray());
                 var root = document.RootElement;
-                if (!root.TryGetProperty("data", out var data) || data.ValueKind != JsonValueKind.Array)
-                    throw new InvalidDataException("Models API не вернул массив data.");
+                var collection = profile.Kind == ProviderKind.TypeSafe ? "models" : "data";
+                if (!root.TryGetProperty(collection, out var data) || data.ValueKind != JsonValueKind.Array)
+                    throw new InvalidDataException($"Models API не вернул массив {collection}.");
                 foreach (var item in data.EnumerateArray())
                 {
-                    var id = item.GetProperty("id").GetString();
+                    var id = item.GetProperty(profile.Kind == ProviderKind.TypeSafe ? "name" : "id").GetString();
                     if (!ProviderProfile.ValidModelId(id)) throw new InvalidDataException("Models API вернул некорректный ID модели.");
                     if (seen.Add(id!)) ids.Add(id!);
                     if (ids.Count > ProviderProfile.MaxModels) throw new InvalidDataException("Models API вернул слишком много моделей.");

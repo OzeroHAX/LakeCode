@@ -355,13 +355,14 @@ internal sealed class ChatController : IDisposable
                     break;
                 case ExecutionApprovalRequested approval:
                     var approvalWindow = _input.GetParentWindow() ?? throw new InvalidOperationException("No active window for execution approval.");
-                    var panel = new ExecutionApprovalComponent(approval.Request,
+                    if (!_responsesByCallId.TryGetValue(approval.Request.CallId, out var approvalOwner))
+                        throw new InvalidOperationException("No owning tool card for execution approval.");
+                    var panel = approvalOwner.ShowExecutionApproval(approval.Request.CallId,
                         allow => _conversation.Execute(new ResolveExecutionApproval(approval.InteractionId, allow)));
                     _executionApprovals.Add(approval.InteractionId, panel);
                     _subagents.SetInteractionActive(true);
                     _windowSystem.SetActiveWindow(approvalWindow);
-                    _content.AddControl(panel);
-                    _content.ScrollChildIntoView(panel);
+                    _content.ScrollChildIntoView(approvalOwner);
                     panel.Focus(approvalWindow);
                     break;
                 case QuestionRequested question:                    ShowQuestion(question);
