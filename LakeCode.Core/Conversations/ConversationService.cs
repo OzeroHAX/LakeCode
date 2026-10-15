@@ -1056,6 +1056,7 @@ public sealed class ConversationService
         var checkpoint = snapshot.AgentState;
         Task<string?> titleTask = Task.FromResult<string?>(null);
         bool completed = false;
+        bool gotAnswer = false;
         void OnToolCall(ToolCallUpdate update)
         {
             // Background snapshots have session-scoped routing and retain their original card.
@@ -1133,6 +1134,7 @@ public sealed class ConversationService
                         }
                         else if (content is TextContent answer && !string.IsNullOrEmpty(answer.Text))
                         {
+                            gotAnswer = true;
                             turn.AppendText("text", answer.Text);
                             Emit(new TextDelta(answer.Text));
                         }
@@ -1144,10 +1146,22 @@ public sealed class ConversationService
             lock (_gate)
             {
                 snapshot.AgentState = state;
-                completed = true;
-                turn.Status = "completed";
-                turn.TokensPerSecond = outputTokens is { } tokens && elapsed > TimeSpan.Zero ? tokens / elapsed.TotalSeconds : null;
-                _tokensPerSecond = turn.TokensPerSecond;
+                // A tool-driven turn that ends without any model answer text is a broken
+                // function-invocation loop, not a completed response (microsoft/agent-framework#6268).
+                if (!gotAnswer && turn.Plan is null && turn.Events.Any(item => item.Kind == "tool") &&
+                    _agent.Delegations.All(task => task.Status is not (DelegationStatus.Running or DelegationStatus.WaitingForParent)))
+                {
+                    turn.Status = "interrupted";
+                    turn.Error = "Ход оборвался без ответа модели (известная проблема Microsoft Agent Framework " +
+                                 "на stateless Responses API). Выполненные действия не отменены. Отправьте сообщение, чтобы продолжить.";
+                }
+                else
+                {
+                    completed = true;
+                    turn.Status = "completed";
+                    turn.TokensPerSecond = outputTokens is { } tokens && elapsed > TimeSpan.Zero ? tokens / elapsed.TotalSeconds : null;
+                    _tokensPerSecond = turn.TokensPerSecond;
+                }
                 PublishState();
             }
         }

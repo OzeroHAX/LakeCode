@@ -200,6 +200,10 @@ public sealed class AgentLoop : IDisposable, IAsyncDisposable
         {
             Name = parentQuestions is null ? "LakeCode" : "LakeCodeResearch",
             ChatHistoryProvider = _history,
+            // Persist history around each service call: required for stateless Responses API
+            // with reasoning models, where end-of-run persistence drops the tool-call loop
+            // mid-turn (microsoft/agent-framework#6268).
+            RequirePerServiceCallChatHistoryPersistence = true,
             ChatOptions = new ChatOptions
             {
                 // Supply instructions/tools only per run: MAF concatenates agent and run tools.
