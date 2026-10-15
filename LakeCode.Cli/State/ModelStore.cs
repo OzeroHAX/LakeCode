@@ -19,11 +19,18 @@ internal sealed class ModelStore : INotifyPropertyChanged
     public string SelectedReasoningEffort { get; private set; }
     public AgentSettings Settings { get; private set; }
     public ModelSelection? SubagentModel => Settings.SubagentModel;
+    public ModelSelection? PlanModel => Settings.PlanModel;
+
+    public ModelConfiguration GetRequestConfiguration(AgentMode mode) =>
+        mode == AgentMode.Plan && PlanModel is { } selection
+            ? selection.Resolve(Providers, "планирования")
+            : new ModelConfiguration(SelectedModel, SelectedReasoningEffort, Providers.Get(SelectedProviderId));
 
     public void ApplySettings(AgentSettings settings)
     {
         Settings = settings;
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(SubagentModel)));
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(PlanModel)));
     }
 
     public event PropertyChangedEventHandler? PropertyChanged;

@@ -16,6 +16,7 @@ internal sealed class ModelsWindowComponent(ModelStore store, AgentSettingsStora
     public void Show(ConsoleWindowSystem windowSystem)
     {
         var main = CreatePage(false, new ModelSelection(store.SelectedProviderId, store.SelectedModel.Id, store.SelectedReasoningEffort));
+        var planning = CreatePage(true, store.PlanModel);
         var children = CreatePage(true, store.SubagentModel);
         var tabs = new TabControl
         {
@@ -25,6 +26,7 @@ internal sealed class ModelsWindowComponent(ModelStore store, AgentSettingsStora
             ActiveFocusedForegroundColor = Color.White, ActiveUnfocusedForegroundColor = Color.White
         };
         tabs.AddTab("Основной агент", main.Panel, false);
+        tabs.AddTab("Планирование", planning.Panel, false);
         tabs.AddTab("Сабагенты", children.Panel, false);
         var status = Label("");
         var cancel = Button("Отмена");
@@ -48,7 +50,7 @@ internal sealed class ModelsWindowComponent(ModelStore store, AgentSettingsStora
         {
             if (e.KeyInfo.Key != ConsoleKey.Escape) return;
             // Let an open dropdown consume Esc before closing the dialog.
-            if (main.Effort.IsDropdownOpen || children.Effort.IsDropdownOpen) return;
+            if (main.Effort.IsDropdownOpen || planning.Effort.IsDropdownOpen || children.Effort.IsDropdownOpen) return;
             e.Handled = true;
             if (!busy) windowSystem.CloseWindow(window);
         };
@@ -66,8 +68,9 @@ internal sealed class ModelsWindowComponent(ModelStore store, AgentSettingsStora
                 var model = store.Providers.GetModel(mainSelection.ProviderId, mainSelection.ModelId);
                 if (!model.ReasoningEfforts.Contains(mainSelection.ReasoningEffort))
                     throw new InvalidOperationException("Выберите поддерживаемый reasoning основного агента.");
+                planning.Selection?.Resolve(store.Providers, "планирования");
                 children.Selection?.Resolve(store.Providers);
-                settings = store.Settings with { SubagentModel = children.Selection };
+                settings = store.Settings with { PlanModel = planning.Selection, SubagentModel = children.Selection };
             }
             catch (Exception error) { ShowError(error); return; }
             busy = true;
@@ -77,7 +80,7 @@ internal sealed class ModelsWindowComponent(ModelStore store, AgentSettingsStora
             status.Text = "[cyan]Применение…[/]";
             try
             {
-                if (settings.SubagentModel != store.SubagentModel)
+                if (settings.SubagentModel != store.SubagentModel || settings.PlanModel != store.PlanModel)
                     await Task.Run(() => settingsStorage.SaveAsync(settings, shutdown), shutdown).ConfigureAwait(false);
                 windowSystem.EnqueueOnUIThread(() =>
                 {
@@ -108,7 +111,7 @@ internal sealed class ModelsWindowComponent(ModelStore store, AgentSettingsStora
         public ModelSelection? Selection;
     }
 
-    private ModelPage CreatePage(bool subagents, ModelSelection? initial)
+    private ModelPage CreatePage(bool allowInheritance, ModelSelection? initial)
     {
         var list = new ListControl
         {
@@ -117,15 +120,15 @@ internal sealed class ModelsWindowComponent(ModelStore store, AgentSettingsStora
             HorizontalAlignment = HorizontalAlignment.Stretch, VerticalAlignment = VerticalAlignment.Fill,
             Margin = new Margin(2, 1, 2, 1)
         };
-        if (subagents) list.AddItem(new ListItem("Как у основного агента"));
+        if (allowInheritance) list.AddItem(new ListItem("Как у основного агента"));
         foreach (var provider in store.Providers.Profiles.OrderBy(item => item.Name, StringComparer.Ordinal))
         foreach (var model in provider.Models.OrderBy(item => item.Id, StringComparer.Ordinal))
             list.AddItem(new ListItem(Markup.Escape($"{provider.Name} · {model.Name}"))
                 { Tag = (provider.Id, model.Id) });
         var selectedIndex = list.Items.FindIndex(item => item.Tag is ValueTuple<string, string> pair &&
             pair.Item1 == initial?.ProviderId && pair.Item2 == initial.ModelId);
-        if (subagents && initial is null) selectedIndex = 0;
-        if (initial is not null && selectedIndex < 0 && subagents)
+        if (allowInheritance && initial is null) selectedIndex = 0;
+        if (initial is not null && selectedIndex < 0 && allowInheritance)
         {
             list.AddItem(new ListItem(Markup.Escape($"Недоступно: {initial.ProviderId} · {initial.ModelId}"))
                 { Tag = (initial.ProviderId, initial.ModelId) });
@@ -148,7 +151,7 @@ internal sealed class ModelsWindowComponent(ModelStore store, AgentSettingsStora
         panel.AddControl(Label("Модель"));
         panel.AddControl(list);
         panel.AddControl(effort);
-        if (subagents) panel.AddControl(Label("[grey70]Сохраняется для всех проектов.[/]"));
+        if (allowInheritance) panel.AddControl(Label("[grey70]Сохраняется для всех проектов.[/]"));
         var page = new ModelPage(panel, effort) { Selection = initial };
         var updating = false;
         list.SelectedIndexChanged += (_, _) => UpdateSelection();
@@ -169,7 +172,7 @@ internal sealed class ModelsWindowComponent(ModelStore store, AgentSettingsStora
                 if (list.SelectedItem?.Tag is not ValueTuple<string, string> pair)
                 {
                     page.Selection = null;
-                    effort.AddItem(subagents ? "Как у основного" : "Нет модели");
+                    effort.AddItem(allowInheritance ? "Как у основного" : "Нет модели");
                     effort.SelectedIndex = 0;
                     effort.IsEnabled = false;
                     return;

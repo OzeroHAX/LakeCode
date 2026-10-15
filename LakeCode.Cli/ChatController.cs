@@ -151,11 +151,18 @@ internal sealed class ChatController : IDisposable
             image.Name, image.Data, image.MediaType, image.Width, image.Height)).ToImmutableArray();
         var text = _input.Editor.Input;
         var mentions = _input.Editor.Mentions;
-        var model = _models.SelectedModel;
-        var effort = _models.SelectedReasoningEffort;
-        var providerId = _models.SelectedProviderId;
-        var subagentModel = _models.SubagentModel;
         var agentMode = _agentMode;
+        LakeCode.Core.Settings.ModelConfiguration configuration;
+        try { configuration = _models.GetRequestConfiguration(agentMode); }
+        catch (Exception error)
+        {
+            _input.ShowError(error.Message);
+            return;
+        }
+        var model = configuration.Model;
+        var effort = configuration.ReasoningEffort;
+        var providerId = configuration.Provider.Id;
+        var subagentModel = _models.SubagentModel;
         var paths = _input.GetFilePaths();
         if (paths.Length == 0)
         {
