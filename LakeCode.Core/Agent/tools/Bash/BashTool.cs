@@ -10,10 +10,12 @@ internal sealed class BashTool(WorkspaceFiles files, Action<BashExecution> repor
     [Description("Run a non-interactive bash command and return its exit code, stdout and stderr after completion. No background jobs, polling or interactive input. Output is limited to 32000 characters. Inline Python and JavaScript execution is prohibited; rewrite inline code in C# and use eval. Running script files and modules is allowed. Bash is not sandboxed and has the application's OS permissions.")]
     public Task<string> RunAsync(
         [Description("Bash command to execute. Do not start background processes or interactive programs.")] string command,
+        [Description("Required: explain the action, its purpose for this task, and expected side effects (files, network, data). Shown to the user before execution.")] string description,
         [Description("Working directory relative to the workspace root.")] string workingDirectory = ".",
         CancellationToken cancellationToken = default) => WorkspaceFiles.ExecuteAsync(async () =>
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(command);
+        ArgumentException.ThrowIfNullOrWhiteSpace(description);
         if (ContainsInlineInterpreterInvocation(command))
             return "Error: Inline Python and JavaScript execution through bash is prohibited. Running script files and modules is allowed. " +
                    "Rewrite the operation in C# and use eval instead. eval supports C# only. " +

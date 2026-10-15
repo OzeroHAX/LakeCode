@@ -76,7 +76,7 @@ window.PreviewKeyPressed += (_, e) =>
     }
 };
 chat = new ChatController(
-    windowSystem, mainContent, header, input, statisticsStore, modelStore,
+    windowSystem, mainContent, header, footer, input, statisticsStore, modelStore,
     () => window.FocusControl(input.Editor), sessionsWindow, askHost, conversation, workspaceRoot, btw, subagents);
 
 windowSystem.AddWindow(window);
@@ -88,6 +88,9 @@ using var slashCommands = new SlashCommandsComponent(window, input,
     ("/exit", "Завершить LakeCode"),
     ("/new", "Начать новую сессию"),
     ("/models", "Показать доступные модели"),
+    ("/plan", "Планирование: диагностика с подтверждением"),
+    ("/build", "Режим реализации для следующих сообщений"),
+    ("/implement", "Реализовать готовый план"),
     ("/providers", "Настроить подключения и модели"),
     ("/sessions", "Открыть сохранённую сессию"),
     ("/rewind", "Открыть окно отката истории"),
@@ -102,7 +105,13 @@ slashCommands.CommandSelected += (_, selected) =>
         chat.ShowOrAskSideQuestion(selected.Arguments);
         return;
     }
-    if (command.Equals("/new", StringComparison.OrdinalIgnoreCase))
+    if (command is "/plan" or "/build" or "/implement")
+    {
+        input.Editor.Input = string.Empty;
+        if (command == "/implement") chat.ExecutePlan();
+        else chat.SetMode(command == "/plan" ? LakeCode.Core.Agent.AgentMode.Plan : LakeCode.Core.Agent.AgentMode.Build);
+    }
+    else if (command.Equals("/new", StringComparison.OrdinalIgnoreCase))
     {
         chat.StartNewSession();
     }

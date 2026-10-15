@@ -111,7 +111,7 @@ internal sealed class AssistantMessageComponent : CollapsiblePanel
             AddControl(call);
             return;
         }
-        if (update.Name is "write_file" or "edit_file")
+        if (update.Name is "write_file" or "edit_file" or "submit_plan")
         {
             _activeToolGroup = null;
             var call = new ToolCallGroupComponent(update.Name, alwaysVisible: true);

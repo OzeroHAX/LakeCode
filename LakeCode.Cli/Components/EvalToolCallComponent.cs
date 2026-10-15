@@ -33,9 +33,15 @@ internal sealed class EvalToolCallComponent : CollapsiblePanel
 
         using var arguments = JsonDocument.Parse(update.Arguments);
         var root = arguments.RootElement;
+        if (root.TryGetProperty("description", out var description) && description.ValueKind == JsonValueKind.String)
+        {
+            var explanation = CreateBody();
+            explanation.Text = MarkupParser.Escape(description.GetString() ?? "");
+            AddControl(explanation);
+        }
         var code = root.TryGetProperty("code", out var value) ? value.GetString() ?? "" : "";
         _options = string.Join(" · ", root.EnumerateObject()
-            .Where(property => property.Name != "code")
+            .Where(property => property.Name is not ("code" or "description"))
             .Select(property => $"{property.Name}: {property.Value}"));
 
         _code = CreateBody();
@@ -53,14 +59,14 @@ internal sealed class EvalToolCallComponent : CollapsiblePanel
     public void Update(ToolCallUpdate update)
     {
         _status = update.Status;
-        var result = update.Result ?? (update.Status == ToolCallStatus.Running
+        var result = update.Result ?? (update.Status == ToolCallStatus.AwaitingApproval ? "Код ещё не исполнялся; ожидает разрешения." : update.Status == ToolCallStatus.Running
             ? "Running…" : "No result received.");
         ShowResult(result);
     }
 
     public void FinishPending()
     {
-        if (_status != ToolCallStatus.Running) return;
+        if (_status is not (ToolCallStatus.Running or ToolCallStatus.AwaitingApproval)) return;
         _status = ToolCallStatus.Cancelled;
         ShowResult("The request ended before a result was received.");
     }
@@ -70,6 +76,7 @@ internal sealed class EvalToolCallComponent : CollapsiblePanel
         var (label, color) = _status switch
         {
             ToolCallStatus.Running => ("running", "grey"),
+            ToolCallStatus.AwaitingApproval => ("ожидает подтверждения", "yellow"),
             ToolCallStatus.Completed => ("done", "green"),
             ToolCallStatus.Failed => ("failed", "red"),
             ToolCallStatus.Cancelled => ("cancelled", "yellow"),

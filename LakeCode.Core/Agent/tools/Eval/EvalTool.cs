@@ -16,6 +16,31 @@ internal sealed class EvalTool(string root, Func<string, JsonElement, Cancellati
     private StreamReader? _reader;
     private StreamWriter? _writer;
     private bool _disposed;
+    private ExecutionBudget? _budget;
+
+    // Human approval waits do not consume the execution budget.
+    internal IDisposable? PauseTimeout() => _budget?.Pause();
+
+    private sealed class ExecutionBudget(CancellationTokenSource source, TimeSpan duration)
+    {
+        private readonly CancellationTokenSource _deadline = source;
+        private TimeSpan _remaining = duration;
+        private long _started = Stopwatch.GetTimestamp();
+        public IDisposable Pause()
+        {
+            _deadline.CancelAfter(Timeout.InfiniteTimeSpan);
+            _remaining -= Stopwatch.GetElapsedTime(_started);
+            return new Resume(this);
+        }
+        private sealed class Resume(ExecutionBudget budget) : IDisposable
+        {
+            public void Dispose()
+            {
+                budget._started = Stopwatch.GetTimestamp();
+                budget._deadline.CancelAfter(budget._remaining > TimeSpan.Zero ? budget._remaining : TimeSpan.Zero);
+            }
+        }
+    }
     private CancellationTokenSource? _drainLifetime;
     private Task _stdoutDrain = Task.CompletedTask;
     private Task _stderrDrain = Task.CompletedTask;
@@ -25,10 +50,12 @@ internal sealed class EvalTool(string root, Func<string, JsonElement, Cancellati
     [Description("Execute one C# script in a persistent worker. Variables survive later calls. No security sandbox: code has user OS permissions. Use Display(value), Console.WriteLine, and await Tools.CallAsync(toolName, new { arguments }); ReadFileAsync and ListDirectoryAsync shortcuts are available. Tools.ListToolsAsync() returns tool names, descriptions and schemas as JSON. Tools.TryCallAsync(name, arguments) returns Output/IsError without throwing for tool errors. Bridge calls are serialized, even with Task.WhenAll. Tool results are strings; read_file includes line numbers. Display prints readable JSON and tuples as arrays. Errors distinguish compilation (state preserved), runtime (state may be partially mutated), and worker failure (state discarded). Calls must be awaited before the cell ends; do not leave background work. Tools cannot call eval recursively. Runtime state is not restored from saved history. Output is limited to 32000 characters.")]
     public async Task<string> RunAsync(
         [Description("C# script; top-level await is supported. Default imports: System, System.IO, System.Linq, System.Collections.Generic, System.Threading.Tasks, System.Text.Json and System.Text.Json.Nodes.")] string code,
-        [Description("Execution timeout in seconds, including tool waits and worker startup; 1–3600, default 30. Timeout destroys worker state.")] int timeout = 30,
+        [Description("Required: explain the action, its purpose for this task, and expected side effects (files, network, data). Shown to the user before execution.")] string description,
+        [Description("Execution timeout in seconds, including tool execution and worker startup, excluding manual execution-approval waits; 1–3600, default 30. Timeout destroys worker state.")] int timeout = 30,
         [Description("Restart the C# worker before execution, discarding previous variables.")] bool reset = false,
         CancellationToken cancellationToken = default)
     {
+        if (string.IsNullOrWhiteSpace(description)) return "Error: description is required.";
         if (string.IsNullOrWhiteSpace(code)) return "Error: code must not be empty.";
         if (timeout is < 1 or > 3600) return "Error: timeout must be between 1 and 3600 seconds.";
         await _gate.WaitAsync(cancellationToken);
@@ -37,10 +64,12 @@ internal sealed class EvalTool(string root, Func<string, JsonElement, Cancellati
             ObjectDisposedException.ThrowIf(_disposed, this);
             using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _lifetime.Token);
             deadline.CancelAfter(TimeSpan.FromSeconds(timeout));
+            _budget = new ExecutionBudget(deadline, TimeSpan.FromSeconds(timeout));
             using var stop = deadline.Token.Register(StopWorker);
             bool executionSent = false;
             try
             {
+                deadline.Token.ThrowIfCancellationRequested();
                 if (reset) { StopWorker(); CloseChannel(); }
                 await EnsureWorkerAsync(deadline.Token);
                 executionSent = true;
@@ -91,7 +120,7 @@ internal sealed class EvalTool(string root, Func<string, JsonElement, Cancellati
                     $"C# worker state was discarded. {(executionSent ? "Tool side effects may have occurred." : "Script was not sent to the worker.")}{DiagnosticTail()}";
             }
         }
-        finally { _gate.Release(); }
+        finally { _budget = null; _gate.Release(); }
     }
 
     private async Task EnsureWorkerAsync(CancellationToken cancellationToken)

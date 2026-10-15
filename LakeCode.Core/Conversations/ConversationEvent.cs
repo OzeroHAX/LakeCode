@@ -15,7 +15,7 @@ public sealed record SessionsListed(ImmutableArray<SessionSummary> Sessions, Imm
     string? ActiveId) : ConversationEvent;
 public sealed record SessionsListFailed(string Error) : ConversationEvent;
 public sealed record TurnStarted(string Text, ImmutableArray<ImageData> Images,
-    ImmutableArray<FileAttachment> Files, ImmutableArray<FileMention> Mentions, bool IsBackgroundContinuation = false) : ConversationEvent;
+    ImmutableArray<FileAttachment> Files, ImmutableArray<FileMention> Mentions, bool IsBackgroundContinuation = false, AgentMode AgentMode = AgentMode.Build) : ConversationEvent;
 public sealed record ReasoningDelta(string Text) : ConversationEvent;
 public sealed record TextDelta(string Text) : ConversationEvent;
 public sealed record ToolCallChanged(ToolCallUpdate Call) : ConversationEvent;
@@ -27,6 +27,7 @@ public sealed record ConversationError(string Message) : ConversationEvent;
 public sealed record SideQuestionsChanged(SideQuestionState State) : ConversationEvent;
 public sealed record QuestionRequested(Guid InteractionId, ImmutableArray<AskQuestion> Questions) : ConversationEvent;
 public sealed record ReadPermissionRequested(Guid InteractionId, ExternalReadRequest Request) : ConversationEvent;
+public sealed record ExecutionApprovalRequested(Guid InteractionId, ExecutionApprovalRequest Request) : ConversationEvent;
 public sealed record InteractionFinished(Guid InteractionId) : ConversationEvent;
 public sealed record ConversationEventEnvelope(long Sequence, string? SessionId, Guid? RequestId,
     ConversationEvent Event);

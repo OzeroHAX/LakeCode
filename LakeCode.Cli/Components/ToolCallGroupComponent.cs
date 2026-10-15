@@ -130,6 +130,12 @@ internal sealed class ToolCallGroupComponent : CollapsiblePanel
             : update.Status == ToolCallStatus.Completed && update.FileChange is { } change
             ? FileDiffPreview.Format(change)
             : MarkupParser.Escape(FormatBody(entry.Arguments, update.Result ?? "Running…"));
+        if (ToolName == "submit_plan" && update.Status == ToolCallStatus.Completed)
+        {
+            using var planArgs = JsonDocument.Parse(update.Arguments);
+            entry.Panel.Title = "[bold]План для рассмотрения[/]";
+            entry.Body.SetMarkdown(planArgs.RootElement.GetProperty("markdown").GetString()!);
+        }
         UpdateTitle();
     }
 
@@ -228,6 +234,7 @@ internal sealed class ToolCallGroupComponent : CollapsiblePanel
     private static string StatusLabel(ToolCallStatus status) => status switch
     {
         ToolCallStatus.Running => "running",
+        ToolCallStatus.AwaitingApproval => "ожидает подтверждения",
         ToolCallStatus.Completed => "done",
         ToolCallStatus.Failed => "failed",
         ToolCallStatus.Cancelled => "cancelled",

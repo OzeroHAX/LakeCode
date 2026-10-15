@@ -13,6 +13,16 @@ internal sealed class HeaderComponent : PanelControl
     private readonly string _subtitle;
     private readonly ButtonControl _subagents;
     public event Action? SubagentsRequested;
+    public event Action? ExecutePlanRequested;
+    private readonly ButtonControl _executePlan = new();
+
+    public void SetPlan(LakeCode.Core.Conversations.ConversationState state)
+    {
+        _executePlan.Visible = state.Plan is not null;
+        _executePlan.IsEnabled = state.CanExecutePlan;
+        _executePlan.Text = $"Реализовать план v{state.Plan?.Revision}";
+
+    }
 
     public HeaderComponent(string title, string subtitle)
     {
@@ -47,6 +57,14 @@ internal sealed class HeaderComponent : PanelControl
         tasksColumn.AddContent(_subagents);
         row.AddColumn(titleColumn);
         row.AddColumn(tasksColumn);
+        _executePlan.BackgroundColor = BackgroundColor;
+        _executePlan.ForegroundColor = new SharpConsoleUI.Color(155, 195, 205);
+        _executePlan.FocusedBackgroundColor = new SharpConsoleUI.Color(35, 65, 75);
+        _executePlan.Visible = false;
+        _executePlan.Click += (_, _) => ExecutePlanRequested?.Invoke();
+        var planColumn = new ColumnContainer(row) { FlexFactor = 0 };
+        planColumn.AddContent(_executePlan);
+        row.AddColumn(planColumn);
         AddControl(row);
         SetSessionTitle(null);
     }

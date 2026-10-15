@@ -11,19 +11,34 @@ using HorizontalAlignment = SharpConsoleUI.Layout.HorizontalAlignment;
 
 namespace LakeCode.Cli.Components;
 
-internal sealed class FooterComponent : MarkupControl
+internal sealed class FooterComponent : PanelControl
 {
     private static readonly string IdleFrame = $"[{new SharpConsoleUI.Color(0, 255, 255, 51).ToMarkup()}]⬝⬝⬝⬝⬝⬝⬝⬝[/]";
     private static readonly string[] ScannerFrames = CreateScannerFrames();
     private readonly SpinnerTextAnimator _scanner;
     private readonly Func<string> _render;
     private bool _debugEnabled;
+    private readonly MarkupControl _details = new(new List<string>());
+    private readonly MarkupControl _mode = new(new List<string> { "[cyan]build[/]" })
+    { HorizontalAlignment = HorizontalAlignment.Right, Height = 1 };
+
+    public void SetMode(LakeCode.Core.Agent.AgentMode mode) =>
+        _mode.Text = mode == LakeCode.Core.Agent.AgentMode.Plan ? "[cyan]plan[/]" : "[cyan]build[/]";
 
     public FooterComponent(ConsoleWindowSystem windowSystem, ModelStore store, StatisticsStore statistics, string directory)
-        : base(new List<string>())
     {
+        BorderStyle = BorderStyle.None;
         HorizontalAlignment = HorizontalAlignment.Stretch;
         Margin = new Margin(3, 0, 3, 1);
+        var row = new HorizontalGridControl { HorizontalAlignment = HorizontalAlignment.Stretch };
+        var detailsColumn = new ColumnContainer(row) { FlexFactor = 1 };
+        _details.HorizontalAlignment = HorizontalAlignment.Stretch;
+        detailsColumn.AddContent(_details);
+        var modeColumn = new ColumnContainer(row) { FlexFactor = 0, Width = 5 };
+        modeColumn.AddContent(_mode);
+        row.AddColumn(detailsColumn);
+        row.AddColumn(modeColumn);
+        AddControl(row);
         var frame = IdleFrame;
         string Render() =>
             $"{frame} [cyan]{Markup.Escape(store.HasSelection ? store.SelectedProviderName + " · " + store.SelectedModel.Name : "Нет подключения — /providers")}[/]   [grey50]│[/]   [cyan]{Markup.Escape(store.SelectedReasoningEffort)}[/]   [grey50]│[/]   {Markup.Escape(directory)}   [grey50]│[/]   {FormatStatistics(statistics)}   [grey50]│[/]   {statistics.TokensPerSecond?.ToString("0.0", CultureInfo.InvariantCulture) ?? "—"} tok/s" +
@@ -33,17 +48,17 @@ internal sealed class FooterComponent : MarkupControl
         _scanner = new SpinnerTextAnimator(windowSystem, ScannerFrames, value =>
         {
             frame = value.Length == 0 ? IdleFrame : value;
-            Text = Render();
+            _details.Text = Render();
         }, 50);
         _scanner.Visible = false;
         _scanner.Start();
-        this.Bind(store, state => state.SelectedProviderName, control => control.Text, _ => Render());
-        this.Bind(store, state => state.SelectedModel, control => control.Text, _ => Render());
-        this.Bind(store, state => state.SelectedReasoningEffort, control => control.Text, _ => Render());
-        this.Bind(statistics, state => state.Model, control => control.Text, _ => Render());
-        this.Bind(statistics, state => state.Current, control => control.Text, _ => Render());
-        this.Bind(statistics, state => state.TokensPerSecond, control => control.Text, _ => Render());
-        this.Bind(statistics, state => state.IsGenerating, control => control.Text, active =>
+        _details.Bind(store, state => state.SelectedProviderName, control => control.Text, _ => Render());
+        _details.Bind(store, state => state.SelectedModel, control => control.Text, _ => Render());
+        _details.Bind(store, state => state.SelectedReasoningEffort, control => control.Text, _ => Render());
+        _details.Bind(statistics, state => state.Model, control => control.Text, _ => Render());
+        _details.Bind(statistics, state => state.Current, control => control.Text, _ => Render());
+        _details.Bind(statistics, state => state.TokensPerSecond, control => control.Text, _ => Render());
+        _details.Bind(statistics, state => state.IsGenerating, control => control.Text, active =>
         {
             _scanner.Visible = active;
             return Render();
@@ -53,7 +68,7 @@ internal sealed class FooterComponent : MarkupControl
     public void ToggleDebug()
     {
         _debugEnabled = !_debugEnabled;
-        Text = _render();
+        _details.Text = _render();
     }
 
     public void StopAnimation() => _scanner.Dispose();

@@ -25,6 +25,29 @@ namespace LakeCode.Core.Agent;
 public sealed class AgentLoop : IDisposable, IAsyncDisposable
 {
     private readonly AIAgent _agent;
+    private readonly string _promptTemplate;
+    private readonly AIFunction[] _functions;
+    private AgentMode _mode;
+    private bool _planSubmitted;
+    internal Func<ExecutionApprovalRequest, CancellationToken, Task<bool>>? ConfirmExecution { get; init; }
+    internal Func<string, ImplementationPlan>? SavePlan { get; init; }
+
+    private bool IsToolAllowed(string name) => _parentQuestions is not null
+        ? name is "read_file" or "list_directory" or "grep" or "ask_parent"
+        : _mode == AgentMode.Build ? name != "submit_plan"
+        : name is "read_file" or "list_directory" or "grep" or "bash" or "eval" or
+            "web_search" or "read_web" or "ask_tool" or "load_skill" or "read_skill_resource" or
+            "delegate" or "wait_subagents" or "submit_plan";
+
+    [System.ComponentModel.Description("Submit the final self-contained Markdown implementation plan for user review. Does not grant execution permission. Ends this planning turn.")]
+    private string SubmitPlan([System.ComponentModel.Description("Complete actionable plan following the Plan system prompt template, with no unresolved blocking decisions.")] string markdown)
+    {
+        if (_mode != AgentMode.Plan || SavePlan is null) return "Error: Plan submission is unavailable.";
+        if (string.IsNullOrWhiteSpace(markdown)) return "Error: A nonempty plan is required.";
+        var plan = SavePlan(markdown);
+        _planSubmitted = true;
+        return $"Plan {plan.Id}, revision {plan.Revision} submitted for review. No implementation authorized.";
+    }
     private readonly ProviderChatClient _client = new();
     private readonly string _cacheSessionId;
     private readonly AsyncLocal<Action<FileChange>?> _fileChangeObserver = new();
@@ -81,6 +104,7 @@ public sealed class AgentLoop : IDisposable, IAsyncDisposable
             RuntimeInformation.OSArchitecture.ToString(),
             RuntimeInformation.ProcessArchitecture.ToString());
         var systemPrompt = inheritedPrompt ?? SystemPromptBuilder.Build(promptContext);
+        _promptTemplate = systemPrompt;
         if (parentQuestions is null)
         {
             _delegation = new DelegationCoordinator((questions, callId) => new AgentLoop(files, null, null,
@@ -153,7 +177,7 @@ public sealed class AgentLoop : IDisposable, IAsyncDisposable
             var evalFunctions = functions;
             foreach (var function in evalFunctions) _evalFunctions.Add(function.Name, function);
             _eval = new Tools.Eval.EvalTool(files.Root, InvokeEvalToolAsync,
-                () => JsonSerializer.Serialize(evalFunctions.Select(function => new
+                () => JsonSerializer.Serialize(evalFunctions.Where(function => IsToolAllowed(function.Name)).Select(function => new
                 {
                     function.Name,
                     function.Description,
@@ -161,9 +185,11 @@ public sealed class AgentLoop : IDisposable, IAsyncDisposable
                 })));
             functions = [.. functions, AIFunctionFactory.Create(_eval.RunAsync, name: "eval"),
                 AIFunctionFactory.Create(_delegation!.DelegateAsync, name: "delegate"),
-                AIFunctionFactory.Create(_delegation.WaitAsync, name: "wait_subagents")];
+                AIFunctionFactory.Create(_delegation.WaitAsync, name: "wait_subagents"),
+                AIFunctionFactory.Create(SubmitPlan, name: "submit_plan")];
         }
 
+        _functions = functions;
         _historyCapture = new InterruptedHistoryChatClient(_client);
         if (parentQuestions is not null)
             _historyCapture.ResponseCompleted = response => ResponseCompleted?.Invoke(response);
@@ -174,8 +200,7 @@ public sealed class AgentLoop : IDisposable, IAsyncDisposable
             ChatHistoryProvider = _history,
             ChatOptions = new ChatOptions
             {
-                Instructions = systemPrompt,
-                Tools = [.. functions],
+                // Supply instructions/tools only per run: MAF concatenates agent and run tools.
                 AllowMultipleToolCalls = parentQuestions is null ? null : false
             },
             AIContextProviders = skills is null ? [] : [skills]
@@ -241,7 +266,9 @@ public sealed class AgentLoop : IDisposable, IAsyncDisposable
                     context.Terminate = true;
                     return "Error: Execution is suspended pending the parent decision.";
                 }
+                if (_planSubmitted) { context.Terminate = true; return "Error: Plan already submitted; turn is complete."; }
                 var result = await next(context, token);
+                if (_planSubmitted) context.Terminate = true;
                 if (_parentQuestions is { Pending: not null } or { Failure: not null }) context.Terminate = true;
                 return result;
             }, cancellationToken);
@@ -265,7 +292,9 @@ public sealed class AgentLoop : IDisposable, IAsyncDisposable
     private async ValueTask<object?> ObserveInvocationAsync(string callId, string name, string argumentsJson,
         Func<CancellationToken, ValueTask<object?>> invoke, CancellationToken cancellationToken)
     {
-        var call = new ToolCallUpdate(callId, name, argumentsJson, ToolCallStatus.Running);
+        var call = new ToolCallUpdate(callId, name, argumentsJson,
+            _mode == AgentMode.Plan && name is ("bash" or "eval")
+                ? ToolCallStatus.AwaitingApproval : ToolCallStatus.Running);
         if (name != "delegate") ToolCallUpdated?.Invoke(call);
         FileChange? fileChange = null;
         BashExecution? bashExecution = null;
@@ -282,8 +311,31 @@ public sealed class AgentLoop : IDisposable, IAsyncDisposable
         };
         try
         {
-            var accessError = "";
-            if (call.Name is "load_skill" or "read_skill_resource")
+            var accessError = IsToolAllowed(name) ? "" : $"Error: Tool '{name}' is unavailable in the current mode.";
+            if (accessError.Length == 0 && name is "bash" or "eval")
+            {
+                using var args = JsonDocument.Parse(argumentsJson);
+                var root = args.RootElement;
+                if (!root.TryGetProperty("description", out var description) || description.ValueKind != JsonValueKind.String ||
+                    string.IsNullOrWhiteSpace(description.GetString()))
+                    accessError = "Error: description is required: explain action, purpose and expected side effects.";
+                else if (!root.TryGetProperty(name == "bash" ? "command" : "code", out var code) ||
+                         code.ValueKind != JsonValueKind.String || string.IsNullOrWhiteSpace(code.GetString()))
+                    accessError = "Error: Nonempty command/code is required.";
+                else if (_mode == AgentMode.Plan)
+                {
+                    ToolCallUpdated?.Invoke(call with { Status = ToolCallStatus.AwaitingApproval });
+                    using (callId.StartsWith("eval-", StringComparison.Ordinal) ? _eval?.PauseTimeout() : null)
+                    {
+                        if (ConfirmExecution is null || !await ConfirmExecution(
+                                new ExecutionApprovalRequest(callId, name, description.GetString()!, argumentsJson), cancellationToken))
+                            accessError = "Error: Execution denied by user or approval unavailable. Action was not executed. Do not retry through another tool.";
+                    }
+                    cancellationToken.ThrowIfCancellationRequested();
+                    if (accessError.Length == 0) ToolCallUpdated?.Invoke(call with { Status = ToolCallStatus.Running });
+                }
+            }
+            if (accessError.Length == 0 && call.Name is "load_skill" or "read_skill_resource")
             {
                 accessError = await WorkspaceFiles.ExecuteAsync(() =>
                 {
@@ -292,7 +344,7 @@ public sealed class AgentLoop : IDisposable, IAsyncDisposable
                     return Task.FromResult("");
                 });
             }
-            if (call.Name is "read_file" or "list_directory" or "grep")
+            if (accessError.Length == 0 && call.Name is "read_file" or "list_directory" or "grep")
             {
                 using var arguments = JsonDocument.Parse(call.Arguments);
                 var path = arguments.RootElement.TryGetProperty("path", out var value)
@@ -469,10 +521,14 @@ public sealed class AgentLoop : IDisposable, IAsyncDisposable
         string reasoningEffort,
         ProviderProfile provider,
         [EnumeratorCancellation] CancellationToken cancellationToken = default,
-        Settings.ModelConfiguration? subagentConfiguration = null)
+        Settings.ModelConfiguration? subagentConfiguration = null, AgentMode mode = AgentMode.Build)
     {
         try
         {
+            if (!Enum.IsDefined(mode)) throw new ArgumentOutOfRangeException(nameof(mode));
+            if (_mode != mode && mode == AgentMode.Plan) _eval?.Reset();
+            _mode = mode;
+            _planSubmitted = false;
             _historyCapture.Reset();
             _runTools.Clear();
             ArgumentNullException.ThrowIfNull(message);
@@ -498,7 +554,11 @@ public sealed class AgentLoop : IDisposable, IAsyncDisposable
             if (_historyOrigin != origin) NormalizeHistory();
             _historyOrigin = origin;
             var chatOptions = ProviderClientFactory.Options(provider, model, reasoningEffort, _cacheSessionId);
-            if (_parentQuestions is not null) chatOptions.AllowMultipleToolCalls = false;
+            chatOptions.Instructions = _promptTemplate.Replace(SystemPromptBuilder.ModeMarker,
+                _parentQuestions is not null ? "" : mode == AgentMode.Plan
+                    ? SystemPromptBuilder.PlanInstructions : SystemPromptBuilder.BuildInstructions);
+            chatOptions.Tools = [.. _functions.Where(function => IsToolAllowed(function.Name))];
+            if (_parentQuestions is not null || mode == AgentMode.Plan) chatOptions.AllowMultipleToolCalls = false;
             _delegation?.Configure(subagentConfiguration?.Model ?? model,
                 subagentConfiguration?.ReasoningEffort ?? reasoningEffort, subagentConfiguration?.Provider ?? provider);
             var options = new ChatClientAgentRunOptions(chatOptions);

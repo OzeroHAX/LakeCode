@@ -47,6 +47,9 @@ internal sealed class BashToolCallComponent : CollapsiblePanel
 
         using var arguments = JsonDocument.Parse(update.Arguments);
         var root = arguments.RootElement;
+        if (root.TryGetProperty("description", out var description) && description.ValueKind == JsonValueKind.String)
+            AddControl(new MarkupControl(new List<string> { MarkupParser.Escape(description.GetString() ?? "") })
+            { Wrap = true, EnableSelection = true, HorizontalAlignment = HorizontalAlignment.Stretch });
         var command = root.TryGetProperty("command", out var value) ? value.GetString() ?? "" : "";
         _directory = root.TryGetProperty("workingDirectory", out var directory) ? directory.GetString() ?? "." : ".";
         AddControl(new MarkupControl(new List<string> { $"[bold]$ {MarkupParser.Escape(command)}[/]" })
@@ -114,6 +117,7 @@ internal sealed class BashToolCallComponent : CollapsiblePanel
         _result = update.Result;
         _execution = update.BashExecution ?? _execution;
         if (_status == ToolCallStatus.Running) _spinner.Start();
+        else if (_status == ToolCallStatus.AwaitingApproval) _spinner.Stop();
         else StopActivity();
         if (!_paused) ShowOutput();
         RenderStatus();
@@ -129,7 +133,7 @@ internal sealed class BashToolCallComponent : CollapsiblePanel
 
     public void FinishPending()
     {
-        if (_status != ToolCallStatus.Running) return;
+        if (_status is not (ToolCallStatus.Running or ToolCallStatus.AwaitingApproval)) return;
         _status = ToolCallStatus.Cancelled;
         _result = "Запрос завершён до получения результата команды.";
         StopActivity();
@@ -162,6 +166,7 @@ internal sealed class BashToolCallComponent : CollapsiblePanel
         var (label, color) = _status switch
         {
             ToolCallStatus.Running => ("выполняется", "cyan"),
+            ToolCallStatus.AwaitingApproval => ("ожидает подтверждения", "yellow"),
             ToolCallStatus.Completed => ("завершено", "green"),
             ToolCallStatus.Failed => ("ошибка", "red"),
             _ => ("отменено", "yellow")
@@ -173,7 +178,7 @@ internal sealed class BashToolCallComponent : CollapsiblePanel
         var time = $"{(int)duration.TotalMinutes:00}:{duration.Seconds:00}";
         var exit = _status != ToolCallStatus.Running && _execution?.ExitCode is { } code ? $" · exit {code}" : "";
         Title = $"[bold]Bash[/] · [{color}]{label}{(_status == ToolCallStatus.Running ? " " + _frame : "")}[/] · {time}{exit}";
-        var activity = _status == ToolCallStatus.Running
+        var activity = _status == ToolCallStatus.AwaitingApproval ? "команда ещё не запущена" : _status == ToolCallStatus.Running
             ? _execution?.LastOutputAt is { } last
                 ? $"последний вывод {Math.Max(0, (int)(DateTimeOffset.UtcNow - last).TotalSeconds)} с назад"
                 : _execution is null ? "запуск команды…" : "процесс запущен · вывод пока не поступал"

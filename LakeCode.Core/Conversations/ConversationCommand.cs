@@ -10,7 +10,10 @@ public abstract record ConversationCommand;
 public sealed record SubmitMessage(string Text, ImmutableArray<ImageData> Images, string ModelId,
     string ReasoningEffort, SubmissionMode Mode, string ProviderId,
     ImmutableArray<FileAttachment> Files = default, ImmutableArray<FileMention> Mentions = default,
-    Settings.ModelSelection? SubagentModel = null) : ConversationCommand;
+    Settings.ModelSelection? SubagentModel = null, AgentMode AgentMode = AgentMode.Build) : ConversationCommand;
+public sealed record ExecutePlan(Guid PlanId, int Revision, string ModelId, string ReasoningEffort,
+    string ProviderId, Settings.ModelSelection? SubagentModel = null) : ConversationCommand;
+public sealed record ResolveExecutionApproval(Guid InteractionId, bool Allow) : ConversationCommand;
 public sealed record StopGeneration : ConversationCommand;
 public sealed record AskSideQuestion(string Question) : ConversationCommand;
 public sealed record CancelSideQuestion(Guid RequestId) : ConversationCommand;

@@ -1,4 +1,5 @@
 using System.Collections.Immutable;
+using LakeCode.Core.Agent;
 using LakeCode.Core.Conversations;
 using LakeCode.Cli.Components;
 using LakeCode.Cli.State;
@@ -14,6 +15,7 @@ internal sealed class ChatController : IDisposable
     private readonly ConsoleWindowSystem _windowSystem;
     private readonly MainContentComponent _content;
     private readonly HeaderComponent _header;
+    private readonly FooterComponent _footer;
     private readonly InputComponent _input;
     private readonly StatisticsStore _statistics;
     private readonly ModelStore _models;
@@ -32,6 +34,8 @@ internal sealed class ChatController : IDisposable
     private AssistantMessageComponent? _response;
     private Guid? _responseRequestId;
     private readonly Dictionary<string, AssistantMessageComponent> _responsesByCallId = new(StringComparer.Ordinal);
+    private AgentMode _agentMode;
+    private readonly Dictionary<Guid, ExecutionApprovalComponent> _executionApprovals = [];
     private AskComponent? _question;
     private Guid? _questionId;
     private readonly Dictionary<Guid, (AssistantMessageComponent Response, string CallId)> _permissions = [];
@@ -45,7 +49,7 @@ internal sealed class ChatController : IDisposable
     public bool CanStopGeneration => _state.CanStopGeneration && !_btw.IsOpen;
 
     public ChatController(ConsoleWindowSystem windowSystem, MainContentComponent mainContent,
-        HeaderComponent header, InputComponent input, StatisticsStore statistics, ModelStore models,
+        HeaderComponent header, FooterComponent footer, InputComponent input, StatisticsStore statistics, ModelStore models,
         Action focusInput, SessionsWindowComponent sessionsWindow, PanelControl askHost,
         ConversationService conversation, string workspaceRoot, BtwWindowComponent btw, SubagentsWindowComponent subagents)
     {
@@ -53,6 +57,7 @@ internal sealed class ChatController : IDisposable
         _windowSystem = windowSystem;
         _content = mainContent;
         _header = header;
+        _footer = footer;
         _input = input;
         _statistics = statistics;
         _models = models;
@@ -62,6 +67,7 @@ internal sealed class ChatController : IDisposable
         _subagents = subagents;
         _subagents.ReturnToChat += RestoreFocusAfterSide;
         _header.SubagentsRequested += ShowSubagents;
+        _header.ExecutePlanRequested += ExecutePlan;
         _btw.CancelRequested += CancelSideQuestion;
         _btw.ClearRequested += ClearSideQuestions;
         _btw.Closed += RestoreFocusAfterSide;
@@ -72,6 +78,21 @@ internal sealed class ChatController : IDisposable
         _conversation.EventOccurred += OnEvent;
         _input.Submitted += SendMessage;
         ApplyState(_state);
+    }
+
+    public void SetMode(AgentMode mode)
+    {
+        _agentMode = mode;
+        _footer.SetMode(mode);
+    }
+
+    public void ExecutePlan()
+    {
+        if (_input.IsImporting) return;
+        if (_state.Plan is not { } plan) { _input.ShowError("Нет готового плана для реализации."); return; }
+        if (_conversation.Execute(new ExecutePlan(plan.Id, plan.Revision, _models.SelectedModel.Id,
+                _models.SelectedReasoningEffort, _models.SelectedProviderId, _models.SubagentModel)))
+            SetMode(AgentMode.Build);
     }
 
     public void StopGeneration() => _conversation.Execute(new StopGeneration());
@@ -116,7 +137,7 @@ internal sealed class ChatController : IDisposable
     private void ClearSideQuestions() => _conversation.Execute(new ClearSideQuestions());
     private void RestoreFocusAfterSide()
     {
-        if (!_disposed && _question is null && _permissions.Count == 0 && _delegationPermissions.Count == 0) _focusInput();
+        if (!_disposed && _question is null && _permissions.Count == 0 && _delegationPermissions.Count == 0 && _executionApprovals.Count == 0) _focusInput();
     }
 
     private void SendMessage(SubmissionMode mode)
@@ -134,10 +155,11 @@ internal sealed class ChatController : IDisposable
         var effort = _models.SelectedReasoningEffort;
         var providerId = _models.SelectedProviderId;
         var subagentModel = _models.SubagentModel;
+        var agentMode = _agentMode;
         var paths = _input.GetFilePaths();
         if (paths.Length == 0)
         {
-            if (_conversation.Execute(new SubmitMessage(text, images, model.Id, effort, mode, providerId, SubagentModel: subagentModel)))
+            if (_conversation.Execute(new SubmitMessage(text, images, model.Id, effort, mode, providerId, SubagentModel: subagentModel, AgentMode: agentMode)))
                 _input.ClearDraft();
             return;
         }
@@ -168,7 +190,7 @@ internal sealed class ChatController : IDisposable
                         _input.ShowError("Черновик изменился во время чтения файлов. Отправьте его повторно.");
                         return;
                     }
-                    if (_conversation.Execute(new SubmitMessage(text, images, model.Id, effort, mode, providerId, files, mentions, subagentModel)))
+                    if (_conversation.Execute(new SubmitMessage(text, images, model.Id, effort, mode, providerId, files, mentions, subagentModel, agentMode)))
                         _input.ClearDraft();
                 }
                 finally { operation.Dispose(); }
@@ -211,6 +233,7 @@ internal sealed class ChatController : IDisposable
         if (state.Revision < _state.Revision) return;
         var wasExclusive = _state.IsBusy && !_state.IsGenerating;
         _state = state;
+        _header.SetPlan(state);
         _btw.Apply(state.SideQuestions);
         _header.SetSessionTitle(state.Title);
         _header.SetDelegations(_subagents.Tasks);
@@ -227,7 +250,7 @@ internal sealed class ChatController : IDisposable
                 SubmissionMode.Interrupt => "После остановки",
                 _ => "В очереди"
             };
-            return $"{label}: {text}";
+            return $"{label} · {item.AgentMode}: {text}";
         }).ToArray(), state.QueuePaused);
         if (wasExclusive && !state.IsBusy && !_btw.IsOpen) _focusInput();
     }
@@ -255,6 +278,7 @@ internal sealed class ChatController : IDisposable
                     _sessionsWindow.ShowError(failed.Error);
                     break;
                 case TurnStarted started:
+                    _content.AddControl(CreateModeNotice(started.AgentMode));
                     if (started.IsBackgroundContinuation) _content.AddControl(CreateBackgroundNotice());
                     else _content.AddUserMessage(started.Text, started.Images.Select(ImageInput.CreatePreview).ToArray(), started.Files, started.Mentions);
                     _turnSegments.Clear();
@@ -304,8 +328,18 @@ internal sealed class ChatController : IDisposable
                 case ConversationError error:
                     _input.ShowError(error.Message);
                     break;
-                case QuestionRequested question:
-                    ShowQuestion(question);
+                case ExecutionApprovalRequested approval:
+                    var approvalWindow = _input.GetParentWindow() ?? throw new InvalidOperationException("No active window for execution approval.");
+                    var panel = new ExecutionApprovalComponent(approval.Request,
+                        allow => _conversation.Execute(new ResolveExecutionApproval(approval.InteractionId, allow)));
+                    _executionApprovals.Add(approval.InteractionId, panel);
+                    _subagents.SetInteractionActive(true);
+                    _windowSystem.SetActiveWindow(approvalWindow);
+                    _content.AddControl(panel);
+                    _content.ScrollChildIntoView(panel);
+                    panel.Focus(approvalWindow);
+                    break;
+                case QuestionRequested question:                    ShowQuestion(question);
                     break;
                 case ReadPermissionRequested permission when _delegationBlocks.TryGetValue(permission.Request.CallId, out var block):
                     var permissionWindow = _input.GetParentWindow() ?? throw new InvalidOperationException("No active window for permission request.");
@@ -336,7 +370,9 @@ internal sealed class ChatController : IDisposable
         }
         catch (Exception error)
         {
-            if (envelope.Event is QuestionRequested question)
+            if (envelope.Event is ExecutionApprovalRequested approval)
+                _conversation.Execute(new FailInteraction(approval.InteractionId, error.Message));
+            else if (envelope.Event is QuestionRequested question)
                 _conversation.Execute(new FailInteraction(question.InteractionId, error.Message));
             else if (envelope.Event is ReadPermissionRequested permission)
                 _conversation.Execute(new FailInteraction(permission.InteractionId, error.Message));
@@ -380,6 +416,7 @@ internal sealed class ChatController : IDisposable
         var tasks = new List<LakeCode.Core.Agent.Delegation.DelegationSnapshot>();
         foreach (var turn in view.Turns)
         {
+            controls.Add(CreateModeNotice(turn.AgentMode));
             if (turn.IsBackgroundContinuation) controls.Add(CreateBackgroundNotice());
             else controls.Add(new UserMessageComponent(turn.Text, turn.Images.Select(ImageInput.CreatePreview).ToArray(), turn.Files, turn.Mentions));
             var response = new AssistantMessageComponent(_windowSystem);
@@ -437,6 +474,7 @@ internal sealed class ChatController : IDisposable
             }
             catch (Exception error) { _input.ShowError($"История открыта, но подключение недоступно: {error.Message}"); }
         }
+        SetMode(view.Turns.LastOrDefault()?.AgentMode ?? AgentMode.Build);
         _input.ClearDraft();
         _input.SetDraft(view.DraftText, draftImages);
         _input.Editor.Restore(view.DraftText, view.DraftMentions);
@@ -445,6 +483,9 @@ internal sealed class ChatController : IDisposable
         _content.ScrollToBottom();
         _focusInput();
     }
+
+    private static MarkupControl CreateModeNotice(AgentMode mode) => new(new List<string> { $"[grey70]Режим запроса: {mode}[/]" })
+    { Wrap = true, HorizontalAlignment = SharpConsoleUI.Layout.HorizontalAlignment.Stretch };
 
     private static MarkupControl CreateBackgroundNotice() => new(new List<string>
     { "[grey70]Уведомление фоновых исследований[/]" })
@@ -469,6 +510,12 @@ internal sealed class ChatController : IDisposable
 
     private void HideInteraction(Guid id)
     {
+        if (_executionApprovals.Remove(id, out var execution))
+        {
+            execution.Cancel();
+            _subagents.SetInteractionActive(false);
+            _focusInput();
+        }
         if (_delegationPermissions.Remove(id, out var delegation)) delegation.CancelReadPermission();
         if (_permissions.Remove(id, out var permission)) permission.Response.CancelReadPermission(permission.CallId);
         if (_questionId != id)
@@ -500,6 +547,8 @@ internal sealed class ChatController : IDisposable
         _btw.ClearRequested -= ClearSideQuestions;
         _btw.Closed -= RestoreFocusAfterSide;
         _header.SubagentsRequested -= ShowSubagents;
+        _header.ExecutePlanRequested -= ExecutePlan;
+        foreach (var approvalId in _executionApprovals.Keys.ToArray()) HideInteraction(approvalId);
         _subagents.ReturnToChat -= RestoreFocusAfterSide;
         if (_questionId is { } id) HideInteraction(id);
         foreach (var permissionId in _permissions.Keys.Concat(_delegationPermissions.Keys).ToArray()) HideInteraction(permissionId);

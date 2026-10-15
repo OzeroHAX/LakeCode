@@ -38,7 +38,9 @@ internal sealed class SessionStorage
         ValidateDirectory(_root);
         var directory = Path.Combine(_root, ValidateId(id));
         ValidateDirectory(directory);
-        await WriteAtomicAsync(Path.Combine(directory, "pending.json"), messages, CancellationToken.None);
+        // Versioned envelope prevents older clients from silently restoring Plan requests as Build.
+        await WriteAtomicAsync(Path.Combine(directory, "pending.json"),
+            new { SchemaVersion = 4, Messages = messages }, CancellationToken.None);
     }
 
     private static async Task WriteAtomicAsync<T>(string path, T value, CancellationToken cancellationToken)
@@ -83,7 +85,7 @@ internal sealed class SessionStorage
             throw new InvalidDataException("Сессия превышает лимит хранения 256 MiB.");
         var snapshot = await JsonSerializer.DeserializeAsync<SessionSnapshot>(stream, JsonOptions, cancellationToken)
             ?? throw new InvalidDataException("Файл сессии пуст.");
-        if (snapshot.SchemaVersion is not (1 or 2 or 3) || snapshot.FrameworkVersion != "1.24.0")
+        if (snapshot.SchemaVersion is not (1 or 2 or 3 or 4) || snapshot.FrameworkVersion != "1.24.0")
             throw new InvalidDataException("Версия сохранённой сессии несовместима с этой версией LakeCode.");
         if (snapshot.Id != id || snapshot.Turns is null || string.IsNullOrWhiteSpace(snapshot.WorkspaceRoot) ||
             string.IsNullOrWhiteSpace(snapshot.Title) || string.IsNullOrWhiteSpace(snapshot.ModelId) ||
@@ -91,10 +93,13 @@ internal sealed class SessionStorage
             throw new InvalidDataException("Некорректные данные сессии.");
         foreach (var turn in snapshot.Turns)
         {
-            if (turn is null || turn.Text is null || turn.Images is null || turn.Events is null ||
+            if (turn is null || !Enum.IsDefined(turn.AgentMode) || turn.Text is null || turn.Images is null || turn.Events is null ||
                 turn.Status is not ("in_progress" or "completed" or "failed" or "interrupted") ||
                 turn.Images.Any(image => image is null || image.Data is null || image.Name is null))
                 throw new InvalidDataException("Некорректные данные сообщения в сессии.");
+            if (turn.Plan is { } plan && (plan.Id == Guid.Empty || plan.Revision < 1 ||
+                string.IsNullOrWhiteSpace(plan.Markdown) || turn.AgentMode != Agent.AgentMode.Plan))
+                throw new InvalidDataException("Некорректный план в сессии.");
             foreach (var item in turn.Events)
             {
                 if (item is null || item.Kind is not ("text" or "thinking" or "tool") ||
@@ -128,13 +133,21 @@ internal sealed class SessionStorage
                 8192, FileOptions.Asynchronous | FileOptions.SequentialScan);
             if (pendingStream.Length > MaxSnapshotBytes)
                 throw new InvalidDataException("Очередь превышает лимит хранения.");
-            snapshot.PendingMessages = await JsonSerializer.DeserializeAsync<PendingMessage[]>(pendingStream, JsonOptions, cancellationToken)
+            using var pendingDocument = await JsonDocument.ParseAsync(pendingStream, cancellationToken: cancellationToken);
+            var pendingRoot = pendingDocument.RootElement;
+            if (pendingRoot.ValueKind == JsonValueKind.Object)
+            {
+                if (!pendingRoot.TryGetProperty("SchemaVersion", out var version) || !version.TryGetInt32(out var number) || number != 4 ||
+                    !pendingRoot.TryGetProperty("Messages", out pendingRoot))
+                    throw new InvalidDataException("Неподдерживаемая версия очереди сообщений.");
+            }
+            snapshot.PendingMessages = pendingRoot.Deserialize<PendingMessage[]>(JsonOptions)
                 ?? throw new InvalidDataException("Очередь сообщений пуста или повреждена.");
         }
         if (snapshot.PendingMessages is null || snapshot.PendingMessages.Length > 32 ||
             snapshot.PendingMessages.Any(item => item is null || item.Text is null || item.Images is null ||
                 !Guid.TryParseExact(item.ProviderId, "D", out _) || string.IsNullOrWhiteSpace(item.ModelId) || string.IsNullOrWhiteSpace(item.ReasoningEffort) ||
-                !Enum.IsDefined(item.Mode) || item.Images.Length > ImageAttachments.MaxAttachments ||
+                !Enum.IsDefined(item.Mode) || !Enum.IsDefined(item.AgentMode) || item.Images.Length > ImageAttachments.MaxAttachments ||
                 item.Images.Any(image => image is null || image.Data is null || image.Name is null || image.Data.Length > ImageAttachments.MaxImageBytes) ||
                 item.Images.Sum(image => (long)image.Data.Length) > ImageAttachments.MaxTotalBytes) ||
             snapshot.PendingMessages.Sum(item => item.Images.Sum(image => (long)image.Data.Length)) > 96L * 1024 * 1024)
@@ -207,7 +220,7 @@ internal sealed class SessionStorage
             if (stream.Length <= 64 * 1024)
             {
                 var summary = await JsonSerializer.DeserializeAsync<StoredSummary>(stream, JsonOptions, cancellationToken);
-                if (summary is { Version: 1, SchemaVersion: 1 or 2 or 3, FrameworkVersion: "1.24.0" } &&
+                if (summary is { Version: 1, SchemaVersion: 1 or 2 or 3 or 4, FrameworkVersion: "1.24.0" } &&
                     summary.Id == id && !string.IsNullOrWhiteSpace(summary.WorkspaceRoot) &&
                     !string.IsNullOrWhiteSpace(summary.Title) && summary.Turns >= 0 &&
                     summary.SnapshotLength == length && summary.SnapshotWriteTicks == writeTicks)

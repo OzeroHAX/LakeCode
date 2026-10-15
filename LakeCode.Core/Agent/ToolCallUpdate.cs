@@ -5,7 +5,8 @@ public enum ToolCallStatus
     Running,
     Completed,
     Failed,
-    Cancelled
+    Cancelled,
+    AwaitingApproval
 }
 
 /// <summary>A snapshot of an actual local function invocation, identified across start and finish.</summary>
