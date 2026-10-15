@@ -22,6 +22,8 @@ internal sealed class ToolCallGroupComponent : CollapsiblePanel
         public DelegationStatus? DelegationStatus { get; set; }
         public ExternalReadPermissionComponent? Permission { get; set; }
         public ScrollablePanelControl? Viewport { get; set; }
+        public ButtonControl? ExecutePlan { get; set; }
+        public Action? ExecutePlanAction { get; set; }
     }
 
     private readonly Dictionary<string, Entry> _calls = new(StringComparer.Ordinal);
@@ -137,6 +139,29 @@ internal sealed class ToolCallGroupComponent : CollapsiblePanel
             entry.Body.SetMarkdown(planArgs.RootElement.GetProperty("markdown").GetString()!);
         }
         UpdateTitle();
+    }
+
+    public void SetPlanAction(string callId, ImplementationPlan? plan, bool enabled, Action? execute)
+    {
+        if (ToolName != "submit_plan" || !_calls.TryGetValue(callId, out var entry)) return;
+        if (entry.ExecutePlan is null && plan is not null)
+        {
+            var button = new ButtonControl
+            {
+                BackgroundColor = BackgroundColor,
+                ForegroundColor = new Color(155, 195, 205),
+                FocusedBackgroundColor = new Color(35, 65, 75),
+                Margin = new Margin(0, 1, 0, 0)
+            };
+            button.Click += (_, _) => entry.ExecutePlanAction?.Invoke();
+            entry.ExecutePlan = button;
+            entry.Panel.AddControl(button);
+        }
+        entry.ExecutePlanAction = enabled ? execute : null;
+        if (entry.ExecutePlan is not { } control) return;
+        control.Visible = plan is not null;
+        control.IsEnabled = enabled;
+        control.Text = $"Принять и реализовать план v{plan?.Revision}";
     }
 
     public void ShowReadPermission(ExternalReadRequest request, Action<ExternalReadDecision> complete,

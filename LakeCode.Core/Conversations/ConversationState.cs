@@ -21,6 +21,7 @@ public sealed record ConversationState(long Revision, string? SessionId, string?
     public AgentMode? ActiveMode { get; init; }
     public ImplementationPlan? Plan { get; init; }
     public bool CanExecutePlan { get; init; }
+    public string? PlanCallId { get; init; }
     public SideQuestionState SideQuestions { get; init; } = new(0, false, []);
     public ImmutableArray<Agent.Delegation.DelegationSnapshot> Delegations { get; init; } = [];
 }

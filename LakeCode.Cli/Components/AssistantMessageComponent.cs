@@ -130,6 +130,11 @@ internal sealed class AssistantMessageComponent : CollapsiblePanel
         _activeToolGroup.Update(update);
     }
 
+    public void SetPlanAction(string callId, ImplementationPlan? plan, bool enabled, Action? execute)
+    {
+        if (_toolCalls.TryGetValue(callId, out var group)) group.SetPlanAction(callId, plan, enabled, execute);
+    }
+
     public void UpdateBashOutput(BashOutputUpdate update)
     {
         if (_bashCalls.TryGetValue(update.CallId, out var call)) call.UpdateOutput(update.Execution);

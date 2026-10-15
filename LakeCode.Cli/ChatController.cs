@@ -67,7 +67,6 @@ internal sealed class ChatController : IDisposable
         _subagents = subagents;
         _subagents.ReturnToChat += RestoreFocusAfterSide;
         _header.SubagentsRequested += ShowSubagents;
-        _header.ExecutePlanRequested += ExecutePlan;
         _btw.CancelRequested += CancelSideQuestion;
         _btw.ClearRequested += ClearSideQuestions;
         _btw.Closed += RestoreFocusAfterSide;
@@ -86,10 +85,28 @@ internal sealed class ChatController : IDisposable
         _footer.SetMode(mode);
     }
 
+    private string? _planActionCallId;
+
+    private void UpdatePlanAction()
+    {
+        if (_planActionCallId is { } previous && previous != _state.PlanCallId &&
+            _responsesByCallId.TryGetValue(previous, out var oldOwner))
+            oldOwner.SetPlanAction(previous, null, false, null);
+        _planActionCallId = _state.PlanCallId;
+        if (_state.Plan is { } plan && _state.PlanCallId is { } callId &&
+            _responsesByCallId.TryGetValue(callId, out var owner))
+            owner.SetPlanAction(callId, plan, _state.CanExecutePlan, () => ExecutePlan(plan));
+    }
+
     public void ExecutePlan()
     {
-        if (_input.IsImporting) return;
         if (_state.Plan is not { } plan) { _input.ShowError("Нет готового плана для реализации."); return; }
+        ExecutePlan(plan);
+    }
+
+    private void ExecutePlan(ImplementationPlan plan)
+    {
+        if (_input.IsImporting) return;
         if (_conversation.Execute(new ExecutePlan(plan.Id, plan.Revision, _models.SelectedModel.Id,
                 _models.SelectedReasoningEffort, _models.SelectedProviderId, _models.SubagentModel)))
             SetMode(AgentMode.Build);
@@ -240,7 +257,7 @@ internal sealed class ChatController : IDisposable
         if (state.Revision < _state.Revision) return;
         var wasExclusive = _state.IsBusy && !_state.IsGenerating;
         _state = state;
-        _header.SetPlan(state);
+        UpdatePlanAction();
         _btw.Apply(state.SideQuestions);
         _header.SetSessionTitle(state.Title);
         _header.SetDelegations(_subagents.Tasks);
@@ -305,6 +322,7 @@ internal sealed class ChatController : IDisposable
                     if (!_responsesByCallId.TryGetValue(tool.Call.CallId, out var toolOwner))
                         _responsesByCallId[tool.Call.CallId] = toolOwner = _response!;
                     toolOwner.UpdateToolCall(tool.Call);
+                    if (tool.Call.Name == "submit_plan") UpdatePlanAction();
                     break;
                 case BackgroundToolCallChanged background:
                     if (envelope.SessionId == _state.SessionId) ShowDelegation(background.Call);
@@ -419,6 +437,7 @@ internal sealed class ChatController : IDisposable
     {
         // Construct first, so failed preview/rendering doesn't clear the previous transcript.
         var controls = new List<IWindowControl>();
+        var restoredOwners = new Dictionary<string, AssistantMessageComponent>(StringComparer.Ordinal);
         var exchanges = new HashSet<string>(StringComparer.Ordinal);
         var tasks = new List<LakeCode.Core.Agent.Delegation.DelegationSnapshot>();
         foreach (var turn in view.Turns)
@@ -449,6 +468,7 @@ internal sealed class ChatController : IDisposable
                 {
                     if (!owners.TryGetValue(call.CallId, out var owner)) owners.Add(call.CallId, owner = response);
                     owner.UpdateToolCall(call);
+                    restoredOwners[call.CallId] = owner;
                 }
             }
             foreach (var segment in segments) segment.FinishThinking();
@@ -468,8 +488,11 @@ internal sealed class ChatController : IDisposable
         _delegationPermissions.Clear();
         _turnSegments.Clear();
         _responsesByCallId.Clear();
+        _planActionCallId = null;
+        foreach (var pair in restoredOwners) _responsesByCallId.Add(pair.Key, pair.Value);
         ((IControlHost)_content).ClearControls();
         foreach (var control in controls) _content.AddControl(control);
+        UpdatePlanAction();
         _response = null;
         _responseRequestId = null;
         if (!string.IsNullOrEmpty(view.ModelId))
@@ -554,7 +577,6 @@ internal sealed class ChatController : IDisposable
         _btw.ClearRequested -= ClearSideQuestions;
         _btw.Closed -= RestoreFocusAfterSide;
         _header.SubagentsRequested -= ShowSubagents;
-        _header.ExecutePlanRequested -= ExecutePlan;
         foreach (var approvalId in _executionApprovals.Keys.ToArray()) HideInteraction(approvalId);
         _subagents.ReturnToChat -= RestoreFocusAfterSide;
         if (_questionId is { } id) HideInteraction(id);

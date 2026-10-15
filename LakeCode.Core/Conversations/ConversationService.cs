@@ -144,6 +144,9 @@ public sealed class ConversationService
     private ConversationState CreateState()
     {
         var delegations = (_agent?.Delegations ?? []).ToImmutableArray();
+        var plan = CurrentPlan();
+        var planCallId = plan is null ? null : _snapshot?.Turns.LastOrDefault(turn => turn.Plan?.Id == plan.Id)?
+            .Events.LastOrDefault(item => item.ToolCall is { Name: "submit_plan", Status: ToolCallStatus.Completed })?.ToolCall?.CallId;
         return new ConversationState(++_revision, _snapshot?.Id, _snapshot?.Title,
             _snapshot?.Turns.Count ?? 0, _busy, _generation is not null, _queuePaused,
             _saveFailed, _contextFailed, _pendingSaveFailed,
@@ -155,7 +158,7 @@ public sealed class ConversationService
                 item.ReasoningEffort, item.Mode, item.ProviderId, item.Files.Length, item.AgentMode)).ToImmutableArray(),
             _statisticsModel, _statistics, _tokensPerSecond)
             { SideQuestions = CreateSideState(), Delegations = delegations, ActiveMode = _activeTurn?.AgentMode,
-                Plan = CurrentPlan(), CanExecutePlan = CanExecutePlan() };
+                Plan = plan, PlanCallId = planCallId, CanExecutePlan = CanExecutePlan() };
     }
 
     private SideQuestionState CreateSideState() => new(_sideRevision,
