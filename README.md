@@ -39,6 +39,10 @@ To update, close LakeCode, update the source, and run the install script again. 
 
 Special thanks to the author of **[SharpConsoleUI](https://github.com/nickprotop/ConsoleEx)** for continuing to develop the project and merging PRs so quickly. The library lets me focus on my tool instead of building a terminal interface from scratch.
 
+Thanks to the authors of **[OpenCode](https://github.com/anomalyco/opencode)**: the footer activity scanner is ported from their terminal UI (`v2/packages/tui/src/ui/spinner.ts`).
+
+Thanks to the authors of **[oh-my-pi](https://github.com/can1357/oh-my-pi)** — Stencil Labs and Mario Zechner, whose **[Pi](https://github.com/badlogic/pi-mono)** it builds on — for the ideas about the agent harness and its terminal interface that shaped LakeCode.
+
 ## License
 
 LakeCode is licensed under the [Apache License 2.0](LICENSE). Third-party components are distributed under their own licenses.
