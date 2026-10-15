@@ -16,9 +16,19 @@ internal sealed class FooterComponent : PanelControl
     private static readonly string IdleFrame = $"[{new SharpConsoleUI.Color(0, 255, 255, 51).ToMarkup()}]⬝⬝⬝⬝⬝⬝⬝⬝[/]";
     private static readonly string[] ScannerFrames = CreateScannerFrames();
     private readonly SpinnerTextAnimator _scanner;
-    private readonly Func<string> _render;
-    private bool _debugEnabled;
+    private readonly MarkupControl _animation = new([IdleFrame]) { Height = 1 };
+    private readonly ButtonControl _model = new()
+    {
+        HorizontalAlignment = HorizontalAlignment.Left, Height = 1,
+        BackgroundColor = SharpConsoleUI.Color.Transparent, ForegroundColor = SharpConsoleUI.Color.Cyan,
+        FocusedBackgroundColor = new SharpConsoleUI.Color(35, 65, 75),
+        Margin = new Margin(0, 0, 0, 0)
+    };
+    private readonly MarkupControl _debug = new(new List<string>())
+    { Visible = false, HorizontalAlignment = HorizontalAlignment.Stretch };
     private readonly MarkupControl _details = new(new List<string>());
+
+    public event Action? ModelsRequested;
     private readonly MarkupControl _mode = new(new List<string> { "[cyan]build[/]" })
     { HorizontalAlignment = HorizontalAlignment.Right, Height = 1 };
 
@@ -31,6 +41,12 @@ internal sealed class FooterComponent : PanelControl
         HorizontalAlignment = HorizontalAlignment.Stretch;
         Margin = new Margin(3, 0, 3, 1);
         var row = new HorizontalGridControl { HorizontalAlignment = HorizontalAlignment.Stretch };
+        var animationColumn = new ColumnContainer(row) { FlexFactor = 0, Width = 9 };
+        animationColumn.AddContent(_animation);
+        var modelColumn = new ColumnContainer(row) { FlexFactor = 0 };
+        modelColumn.AddContent(_model);
+        row.AddColumn(animationColumn);
+        row.AddColumn(modelColumn);
         var detailsColumn = new ColumnContainer(row) { FlexFactor = 1 };
         _details.HorizontalAlignment = HorizontalAlignment.Stretch;
         detailsColumn.AddContent(_details);
@@ -39,21 +55,23 @@ internal sealed class FooterComponent : PanelControl
         row.AddColumn(detailsColumn);
         row.AddColumn(modeColumn);
         AddControl(row);
-        var frame = IdleFrame;
+        AddControl(_debug);
+        string RenderModel() => Markup.Escape(store.HasSelection
+            ? store.SelectedProviderName + " · " + store.SelectedModel.Name
+            : "Нет подключения — /providers");
         string Render() =>
-            $"{frame} [cyan]{Markup.Escape(store.HasSelection ? store.SelectedProviderName + " · " + store.SelectedModel.Name : "Нет подключения — /providers")}[/]   [grey50]│[/]   [cyan]{Markup.Escape(store.SelectedReasoningEffort)}[/]   [grey50]│[/]   {Markup.Escape(directory)}   [grey50]│[/]   {FormatStatistics(statistics)}   [grey50]│[/]   {statistics.TokensPerSecond?.ToString("0.0", CultureInfo.InvariantCulture) ?? "—"} tok/s" +
-            (_debugEnabled ? "\n" + FormatRawStatistics(statistics) : string.Empty);
-        _render = Render;
+            $"   [grey50]│[/]   [cyan]{Markup.Escape(store.SelectedReasoningEffort)}[/]   [grey50]│[/]   {Markup.Escape(directory)}   [grey50]│[/]   {FormatStatistics(statistics)}   [grey50]│[/]   {statistics.TokensPerSecond?.ToString("0.0", CultureInfo.InvariantCulture) ?? "—"} tok/s";
+        _model.Click += (_, _) => ModelsRequested?.Invoke();
 
         _scanner = new SpinnerTextAnimator(windowSystem, ScannerFrames, value =>
         {
-            frame = value.Length == 0 ? IdleFrame : value;
-            _details.Text = Render();
+            _animation.Text = value.Length == 0 ? IdleFrame : value;
         }, 50);
         _scanner.Visible = false;
         _scanner.Start();
-        _details.Bind(store, state => state.SelectedProviderName, control => control.Text, _ => Render());
-        _details.Bind(store, state => state.SelectedModel, control => control.Text, _ => Render());
+        _model.Bind(store, state => state.SelectedProviderName, control => control.Text, _ => RenderModel());
+        _model.Bind(store, state => state.SelectedModel, control => control.Text, _ => RenderModel());
+        _debug.Bind(statistics, state => state.Current, control => control.Text, _ => FormatRawStatistics(statistics));
         _details.Bind(store, state => state.SelectedReasoningEffort, control => control.Text, _ => Render());
         _details.Bind(statistics, state => state.Model, control => control.Text, _ => Render());
         _details.Bind(statistics, state => state.Current, control => control.Text, _ => Render());
@@ -67,8 +85,7 @@ internal sealed class FooterComponent : PanelControl
 
     public void ToggleDebug()
     {
-        _debugEnabled = !_debugEnabled;
-        _details.Text = _render();
+        _debug.Visible = !_debug.Visible;
     }
 
     public void StopAnimation() => _scanner.Dispose();
