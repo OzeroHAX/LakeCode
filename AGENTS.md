@@ -5,7 +5,8 @@
 - Do not use an indexer or create or update a project index.
 - Use LSP for symbols and diagnostics when available.
 - Do not create or run tests.
-- Do not run the application, formatters, or other command-based checks except builds. The user checks the application manually.
+- Run the application only when the user explicitly requests it; otherwise, the user checks the application manually.
+- Do not run formatters or other command-based checks except builds.
 - After any edit, before the final response, run from the repository root:
   `dotnet build LakeCode.Cli/LakeCode.Cli.csproj`.
 - Fix build errors introduced by the edit and rebuild.
