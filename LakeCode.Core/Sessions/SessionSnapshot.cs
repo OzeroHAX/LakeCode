@@ -9,7 +9,7 @@ internal sealed class SessionSnapshot
 {
     // Historical v1/v2 files omitted ProviderId; this does not create a connection.
     internal const string HistoricalProviderId = "00000000-0000-0000-0000-000000000001";
-    public int SchemaVersion { get; set; } = 4;
+    public int SchemaVersion { get; set; } = 5;
     public string FrameworkVersion { get; set; } = "1.24.0";
     public string Id { get; set; } = Guid.NewGuid().ToString("D");
     public string WorkspaceRoot { get; set; } = "";

@@ -17,7 +17,7 @@ namespace LakeCode.Core.Conversations;
 /// and state transitions are serialized by _gate. Subscribers must only enqueue notifications,
 /// never block on operations or throw. No UI thread, controls, focus, or preview dependencies.
 /// </summary>
-public sealed class ConversationService
+public sealed partial class ConversationService
 {
     private readonly object _gate = new();
     private readonly ProviderRegistry _providers;
@@ -94,6 +94,7 @@ public sealed class ConversationService
                 CancelSideQuestion cancel => CancelSide(cancel.RequestId),
                 ClearSideQuestions => ClearSide(),
                 StopGeneration => Stop(),
+                CompactConversation => BeginCompaction(),
                 StartNewSession start => NewSession(start.ProviderId, start.ModelId),
                 ListSessions => BeginListSessions(),
                 OpenSession open => BeginOpenSession(open.SessionId),
@@ -111,6 +112,7 @@ public sealed class ConversationService
         lock (_gate)
         {
             _finishing = true;
+            _compactionCancellation?.Cancel();
             _generation?.Cancel();
             _agent?.RequestCancelDelegations();
         }
@@ -153,14 +155,15 @@ public sealed class ConversationService
         return new ConversationState(++_revision, _snapshot?.Id, _snapshot?.Title,
             _snapshot?.Turns.Count ?? 0, _busy, _generation is not null, _queuePaused,
             _saveFailed, _contextFailed, _pendingSaveFailed,
-            (_generation is { IsCancellationRequested: false } || delegations.Any(item =>
+            (_compactionCancellation is { IsCancellationRequested: false } || _generation is { IsCancellationRequested: false } || delegations.Any(item =>
                 item.Status is DelegationStatus.Running or DelegationStatus.WaitingForParent)) &&
             _questions.Count == 0 && _permissions.Count == 0,
             !_busy && _pending.Count == 0 && !_saveFailed && !_contextFailed && !_pendingSaveFailed,
             _pending.Select(item => new PendingMessageState(item.Text, item.Images.Length, item.ModelId,
                 item.ReasoningEffort, item.Mode, item.ProviderId, item.Files.Length, item.AgentMode)).ToImmutableArray(),
             _statisticsModel, _statistics, _tokensPerSecond)
-            { SideQuestions = CreateSideState(), Delegations = delegations, ActiveMode = _activeTurn?.AgentMode,
+            { CanCompact = CanCompact(), IsCompacting = _compactionCancellation is not null, Compaction = _agent?.Compaction,
+                 SideQuestions = CreateSideState(), Delegations = delegations, ActiveMode = _activeTurn?.AgentMode,
                 Plan = plan, PlanCallId = planCallId, CanExecutePlan = CanExecutePlan() };
     }
 
@@ -372,6 +375,7 @@ public sealed class ConversationService
 
     private bool Stop()
     {
+        _compactionCancellation?.Cancel();
         _queuePaused = true;
         _replacementRequested = false;
         Interlocked.Exchange(ref _boundaryStopRequested, 0);
@@ -940,7 +944,7 @@ public sealed class ConversationService
                 next.ModelId = selected.ModelId;
                 next.ModelMetadata = selected.ModelMetadata;
                 next.ReasoningEffort = selected.ReasoningEffort;
-                next.SchemaVersion = 4;
+                next.SchemaVersion = 5;
                 next.UpdatedAt = DateTimeOffset.UtcNow;
                 await _sessions.SaveAsync(next).ConfigureAwait(false);
                 await _agent.RestoreSessionAsync(next.AgentState.Value).ConfigureAwait(false);
@@ -1099,7 +1103,7 @@ public sealed class ConversationService
             {
                 snapshot.AgentState = checkpoint;
                 turn.HistoryStart = _agent.HistoryCount;
-                snapshot.SchemaVersion = 4;
+                snapshot.SchemaVersion = 5;
                 snapshot.DraftText = null;
                 snapshot.DraftImages.Clear();
                 snapshot.DraftFiles.Clear();

@@ -18,6 +18,8 @@ internal sealed class ModelsWindowComponent(ModelStore store, AgentSettingsStora
         var main = CreatePage(false, new ModelSelection(store.SelectedProviderId, store.SelectedModel.Id, store.SelectedReasoningEffort));
         var planning = CreatePage(true, store.PlanModel);
         var children = CreatePage(true, store.SubagentModel);
+        var compaction = CreatePage(true, store.CompactionModel, "Не назначена");
+        compaction.Panel.AddControl(Label("[yellow]/compact отправляет историю выбранному подключению. Платный запрос; запускается только вручную.[/]"));
         var classifier = new ClassifierModelPage(store.Providers, store.Settings.Classifier);
         var tabs = new TabControl
         {
@@ -29,6 +31,7 @@ internal sealed class ModelsWindowComponent(ModelStore store, AgentSettingsStora
         tabs.AddTab("Основной агент", main.Panel, false);
         tabs.AddTab("Планирование", planning.Panel, false);
         tabs.AddTab("Сабагенты", children.Panel, false);
+        tabs.AddTab("Сжатие контекста", compaction.Panel, false);
         tabs.AddTab("Классификатор", classifier.Panel, false);
         var status = Label("");
         var cancel = Button("Отмена");
@@ -52,7 +55,7 @@ internal sealed class ModelsWindowComponent(ModelStore store, AgentSettingsStora
         {
             if (e.KeyInfo.Key != ConsoleKey.Escape) return;
             // Let an open dropdown consume Esc before closing the dialog.
-            if (main.Effort.IsDropdownOpen || planning.Effort.IsDropdownOpen || children.Effort.IsDropdownOpen || classifier.DropdownOpen) return;
+            if (main.Effort.IsDropdownOpen || planning.Effort.IsDropdownOpen || children.Effort.IsDropdownOpen || compaction.Effort.IsDropdownOpen || classifier.DropdownOpen) return;
             e.Handled = true;
             if (!busy) windowSystem.CloseWindow(window);
         };
@@ -75,9 +78,10 @@ internal sealed class ModelsWindowComponent(ModelStore store, AgentSettingsStora
                 }
                 planning.Selection?.Resolve(store.Providers, "планирования");
                 children.Selection?.Resolve(store.Providers);
+                compaction.Selection?.Resolve(store.Providers, "сжатия контекста");
                 settings = store.Settings with
                 {
-                    PlanModel = planning.Selection, SubagentModel = children.Selection,
+                    PlanModel = planning.Selection, SubagentModel = children.Selection, CompactionModel = compaction.Selection,
                     Classifier = classifier.Capture(store.Providers)
                 };
             }
@@ -89,7 +93,7 @@ internal sealed class ModelsWindowComponent(ModelStore store, AgentSettingsStora
             status.Text = "[cyan]Применение…[/]";
             try
             {
-                if (settings.SubagentModel != store.SubagentModel || settings.PlanModel != store.PlanModel || settings.Classifier != store.Settings.Classifier)
+                if (settings.SubagentModel != store.SubagentModel || settings.PlanModel != store.PlanModel || settings.CompactionModel != store.CompactionModel || settings.Classifier != store.Settings.Classifier)
                     await Task.Run(() => settingsStorage.SaveAsync(settings, shutdown), shutdown).ConfigureAwait(false);
                 windowSystem.EnqueueOnUIThread(() =>
                 {
@@ -123,7 +127,7 @@ internal sealed class ModelsWindowComponent(ModelStore store, AgentSettingsStora
         public ModelSelection? Selection;
     }
 
-    private ModelPage CreatePage(bool allowInheritance, ModelSelection? initial)
+    private ModelPage CreatePage(bool allowInheritance, ModelSelection? initial, string emptyLabel = "Как у основного агента")
     {
         var list = new ListControl
         {
@@ -132,7 +136,7 @@ internal sealed class ModelsWindowComponent(ModelStore store, AgentSettingsStora
             HorizontalAlignment = HorizontalAlignment.Stretch, VerticalAlignment = VerticalAlignment.Fill,
             Margin = new Margin(2, 1, 2, 1)
         };
-        if (allowInheritance) list.AddItem(new ListItem("Как у основного агента"));
+        if (allowInheritance) list.AddItem(new ListItem(emptyLabel));
         foreach (var provider in store.Providers.Profiles.OrderBy(item => item.Name, StringComparer.Ordinal))
         foreach (var model in provider.Models.OrderBy(item => item.Id, StringComparer.Ordinal))
             list.AddItem(new ListItem(Markup.Escape($"{provider.Name} · {model.Name}"))
@@ -184,7 +188,7 @@ internal sealed class ModelsWindowComponent(ModelStore store, AgentSettingsStora
                 if (list.SelectedItem?.Tag is not ValueTuple<string, string> pair)
                 {
                     page.Selection = null;
-                    effort.AddItem(allowInheritance ? "Как у основного" : "Нет модели");
+                    effort.AddItem(allowInheritance ? emptyLabel : "Нет модели");
                     effort.SelectedIndex = 0;
                     effort.IsEnabled = false;
                     return;

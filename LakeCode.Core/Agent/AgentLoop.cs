@@ -1,4 +1,5 @@
 using LakeCode.Core.Providers;
+using LakeCode.Core.Agent.Compaction;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Text.Json;
@@ -39,7 +40,7 @@ public sealed class AgentLoop : IDisposable, IAsyncDisposable
         : _mode == AgentMode.Build ? name != "submit_plan"
         : name is "read_file" or "list_directory" or "grep" or "bash" or "eval" or
             "web_search" or "read_web" or "ask_tool" or "load_skill" or "read_skill_resource" or
-            "delegate" or "wait_subagents" or "submit_plan";
+            "delegate" or "wait_subagents" or "submit_plan" or "read_history" or "list_history" or "search_history";
 
     [System.ComponentModel.Description("Submit the final self-contained Markdown implementation plan for user review. Does not grant execution permission. Ends this planning turn.")]
     private string SubmitPlan([System.ComponentModel.Description("Complete actionable plan following the Plan system prompt template, with no unresolved blocking decisions.")] string markdown)
@@ -64,7 +65,9 @@ public sealed class AgentLoop : IDisposable, IAsyncDisposable
     private readonly string[] _skillPaths;
     private AgentSession? _session;
     private string? _historyOrigin;
-    private readonly InMemoryChatHistoryProvider _history = new();
+    private readonly InMemoryChatHistoryProvider _history;
+    private readonly HistoryProjection _projection;
+    internal CompactionView? Compaction => _projection.View;
     private readonly InterruptedHistoryChatClient _historyCapture;
     private readonly Dictionary<string, ToolCallUpdate> _runTools = new(StringComparer.Ordinal);
 
@@ -100,6 +103,9 @@ public sealed class AgentLoop : IDisposable, IAsyncDisposable
         _files = files;
         _parentQuestions = parentQuestions;
         _permissionCallId = permissionCallId;
+        _projection = new HistoryProjection(() => _session is null ? [] : _history!.GetMessages(_session));
+        _history = new InMemoryChatHistoryProvider(new InMemoryChatHistoryProviderOptions
+        { ProvideOutputMessageFilter = _projection.Project });
         var promptContext = new SystemPromptContext(
             files.Root,
             RuntimeInformation.OSDescription,
@@ -175,7 +181,10 @@ public sealed class AgentLoop : IDisposable, IAsyncDisposable
                 AIFunctionFactory.Create(editFile.EditAsync, name: "edit_file"),
                 AIFunctionFactory.Create(webSearch.SearchAsync, name: "web_search"),
                 AIFunctionFactory.Create(readWeb.ReadAsync, name: "read_web"),
-                AIFunctionFactory.Create(askTool.AskAsync, name: "ask_tool")];
+                AIFunctionFactory.Create(askTool.AskAsync, name: "ask_tool"),
+                AIFunctionFactory.Create(_projection.ReadHistory, name: "read_history"),
+                AIFunctionFactory.Create(_projection.ListHistory, name: "list_history"),
+                AIFunctionFactory.Create(_projection.SearchHistory, name: "search_history")];
             var evalFunctions = functions;
             foreach (var function in evalFunctions) _evalFunctions.Add(function.Name, function);
             _eval = new Tools.Eval.EvalTool(files.Root, InvokeEvalToolAsync,
@@ -192,7 +201,7 @@ public sealed class AgentLoop : IDisposable, IAsyncDisposable
         }
 
         _functions = functions;
-        _historyCapture = new InterruptedHistoryChatClient(_client);
+        _historyCapture = new InterruptedHistoryChatClient(_client) { RecoverRequest = _projection.RecoverRequest };
         if (parentQuestions is not null)
             _historyCapture.ResponseCompleted = response => ResponseCompleted?.Invoke(response);
         _historyCapture.BeforeRequest = () => BeforeModelRequest?.Invoke();
@@ -417,11 +426,27 @@ public sealed class AgentLoop : IDisposable, IAsyncDisposable
     }
 
     /// <summary>Call only between runs, after the response stream has been fully consumed.</summary>
-    public async ValueTask<JsonElement> SerializeSessionAsync(CancellationToken cancellationToken = default)
+    public ValueTask<JsonElement> SerializeSessionAsync(CancellationToken cancellationToken = default) =>
+        SerializeWithCompactionAsync(_projection.State, cancellationToken);
+
+    internal async ValueTask<JsonElement> SerializeWithCompactionAsync(CompactionState compaction, CancellationToken cancellationToken = default)
     {
         _session ??= await _agent.CreateSessionAsync(cancellationToken: cancellationToken);
+        HistoryProjection.ValidateState(compaction, _history.GetMessages(_session));
         var state = await _agent.SerializeSessionAsync(_session, cancellationToken: cancellationToken);
-        return JsonSerializer.SerializeToElement(new { LakeCodeHistoryOrigin = _historyOrigin, FrameworkState = state });
+        return JsonSerializer.SerializeToElement(new { LakeCodeHistoryOrigin = _historyOrigin, LakeCodeCompaction = compaction, FrameworkState = state });
+    }
+
+    internal Task<CompactionState> PrepareCompactionAsync(int userStart, int userEnd, bool completed, string? plan,
+        string statuses, Settings.ModelConfiguration model, CancellationToken cancellationToken) =>
+        CompactionRunner.RunAsync(_session is null ? [] : _history.GetMessages(_session), _projection.State,
+            userStart, userEnd, completed, plan, statuses, model, cancellationToken);
+
+    internal void CommitCompaction(CompactionState state)
+    {
+        _projection.SetState(state);
+        _historyCapture.Reset();
+        _historyCapture.ClearSideContext();
     }
 
     public async ValueTask RestoreSessionAsync(JsonElement state, CancellationToken cancellationToken = default)
@@ -429,6 +454,10 @@ public sealed class AgentLoop : IDisposable, IAsyncDisposable
         _eval?.Reset();
         if (_delegation is not null) await _delegation.ResetAsync().ConfigureAwait(false);
         _historyCapture.ClearSideContext();
+        _historyCapture.Reset();
+        var compaction = state.TryGetProperty("LakeCodeCompaction", out var savedCompaction)
+            ? savedCompaction.Deserialize<CompactionState>() ?? throw new InvalidDataException("Повреждён checkpoint summary.")
+            : CompactionState.Empty;
         if (state.TryGetProperty("FrameworkState", out var frameworkState))
         {
             _historyOrigin = state.GetProperty("LakeCodeHistoryOrigin").GetString();
@@ -436,6 +465,7 @@ public sealed class AgentLoop : IDisposable, IAsyncDisposable
         }
         else _historyOrigin = null;
         _session = await _agent.DeserializeSessionAsync(state, cancellationToken: cancellationToken);
+        _projection.SetState(compaction);
     }
 
     public int HistoryCount => _session is null ? 0 : _history.GetMessages(_session).Count;
@@ -474,6 +504,8 @@ public sealed class AgentLoop : IDisposable, IAsyncDisposable
         _eval?.Reset();
         _delegation?.Reset();
         _history.SetMessages(_session, _history.GetMessages(_session).Take(messageCount).ToList());
+        _projection.Rewind(messageCount);
+        _historyCapture.Reset();
         _historyCapture.ClearSideContext();
     }
 

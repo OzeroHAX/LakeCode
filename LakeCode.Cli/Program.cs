@@ -95,6 +95,7 @@ using var slashCommands = new SlashCommandsComponent(window, input,
     ("/providers", "Настроить подключения и модели"),
     ("/sessions", "Открыть сохранённую сессию"),
     ("/rewind", "Открыть окно отката истории"),
+    ("/compact", "Сжать контекст: summary со ссылками, архив сохраняется"),
     ("/btw", "Попутный вопрос без изменения основной истории"),
     ("/debug", "Показать или скрыть usage (MAF)")
 ]);
@@ -119,6 +120,10 @@ slashCommands.CommandSelected += (_, selected) =>
     else if (command.Equals("/sessions", StringComparison.OrdinalIgnoreCase))
     {
         chat.ShowSessions();
+    }
+    else if (command.Equals("/compact", StringComparison.OrdinalIgnoreCase))
+    {
+        chat.Compact();
     }
     else if (command.Equals("/rewind", StringComparison.OrdinalIgnoreCase))
     {

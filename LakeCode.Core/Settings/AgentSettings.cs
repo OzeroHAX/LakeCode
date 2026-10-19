@@ -38,6 +38,8 @@ public sealed record AgentSettings
     [JsonRequired] public int SchemaVersion { get; init; } = 1;
     public ModelSelection? SubagentModel { get; init; }
     public ModelSelection? PlanModel { get; init; }
+    // Null means not configured: /compact never silently sends history to another model.
+    public ModelSelection? CompactionModel { get; init; }
     public ExecutionApproval.ClassifierSettings Classifier { get; init; } = new();
     [JsonExtensionData] public Dictionary<string, JsonElement>? AdditionalSettings { get; init; }
 
@@ -46,6 +48,7 @@ public sealed record AgentSettings
         if (SchemaVersion != 1) throw new InvalidDataException("Неподдерживаемая версия settings.json.");
         SubagentModel?.Validate();
         PlanModel?.Validate("планирования");
+        CompactionModel?.Validate("сжатия контекста");
         if (Classifier is null) throw new InvalidDataException("Некорректные настройки классификатора.");
         Classifier.Validate();
     }

@@ -7,6 +7,9 @@ namespace LakeCode.Core.Agent;
 internal sealed class InterruptedHistoryChatClient(IChatClient inner) : DelegatingChatClient(inner)
 {
     private List<ChatMessage>? _request;
+    private List<ChatMessage>? _recoveryRequest;
+    private bool _recoveryFailed;
+    internal Func<IReadOnlyList<ChatMessage>, List<ChatMessage>>? RecoverRequest { get; init; }
     private readonly List<ChatResponseUpdate> _updates = [];
     public Action? BeforeRequest { get; set; }
     public Action<ChatResponse>? ResponseCompleted { get; set; }
@@ -52,13 +55,16 @@ internal sealed class InterruptedHistoryChatClient(IChatClient inner) : Delegati
     public void Reset()
     {
         _request = null;
+        _recoveryRequest = null;
+        _recoveryFailed = false;
         _updates.Clear();
     }
 
     public List<ChatMessage>? GetInterruptedMessages()
     {
-        if (_request is null) return null;
-        return [.. _request.Where(message => message.Role != ChatRole.System),
+        if (_recoveryFailed) throw new InvalidDataException("Не удалось восстановить соответствие запроса архиву.");
+        if (_recoveryRequest is null) return null;
+        return [.. _recoveryRequest.Where(message => message.Role != ChatRole.System),
             .. _updates.ToChatResponse().Messages];
     }
 
@@ -67,6 +73,9 @@ internal sealed class InterruptedHistoryChatClient(IChatClient inner) : Delegati
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
         _request = messages.Select(message => message.Clone()).ToList();
+        _recoveryFailed = true;
+        _recoveryRequest = RecoverRequest?.Invoke(_request) ?? _request;
+        _recoveryFailed = false;
         _updates.Clear();
         // Capture completed tool results before a boundary stop, so recovery retains them.
         BeforeRequest?.Invoke();

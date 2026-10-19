@@ -18,6 +18,9 @@ public sealed record ConversationState(long Revision, string? SessionId, string?
     ImmutableArray<PendingMessageState> PendingMessages, ModelInfo StatisticsModel,
     RequestStatistics? Statistics, double? TokensPerSecond)
 {
+    public bool CanCompact { get; init; }
+    public bool IsCompacting { get; init; }
+    public Agent.Compaction.CompactionView? Compaction { get; init; }
     public AgentMode? ActiveMode { get; init; }
     public ImplementationPlan? Plan { get; init; }
     public bool CanExecutePlan { get; init; }

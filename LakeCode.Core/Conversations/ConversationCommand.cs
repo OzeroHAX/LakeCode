@@ -15,6 +15,7 @@ public sealed record ExecutePlan(Guid PlanId, int Revision, string ModelId, stri
     string ProviderId, Settings.ModelSelection? SubagentModel = null) : ConversationCommand;
 public sealed record ResolveExecutionApproval(Guid InteractionId, bool Allow) : ConversationCommand;
 public sealed record StopGeneration : ConversationCommand;
+public sealed record CompactConversation : ConversationCommand;
 public sealed record AskSideQuestion(string Question) : ConversationCommand;
 public sealed record CancelSideQuestion(Guid RequestId) : ConversationCommand;
 public sealed record ClearSideQuestions : ConversationCommand;

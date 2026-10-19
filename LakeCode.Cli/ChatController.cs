@@ -27,6 +27,8 @@ internal sealed class ChatController : IDisposable
     private readonly Dictionary<Guid, DelegationMessageComponent> _delegationPermissions = [];
     private readonly List<AssistantMessageComponent> _turnSegments = [];
     private Guid? _shownSideRequestId;
+    private CompactionComponent? _compactionCard;
+    private MarkupControl? _compactionNotice;
     private readonly PanelControl _askHost;
     private readonly ConversationService _conversation;
     private readonly string _workspaceRoot;
@@ -110,6 +112,17 @@ internal sealed class ChatController : IDisposable
         if (_conversation.Execute(new ExecutePlan(plan.Id, plan.Revision, _models.SelectedModel.Id,
                 _models.SelectedReasoningEffort, _models.SelectedProviderId, _models.SubagentModel)))
             SetMode(AgentMode.Build);
+    }
+
+    public void Compact()
+    {
+        if (_input.IsImporting) return;
+        if (_conversation.Execute(new CompactConversation()))
+        {
+            // Slash command text is consumed, but attachments and any other draft are not.
+            if (_input.Editor.Input.Trim().Equals("/compact", StringComparison.OrdinalIgnoreCase))
+                _input.Editor.Input = string.Empty;
+        }
     }
 
     public void StopGeneration() => _conversation.Execute(new StopGeneration());
@@ -257,6 +270,7 @@ internal sealed class ChatController : IDisposable
         if (state.Revision < _state.Revision) return;
         var wasExclusive = _state.IsBusy && !_state.IsGenerating;
         _state = state;
+        UpdateCompactionCard();
         UpdatePlanAction();
         _btw.Apply(state.SideQuestions);
         _header.SetSessionTitle(state.Title);
@@ -279,6 +293,22 @@ internal sealed class ChatController : IDisposable
         if (wasExclusive && !state.IsBusy && !_btw.IsOpen) _focusInput();
     }
 
+    private void UpdateCompactionCard()
+    {
+        if (_compactionCard?.CheckpointId == _state.Compaction?.Id) return;
+        if (_compactionCard is not null)
+        {
+            ((IControlHost)_content).RemoveControl(_compactionCard);
+            _compactionCard.Dispose();
+            _compactionCard = null;
+        }
+        if (_state.Compaction is { } compacted)
+        {
+            _compactionCard = new CompactionComponent(compacted);
+            _content.AddControl(_compactionCard);
+        }
+    }
+
     private void ApplyEvent(ConversationEventEnvelope envelope)
     {
         try
@@ -287,6 +317,17 @@ internal sealed class ChatController : IDisposable
             {
                 case ConversationReplaced replaced:
                     ReplaceConversation(replaced.Conversation);
+                    break;
+                case CompactionStarted started:
+                    _compactionNotice = new MarkupControl(["[cyan]Сжатие контекста…[/] " + Spectre.Console.Markup.Escape(started.ModelName) + " · Esc дважды — отменить"]) { Wrap = true };
+                    _content.AddControl(_compactionNotice);
+                    break;
+                case CompactionFinished compacted:
+                    if (_compactionNotice is not null)
+                        _compactionNotice.Text = compacted.Error is { } error
+                            ? "[yellow]" + Spectre.Console.Markup.Escape(error) + "[/]"
+                            : "[green]Summary сохранён. Последний запрос и финальный ответ (если был) сохранены дословно; оригиналы доступны через read_history/list_history.[/]";
+                    if (compacted.Error is not null) _input.ShowError(compacted.Error);
                     break;
                 case RewindFinished rewindFinished:
                     RewindCompleted?.Invoke(rewindFinished.Error);
@@ -492,6 +533,8 @@ internal sealed class ChatController : IDisposable
         _planActionCallId = null;
         foreach (var pair in restoredOwners) _responsesByCallId.Add(pair.Key, pair.Value);
         ((IControlHost)_content).ClearControls();
+        _compactionCard = null;
+        _compactionNotice = null;
         foreach (var control in controls) _content.AddControl(control);
         UpdatePlanAction();
         _response = null;

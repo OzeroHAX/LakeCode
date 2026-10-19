@@ -20,6 +20,7 @@ internal sealed class ModelStore : INotifyPropertyChanged
     public AgentSettings Settings { get; private set; }
     public ModelSelection? SubagentModel => Settings.SubagentModel;
     public ModelSelection? PlanModel => Settings.PlanModel;
+    public ModelSelection? CompactionModel => Settings.CompactionModel;
 
     public ModelConfiguration GetRequestConfiguration(AgentMode mode) =>
         mode == AgentMode.Plan && PlanModel is { } selection
@@ -31,6 +32,7 @@ internal sealed class ModelStore : INotifyPropertyChanged
         Settings = settings;
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(SubagentModel)));
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(PlanModel)));
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(CompactionModel)));
     }
 
     public event PropertyChangedEventHandler? PropertyChanged;

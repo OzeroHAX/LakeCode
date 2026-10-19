@@ -10,6 +10,8 @@ namespace LakeCode.Core.Conversations;
 public abstract record ConversationEvent;
 public sealed record ConversationReplaced(ConversationView Conversation) : ConversationEvent;
 public sealed record RewindFinished(string? Error) : ConversationEvent;
+public sealed record CompactionStarted(string ModelName) : ConversationEvent;
+public sealed record CompactionFinished(Agent.Compaction.CompactionView? Result, string? Error) : ConversationEvent;
 public sealed record SessionsListing(string? ActiveId) : ConversationEvent;
 public sealed record SessionsListed(ImmutableArray<SessionSummary> Sessions, ImmutableArray<string> Errors,
     string? ActiveId) : ConversationEvent;

@@ -33,6 +33,21 @@ internal sealed class SessionStorage
         await SaveSummaryAsync(directory, snapshot, new FileInfo(path), cancellationToken);
     }
 
+    // session.json is the commit point. A recoverable list-cache error after commit must not
+    // report that the old context is still active or cause a later save to overwrite the checkpoint.
+    internal async Task<string?> SaveCompactedAsync(SessionSnapshot snapshot, CancellationToken cancellationToken)
+    {
+        ValidateDirectory(_root);
+        var directory = Path.Combine(_root, ValidateId(snapshot.Id));
+        ValidateDirectory(directory);
+        var path = Path.Combine(directory, "session.json");
+        await WriteAtomicAsync(path, snapshot, cancellationToken);
+        try { await SaveSummaryAsync(directory, snapshot, new FileInfo(path), CancellationToken.None); }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException)
+        { return "Summary сохранён, но метаданные списка сессий не обновлены: " + error.Message; }
+        return null;
+    }
+
     public async Task SavePendingAsync(string id, PendingMessage[] messages)
     {
         ValidateDirectory(_root);
@@ -64,6 +79,9 @@ internal sealed class SessionStorage
                 await stream.FlushAsync(cancellationToken);
                 stream.Flush(flushToDisk: true);
             }
+            RejectLink(path);
+            if (!OperatingSystem.IsWindows() && File.Exists(path))
+                File.SetUnixFileMode(temporary, File.GetUnixFileMode(path));
             cancellationToken.ThrowIfCancellationRequested();
             File.Move(temporary, path, overwrite: true);
         }
@@ -85,7 +103,7 @@ internal sealed class SessionStorage
             throw new InvalidDataException("Сессия превышает лимит хранения 256 MiB.");
         var snapshot = await JsonSerializer.DeserializeAsync<SessionSnapshot>(stream, JsonOptions, cancellationToken)
             ?? throw new InvalidDataException("Файл сессии пуст.");
-        if (snapshot.SchemaVersion is not (1 or 2 or 3 or 4) || snapshot.FrameworkVersion != "1.24.0")
+        if (snapshot.SchemaVersion is not (1 or 2 or 3 or 4 or 5) || snapshot.FrameworkVersion != "1.24.0")
             throw new InvalidDataException("Версия сохранённой сессии несовместима с этой версией LakeCode.");
         if (snapshot.Id != id || snapshot.Turns is null || string.IsNullOrWhiteSpace(snapshot.WorkspaceRoot) ||
             string.IsNullOrWhiteSpace(snapshot.Title) || string.IsNullOrWhiteSpace(snapshot.ModelId) ||
@@ -220,7 +238,7 @@ internal sealed class SessionStorage
             if (stream.Length <= 64 * 1024)
             {
                 var summary = await JsonSerializer.DeserializeAsync<StoredSummary>(stream, JsonOptions, cancellationToken);
-                if (summary is { Version: 1, SchemaVersion: 1 or 2 or 3 or 4, FrameworkVersion: "1.24.0" } &&
+                if (summary is { Version: 1, SchemaVersion: 1 or 2 or 3 or 4 or 5, FrameworkVersion: "1.24.0" } &&
                     summary.Id == id && !string.IsNullOrWhiteSpace(summary.WorkspaceRoot) &&
                     !string.IsNullOrWhiteSpace(summary.Title) && summary.Turns >= 0 &&
                     summary.SnapshotLength == length && summary.SnapshotWriteTicks == writeTicks)
