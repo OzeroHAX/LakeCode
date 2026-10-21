@@ -40,7 +40,7 @@ public sealed class AgentLoop : IDisposable, IAsyncDisposable
         : _mode == AgentMode.Build ? name != "submit_plan"
         : name is "read_file" or "list_directory" or "grep" or "bash" or "eval" or
             "web_search" or "read_web" or "ask_tool" or "load_skill" or "read_skill_resource" or
-            "delegate" or "wait_subagents" or "submit_plan" or "read_history" or "list_history" or "search_history";
+            "delegate" or "send_subagent_message" or "wait_subagents" or "submit_plan" or "read_history" or "list_history" or "search_history";
 
     [System.ComponentModel.Description("Submit the final self-contained Markdown implementation plan for user review. Does not grant execution permission. Ends this planning turn.")]
     private string SubmitPlan([System.ComponentModel.Description("Complete actionable plan following the Plan system prompt template, with no unresolved blocking decisions.")] string markdown)
@@ -196,6 +196,7 @@ public sealed class AgentLoop : IDisposable, IAsyncDisposable
                 })));
             functions = [.. functions, AIFunctionFactory.Create(_eval.RunAsync, name: "eval"),
                 AIFunctionFactory.Create(_delegation!.DelegateAsync, name: "delegate"),
+                AIFunctionFactory.Create(_delegation.SendMessageAsync, name: "send_subagent_message"),
                 AIFunctionFactory.Create(_delegation.WaitAsync, name: "wait_subagents"),
                 AIFunctionFactory.Create(SubmitPlan, name: "submit_plan")];
         }

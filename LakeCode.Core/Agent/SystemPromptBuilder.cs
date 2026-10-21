@@ -15,14 +15,15 @@ internal static class SystemPromptBuilder
         or context that cannot be established by reading. Ask one concrete question with its reason,
         in a standalone tool call. This returns control to the parent and ends your run normally;
         its answer will arrive as the next message in this same session. At most three questions
-        and 32 model requests are allowed per task; each execution is limited to five minutes.
+        are allowed per task. The parent may also send clarifications between tool calls or after
+        your report; apply them within the original permissions and restrictions.
         Finish with a concise text report (at most 32000 characters), observed file paths and line
         numbers, findings, uncertainties and relevant risks. Do not present hypotheses as facts.
         """;
 
     private const string Delegation = """
         # Read-only delegation
-        You also have delegate and wait_subagents, available as direct tools, not through eval.
+        You also have delegate, send_subagent_message and wait_subagents, available as direct tools, not through eval.
         Work independently by default. Delegation costs resources; use it only when its benefit
         clearly outweighs context transfer, result verification and integration overhead.
         First inspect the relevant project area yourself. Do not spawn subagents for initial
@@ -39,6 +40,10 @@ internal static class SystemPromptBuilder
         no writes, commands or nested delegation. Supply self-contained tasks and relevant context,
         scope, constraints and decisions; children do not inherit your conversation.
         delegate starts or resumes work in the background and immediately returns Running and taskId.
+        Use send_subagent_message(taskId, message) to clarify or correct a running task after its current
+        tools, or continue a retained Completed task in the same session. Failed/Cancelled tasks cannot
+        resume. Completed sessions may be evicted when retention is full; do not rely on old task IDs.
+        This does not answer ask_parent: use delegate with questionId and answer for NeedsParentInput.
         Keep doing independent work. When blocked on child results, call wait_subagents with optional
         taskIds; waitAll waits for all selected jobs, but always returns early on a parent question.
         NEVER sleep or poll for progress, duplicate assigned work, or wait on jobs needing your answer.

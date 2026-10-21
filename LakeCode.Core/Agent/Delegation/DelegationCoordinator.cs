@@ -24,9 +24,10 @@ internal sealed class DelegationCoordinator(
         public readonly ProviderProfile Provider = provider;
         public readonly CancellationTokenSource Cancellation = cancellation;
         public Task Operation = Task.CompletedTask;
-        public int ModelRequests;
         public bool NotificationPending;
         public bool Settled;
+        public readonly Queue<string> Messages = new();
+        public bool BoundaryStop;
     }
 
     private readonly object _gate = new();
@@ -87,7 +88,12 @@ internal sealed class DelegationCoordinator(
                     CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token));
                 child.BeforeModelRequest += () =>
                 {
-                    if (++job.ModelRequests > 32) throw new InvalidOperationException("Research exhausted its 32 model requests.");
+                    lock (_gate)
+                    {
+                        if (job.Messages.Count == 0) return;
+                        job.BoundaryStop = true;
+                    }
+                    throw new OperationCanceledException("Continue research with parent clarification after tools.");
                 };
                 child.ToolCallUpdated += update => Activity?.Invoke(new DelegationActivity(job.Snapshot.TaskId, "tool", ToolCall: update));
                 child.ResponseCompleted += response =>
@@ -137,11 +143,58 @@ internal sealed class DelegationCoordinator(
         try
         {
             Publish(getInvocation() ?? job.Origin, started);
-            Activity?.Invoke(new DelegationActivity(started.TaskId, "request", message.Text));
         }
         finally { start.TrySetResult(); }
         return Task.FromResult(JsonSerializer.Serialize(Output(started)));
     }
+
+    [Description("Send a clarification or correction to an existing research subagent. Running jobs receive messages in order after the current tools, before the next model request. Completed jobs continue in the same session while retained (old delivered jobs may be evicted when retention is full). Does not interrupt an active tool or change permissions. For NeedsParentInput, answer with delegate/taskId/questionId/answer instead. Failed/Cancelled jobs cannot resume.")]
+    public Task<string> SendMessageAsync(
+        [Description("Existing research task ID.")] string taskId,
+        [Description("Clarification or correction, at most 16000 characters.")] string message,
+        CancellationToken cancellationToken = default)
+    {
+        lock (_gate)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            if (string.IsNullOrWhiteSpace(taskId) || string.IsNullOrWhiteSpace(message) || message.Length > 16_000)
+                return Task.FromResult("Error: taskId and message must be nonempty; message must be at most 16000 characters.");
+            if (!_jobs.TryGetValue(taskId, out var job) || job.Child is null || job.Cancellation.IsCancellationRequested)
+                return Task.FromResult("Error: Unknown or no longer available research task.");
+            if (job.Snapshot.Status == DelegationStatus.WaitingForParent)
+                return Task.FromResult("Error: Answer the pending question using delegate with taskId, questionId and answer.");
+            if (job.Snapshot.Status == DelegationStatus.Running)
+            {
+                job.Messages.Enqueue(message);
+                return Task.FromResult(JsonSerializer.Serialize(new { status = "Queued", taskId }));
+            }
+            if (job.Snapshot.Status != DelegationStatus.Completed || !job.Settled)
+                return Task.FromResult("Error: Research task is not ready for continuation.");
+            if (_jobs.Values.Count(item => IsUnfinished(item.Snapshot)) >= 4)
+                return Task.FromResult("Error: Four research jobs are unfinished. Wait for results or answer pending questions first.");
+
+            var previous = job.Operation;
+            job.NotificationPending = false;
+            job.Settled = false;
+            job.Snapshot = job.Snapshot with { Status = DelegationStatus.Running, Answer = message, Result = null, Error = null,
+                RequestNumber = job.Snapshot.RequestNumber + 1 };
+            // Wait for the preceding publication to finish; never run a session concurrently.
+            job.Operation = Task.Run(async () =>
+            {
+                await previous.ConfigureAwait(false);
+                Publish(job.Origin, job.Snapshot);
+                await ExecuteAsync(job, ParentMessage(message)).ConfigureAwait(false);
+            });
+            _operations.RemoveAll(operation => operation.IsCompleted);
+            _operations.Add(job.Operation);
+            SignalChanged();
+            return Task.FromResult(JsonSerializer.Serialize(new { status = "Running", taskId }));
+        }
+    }
+
+    private static ChatMessage ParentMessage(string message) => new(ChatRole.User,
+        "# Parent clarification\n" + message + "\n\nContinue the research with this clarification; inherited permissions and restrictions remain unchanged.");
 
     [Description("Wait for background research subagents, without polling or sleeping. Omit taskIds to watch running jobs and undelivered results; otherwise specify known IDs. Default returns on the first result or parent question. waitAll waits for all selected jobs, but returns early on NeedsParentInput so the parent can answer without deadlock. Timeout returns current states and does not cancel jobs. Results/questions returned here are consumed and will not be automatically delivered again.")]
     public async Task<string> WaitAsync(
@@ -210,36 +263,71 @@ internal sealed class DelegationCoordinator(
     private async Task ExecuteAsync(Job job, ChatMessage message)
     {
         DelegationSnapshot finished;
-        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(job.Cancellation.Token);
-        timeout.CancelAfter(TimeSpan.FromMinutes(5));
-        try
+        var publishContinuation = false;
+        while (true)
         {
-            var result = new StringBuilder();
-            await foreach (var update in job.Child!.RunAsync(message, job.Model, job.Effort, job.Provider, timeout.Token).ConfigureAwait(false))
+            try
             {
-                foreach (var text in update.Contents.OfType<TextContent>())
+                lock (_gate) job.BoundaryStop = false;
+                if (publishContinuation) Publish(job.Origin, job.Snapshot);
+                Activity?.Invoke(new DelegationActivity(job.Snapshot.TaskId, "request", message.Text));
+                var result = new StringBuilder();
+                try
                 {
-                    if ((long)result.Length + text.Text.Length > 32_000)
-                        throw new InvalidDataException("Research result exceeds 32000 characters; no truncated result was accepted.");
-                    result.Append(text.Text);
+                    await foreach (var update in job.Child!.RunAsync(message, job.Model, job.Effort, job.Provider, job.Cancellation.Token).ConfigureAwait(false))
+                    {
+                        foreach (var text in update.Contents.OfType<TextContent>())
+                        {
+                            if ((long)result.Length + text.Text.Length > 32_000)
+                                throw new InvalidDataException("Research result exceeds 32000 characters; no truncated result was accepted.");
+                            result.Append(text.Text);
+                        }
+                    }
+                }
+                catch (OperationCanceledException) when (job.BoundaryStop && !job.Cancellation.IsCancellationRequested)
+                {
+                    // Same boundary recovery as a clarification in the main conversation:
+                    // retain completed call/results before starting the next sequential run.
+                    job.Child!.PreserveInterruptedHistory();
+                }
+                job.Cancellation.Token.ThrowIfCancellationRequested();
+                if (job.Questions.Failure is { } failure) throw new InvalidOperationException(failure);
+                lock (_gate)
+                {
+                    if (job.Questions.Pending is { } question)
+                        finished = job.Snapshot with { Status = DelegationStatus.WaitingForParent, QuestionId = question.Id,
+                            Question = question.Question, Reason = question.Reason, Answer = null };
+                    else if (job.Messages.TryDequeue(out var clarification))
+                    {
+                        message = ParentMessage(clarification);
+                        job.Snapshot = job.Snapshot with { Answer = clarification, RequestNumber = job.Snapshot.RequestNumber + 1 };
+                        publishContinuation = true;
+                        continue;
+                    }
+                    else
+                    {
+                        if (string.IsNullOrWhiteSpace(result.ToString())) throw new InvalidDataException("Research finished without a text result.");
+                        finished = job.Snapshot with { Status = DelegationStatus.Completed, Result = result.ToString() };
+                    }
+                    // Commit under the same gate as message acceptance: no accepted message
+                    // can be stranded between the final queue check and completion.
+                    job.Snapshot = finished;
+                    job.NotificationPending = false;
                 }
             }
-            timeout.Token.ThrowIfCancellationRequested();
-            if (job.Questions.Failure is { } failure) throw new InvalidOperationException(failure);
-            if (job.Questions.Pending is { } question)
-                finished = job.Snapshot with { Status = DelegationStatus.WaitingForParent, QuestionId = question.Id,
-                    Question = question.Question, Reason = question.Reason, Answer = null };
-            else
+            catch (OperationCanceledException) when (job.Cancellation.IsCancellationRequested)
             {
-                if (string.IsNullOrWhiteSpace(result.ToString())) throw new InvalidDataException("Research finished without a text result.");
-                finished = job.Snapshot with { Status = DelegationStatus.Completed, Result = result.ToString() };
+                lock (_gate)
+                    job.Snapshot = finished = job.Snapshot with { Status = DelegationStatus.Cancelled, Result = null,
+                        Error = "Background research cancelled." };
             }
+            catch (Exception error)
+            {
+                lock (_gate)
+                    job.Snapshot = finished = job.Snapshot with { Status = DelegationStatus.Failed, Error = error.Message };
+            }
+            break;
         }
-        catch (OperationCanceledException) when (job.Cancellation.IsCancellationRequested)
-        { finished = job.Snapshot with { Status = DelegationStatus.Cancelled, Error = "Background research cancelled." }; }
-        catch (Exception error)
-        { finished = job.Snapshot with { Status = DelegationStatus.Failed,
-            Error = error is OperationCanceledException && timeout.IsCancellationRequested ? "Research execution exceeded 5 minutes." : error.Message }; }
 
         lock (_gate)
         {
@@ -248,7 +336,7 @@ internal sealed class DelegationCoordinator(
             job.Snapshot = finished;
             job.NotificationPending = false;
         }
-        if (finished.Status != DelegationStatus.WaitingForParent) ReleaseChild(job);
+        if (finished.Status is DelegationStatus.Failed or DelegationStatus.Cancelled) ReleaseChild(job);
         Publish(job.Origin, finished);
         lock (_gate)
         {
@@ -291,8 +379,10 @@ internal sealed class DelegationCoordinator(
 
     private void PruneDelivered()
     {
+        if (_jobs.Count < 32) return;
         foreach (var job in _jobs.Values.Where(job => !IsUnfinished(job.Snapshot) && !job.NotificationPending && job.Operation.IsCompleted).ToArray())
         {
+            ReleaseChild(job);
             _jobs.Remove(job.Snapshot.TaskId);
             job.Cancellation.Dispose();
             foreach (var call in _invocations.Where(pair => pair.Value == job.Snapshot.TaskId).Select(pair => pair.Key).ToArray()) _invocations.Remove(call);
