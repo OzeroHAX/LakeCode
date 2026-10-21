@@ -8,6 +8,10 @@ internal sealed class WorkspaceFiles
     public const int MaxFileBytes = 1_048_576;
     public string Root { get; }
     private readonly ExternalReadPermissions _externalReads;
+    private readonly bool _allowExternalReads;
+
+    /// <summary>Report absolute paths, as needed when the root is a scratch folder outside the project.</summary>
+    internal bool ReportAbsolutePaths { get; init; }
     internal bool AllowAllExternalReads
     {
         get => _externalReads.AllowAll;
@@ -15,12 +19,14 @@ internal sealed class WorkspaceFiles
     }
 
     public WorkspaceFiles(string? workspaceRoot = null,
-        Func<ExternalReadRequest, CancellationToken, Task<ExternalReadDecision>>? confirmExternalRead = null)
+        Func<ExternalReadRequest, CancellationToken, Task<ExternalReadDecision>>? confirmExternalRead = null,
+        bool allowExternalReads = true)
     {
         Root = workspaceRoot is null ? ResolveRoot() : Path.GetFullPath(workspaceRoot);
         if (!Directory.Exists(Root))
             throw new DirectoryNotFoundException($"Workspace directory does not exist: {Root}");
         _externalReads = new ExternalReadPermissions(confirmExternalRead);
+        _allowExternalReads = allowExternalReads;
     }
 
     public static string ResolveRoot()
@@ -50,6 +56,8 @@ internal sealed class WorkspaceFiles
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
         var fullPath = Path.GetFullPath(path, Root);
         if (ExternalReadPermissions.Contains(Root, fullPath)) return;
+        if (!_allowExternalReads)
+            throw new UnauthorizedAccessException("Paths outside the session workspace are not allowed.");
         ValidateLinks(fullPath, Path.GetPathRoot(fullPath)!, allowMissing: false);
         var directory = Directory.Exists(fullPath) ? fullPath : Path.GetDirectoryName(fullPath)!;
         directory = Path.TrimEndingDirectorySeparator(directory);
@@ -62,6 +70,8 @@ internal sealed class WorkspaceFiles
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
         var fullPath = Path.GetFullPath(path, Root);
         if (ExternalReadPermissions.Contains(Root, fullPath)) return Resolve(path);
+        if (!_allowExternalReads)
+            throw new UnauthorizedAccessException("Paths outside the session workspace are not allowed.");
         if (!_externalReads.IsAllowed(fullPath))
             throw new UnauthorizedAccessException("External read access has not been granted.");
         ValidateLinks(fullPath, Path.GetPathRoot(fullPath)!, allowMissing: false);
@@ -89,6 +99,8 @@ internal sealed class WorkspaceFiles
     }
 
     public string Relative(string path) => Path.GetRelativePath(Root, path);
+
+    public string DisplayPath(string path) => ReportAbsolutePaths ? Path.GetFullPath(path, Root) : Relative(path);
 
     public static bool SkipDirectory(string path) => Path.GetFileName(path) is ".git" or "bin" or "obj";
 

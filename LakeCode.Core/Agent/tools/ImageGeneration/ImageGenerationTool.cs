@@ -46,7 +46,7 @@ internal sealed class ImageGenerationTool(WorkspaceFiles files, Func<ImageGenera
             }
             var selection = config.Selection;
             var text = new StringBuilder()
-                .AppendLine($"Saved: {files.Relative(files.Resolve(output_path))}")
+                .AppendLine($"Saved: {files.DisplayPath(output_path)}")
                 .AppendLine($"Format: {result.Image.MediaType}; dimensions: {result.Image.Width} × {result.Image.Height}; bytes: {result.Image.Data.Length}")
                 .AppendLine($"Provider: {config.Provider.Name}")
                 .AppendLine($"Carrier: {selection.CarrierModelId}")

@@ -27,7 +27,7 @@ internal sealed class WriteFileTool(WorkspaceFiles files, Action<FileChange> onC
             }
         }
         await files.WriteTextAsync(path, content, overwrite, cancellationToken);
-        onChanged(new FileChange(files.Relative(files.Resolve(path)), before, content, previewError));
-        return $"Written: {files.Relative(files.Resolve(path))}";
+        onChanged(new FileChange(files.DisplayPath(path), before, content, previewError));
+        return $"Written: {files.DisplayPath(path)}";
     });
 }

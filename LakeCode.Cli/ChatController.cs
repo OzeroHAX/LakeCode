@@ -568,7 +568,12 @@ internal sealed class ChatController : IDisposable
         _focusInput();
     }
 
-    private static MarkupControl CreateModeNotice(AgentMode mode) => new(new List<string> { $"[grey70]Режим запроса: {mode}[/]" })
+    private static MarkupControl CreateModeNotice(AgentMode mode) => new(new List<string>
+    {
+        mode == AgentMode.Research
+            ? "[grey70]Режим запроса: Research · без доступа к репозиторию, файлы только в папке сессии[/]"
+            : $"[grey70]Режим запроса: {mode}[/]"
+    })
     { Wrap = true, HorizontalAlignment = SharpConsoleUI.Layout.HorizontalAlignment.Stretch };
 
     private static MarkupControl CreateBackgroundNotice() => new(new List<string>

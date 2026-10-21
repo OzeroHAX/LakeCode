@@ -48,6 +48,17 @@ internal sealed class SessionStorage
         return null;
     }
 
+    /// <summary>Creates the session-owned scratch folder used as the only writable root in Research mode.</summary>
+    public string EnsureWorkspace(string id)
+    {
+        ValidateDirectory(_root);
+        var directory = Path.Combine(_root, ValidateId(id));
+        ValidateDirectory(directory);
+        var workspace = Path.Combine(directory, "workspace");
+        ValidateDirectory(workspace);
+        return workspace;
+    }
+
     public async Task SavePendingAsync(string id, PendingMessage[] messages)
     {
         ValidateDirectory(_root);

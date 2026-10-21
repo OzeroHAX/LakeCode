@@ -27,7 +27,9 @@ public sealed class AgentLoop : IDisposable, IAsyncDisposable
 {
     private readonly AIAgent _agent;
     private readonly string _promptTemplate;
+    private readonly string _researchPromptTemplate;
     private readonly AIFunction[] _functions;
+    private readonly AIFunction[] _researchFunctions = [];
     private AgentMode _mode;
     private bool _planSubmitted;
     internal Func<ExecutionApprovalRequest, CancellationToken, Task<bool>>? ConfirmExecution { get; init; }
@@ -37,10 +39,16 @@ public sealed class AgentLoop : IDisposable, IAsyncDisposable
 
     private bool IsToolAllowed(string name) => _parentQuestions is not null
         ? name is "read_file" or "list_directory" or "grep" or "ask_parent"
-        : _mode == AgentMode.Build ? name != "submit_plan"
-        : name is "read_file" or "list_directory" or "grep" or "bash" or "eval" or
-            "web_search" or "read_web" or "ask_tool" or "load_skill" or "read_skill_resource" or
-            "delegate" or "send_subagent_message" or "wait_subagents" or "submit_plan" or "read_history" or "list_history" or "search_history";
+        : _mode switch
+        {
+            AgentMode.Build => name != "submit_plan",
+            AgentMode.Plan => name is "read_file" or "list_directory" or "grep" or "bash" or "eval" or
+                "web_search" or "read_web" or "ask_tool" or "load_skill" or "read_skill_resource" or
+                "delegate" or "send_subagent_message" or "wait_subagents" or "submit_plan" or "read_history" or "list_history" or "search_history",
+            // Repository-free mode: no shell, no eval, no delegation and no project skills.
+            _ => name is "read_file" or "list_directory" or "grep" or "write_file" or "generate_image" or
+                "web_search" or "read_web" or "ask_tool" or "read_history" or "list_history" or "search_history"
+        };
 
     [System.ComponentModel.Description("Submit the final self-contained Markdown implementation plan for user review. Does not grant execution permission. Ends this planning turn.")]
     private string SubmitPlan([System.ComponentModel.Description("Complete actionable plan following the Plan system prompt template, with no unresolved blocking decisions.")] string markdown)
@@ -56,6 +64,8 @@ public sealed class AgentLoop : IDisposable, IAsyncDisposable
     private readonly AsyncLocal<Action<FileChange>?> _fileChangeObserver = new();
     private readonly AsyncLocal<Action<BashExecution>?> _bashOutputObserver = new();
     private readonly WorkspaceFiles _files;
+    private readonly WorkspaceFiles? _researchFiles;
+    private WorkspaceFiles ActiveFiles => _mode == AgentMode.Research && _researchFiles is not null ? _researchFiles : _files;
     internal bool AllowAllExternalReads
     {
         get => _files.AllowAllExternalReads;
@@ -95,18 +105,25 @@ public sealed class AgentLoop : IDisposable, IAsyncDisposable
     public AgentLoop(string? workspaceRoot = null,
         Func<ExternalReadRequest, CancellationToken, Task<ExternalReadDecision>>? confirmExternalRead = null,
         string? sessionId = null,
-        Func<AskQuestion[], CancellationToken, Task<string[][]>>? askUser = null)
-        : this(new WorkspaceFiles(workspaceRoot, confirmExternalRead), sessionId, askUser, null, null, null)
+        Func<AskQuestion[], CancellationToken, Task<string[][]>>? askUser = null,
+        string? sessionWorkspaceRoot = null)
+        : this(new WorkspaceFiles(workspaceRoot, confirmExternalRead), sessionId, askUser, null, null, null, sessionWorkspaceRoot)
     {
     }
 
     private AgentLoop(WorkspaceFiles files, string? sessionId,
         Func<AskQuestion[], CancellationToken, Task<string[][]>>? askUser,
-        string? inheritedPrompt, AskParentTool? parentQuestions, Func<string>? permissionCallId)
+        string? inheritedPrompt, AskParentTool? parentQuestions, Func<string>? permissionCallId,
+        string? sessionWorkspaceRoot)
     {
         ToolCallUpdated += update => _runTools[update.CallId] = update;
         _cacheSessionId = sessionId ?? Guid.NewGuid().ToString("D");
         _files = files;
+        // Research mode never prompts for external reads: the session folder is the only root, and
+        // its artifacts are reported by absolute path because they live outside the project.
+        _researchFiles = string.IsNullOrWhiteSpace(sessionWorkspaceRoot)
+            ? null
+            : new WorkspaceFiles(sessionWorkspaceRoot, allowExternalReads: false) { ReportAbsolutePaths = true };
         _parentQuestions = parentQuestions;
         _permissionCallId = permissionCallId;
         _projection = new HistoryProjection(() => _session is null ? [] : _history!.GetMessages(_session));
@@ -116,13 +133,16 @@ public sealed class AgentLoop : IDisposable, IAsyncDisposable
             files.Root,
             RuntimeInformation.OSDescription,
             RuntimeInformation.OSArchitecture.ToString(),
-            RuntimeInformation.ProcessArchitecture.ToString());
+            RuntimeInformation.ProcessArchitecture.ToString())
+        { SessionWorkspaceRoot = sessionWorkspaceRoot };
         var systemPrompt = inheritedPrompt ?? SystemPromptBuilder.Build(promptContext);
         _promptTemplate = systemPrompt;
+        _researchPromptTemplate = inheritedPrompt ??
+            (_researchFiles is null ? "" : SystemPromptBuilder.BuildResearch(promptContext));
         if (parentQuestions is null)
         {
             _delegation = new DelegationCoordinator((questions, callId) => new AgentLoop(files, null, null,
-                    systemPrompt + "\n\n" + SystemPromptBuilder.ResearchInstructions, questions, () => callId),
+                    systemPrompt + "\n\n" + SystemPromptBuilder.ResearchInstructions, questions, () => callId, null),
                 () => _delegationInvocation.Value);
             _delegation.Updated += update => BackgroundToolCallUpdated?.Invoke(update);
             _delegation.Activity += activity => DelegationActivityUpdated?.Invoke(activity);
@@ -193,6 +213,27 @@ public sealed class AgentLoop : IDisposable, IAsyncDisposable
                 AIFunctionFactory.Create(_projection.ReadHistory, name: "read_history"),
                 AIFunctionFactory.Create(_projection.ListHistory, name: "list_history"),
                 AIFunctionFactory.Create(_projection.SearchHistory, name: "search_history")];
+            if (_researchFiles is { } researchFiles)
+            {
+                var researchReadFile = new ReadFileTool(researchFiles);
+                var researchListDirectory = new ListDirectoryTool(researchFiles);
+                var researchGrep = new GrepTool(researchFiles);
+                var researchWriteFile = new WriteFileTool(researchFiles, change => _fileChangeObserver.Value?.Invoke(change));
+                var researchImageGeneration = new Tools.ImageGeneration.ImageGenerationTool(
+                    researchFiles, () => _imageGeneration, _cacheSessionId);
+                _researchFunctions = [
+                    AIFunctionFactory.Create(researchReadFile.ReadAsync, name: "read_file"),
+                    AIFunctionFactory.Create(researchListDirectory.ListAsync, name: "list_directory"),
+                    AIFunctionFactory.Create(researchGrep.SearchAsync, name: "grep"),
+                    AIFunctionFactory.Create(researchWriteFile.WriteAsync, name: "write_file"),
+                    AIFunctionFactory.Create(researchImageGeneration.GenerateAsync, name: "generate_image"),
+                    AIFunctionFactory.Create(webSearch.SearchAsync, name: "web_search"),
+                    AIFunctionFactory.Create(readWeb.ReadAsync, name: "read_web"),
+                    AIFunctionFactory.Create(askTool.AskAsync, name: "ask_tool"),
+                    AIFunctionFactory.Create(_projection.ReadHistory, name: "read_history"),
+                    AIFunctionFactory.Create(_projection.ListHistory, name: "list_history"),
+                    AIFunctionFactory.Create(_projection.SearchHistory, name: "search_history")];
+            }
             var evalFunctions = functions;
             foreach (var function in evalFunctions) _evalFunctions.Add(function.Name, function);
             _eval = new Tools.Eval.EvalTool(files.Root, InvokeEvalToolAsync,
@@ -227,7 +268,7 @@ public sealed class AgentLoop : IDisposable, IAsyncDisposable
                 // Supply instructions/tools only per run: MAF concatenates agent and run tools.
                 AllowMultipleToolCalls = parentQuestions is null ? null : false
             },
-            AIContextProviders = skills is null ? [] : [skills]
+            AIContextProviders = skills is null ? [] : [new ResearchAwareContextProvider(skills, () => _mode == AgentMode.Research)]
         }).AsBuilder().Use(ObserveToolCallAsync).Build();
 
     }
@@ -387,7 +428,7 @@ public sealed class AgentLoop : IDisposable, IAsyncDisposable
                     ? value.GetString()! : ".";
                 accessError = await WorkspaceFiles.ExecuteAsync(async () =>
                 {
-                    await _files.AuthorizeReadAsync(path, call.Name, _permissionCallId?.Invoke() ?? call.CallId, cancellationToken);
+                    await ActiveFiles.AuthorizeReadAsync(path, call.Name, _permissionCallId?.Invoke() ?? call.CallId, cancellationToken);
                     return "";
                 });
             }
@@ -399,13 +440,14 @@ public sealed class AgentLoop : IDisposable, IAsyncDisposable
                         return "Error: " + (_imageGeneration?.Error ?? "Генерация изображений не настроена.");
                     using var arguments = JsonDocument.Parse(argumentsJson);
                     var root = arguments.RootElement;
-                    _files.ValidateNewImagePath(root.GetProperty("output_path").GetString()!);
+                    var imageFiles = ActiveFiles;
+                    imageFiles.ValidateNewImagePath(root.GetProperty("output_path").GetString()!);
                     if (root.TryGetProperty("input_paths", out var paths) && paths.ValueKind != JsonValueKind.Null)
                     {
                         if (paths.ValueKind != JsonValueKind.Array || paths.GetArrayLength() > Attachments.ImageAttachments.MaxAttachments)
                             return "Error: Invalid reference image list.";
                         foreach (var path in paths.EnumerateArray())
-                            await _files.AuthorizeReadAsync(path.GetString()!, name, callId, cancellationToken);
+                            await imageFiles.AuthorizeReadAsync(path.GetString()!, name, callId, cancellationToken);
                     }
                     return "";
                 });
@@ -606,6 +648,8 @@ public sealed class AgentLoop : IDisposable, IAsyncDisposable
         {
             if (!Enum.IsDefined(mode)) throw new ArgumentOutOfRangeException(nameof(mode));
             if (_mode != mode && mode == AgentMode.Plan) _eval?.Reset();
+            if (mode == AgentMode.Research && _researchFiles is null)
+                throw new InvalidOperationException("Research mode requires a session temporary folder.");
             _mode = mode;
             _imageGeneration = imageGeneration;
             _planSubmitted = false;
@@ -622,7 +666,7 @@ public sealed class AgentLoop : IDisposable, IAsyncDisposable
             if (!model.ReasoningEfforts.Contains(reasoningEffort))
                 throw new ArgumentException("The model does not support this reasoning effort.", nameof(reasoningEffort));
             // Recheck discovery roots before the context provider reads skills.
-            ValidateSkillRoots();
+            if (mode != AgentMode.Research) ValidateSkillRoots();
             _session ??= await _agent.CreateSessionAsync(cancellationToken: cancellationToken);
 
             if (!model.InputModalities.Contains(ModelModality.Image) && _history.GetMessages(_session)
@@ -634,10 +678,17 @@ public sealed class AgentLoop : IDisposable, IAsyncDisposable
             if (_historyOrigin != origin) NormalizeHistory();
             _historyOrigin = origin;
             var chatOptions = ProviderClientFactory.Options(provider, model, reasoningEffort, _cacheSessionId);
-            chatOptions.Instructions = _promptTemplate.Replace(SystemPromptBuilder.ModeMarker,
-                _parentQuestions is not null ? "" : mode == AgentMode.Plan
-                    ? SystemPromptBuilder.PlanInstructions : SystemPromptBuilder.BuildInstructions);
-            chatOptions.Tools = [.. _functions.Where(function => IsToolAllowed(function.Name))];
+            var research = mode == AgentMode.Research;
+            chatOptions.Instructions = (_researchFiles is not null && research ? _researchPromptTemplate : _promptTemplate)
+                .Replace(SystemPromptBuilder.ModeMarker,
+                    _parentQuestions is not null ? "" : mode switch
+                    {
+                        AgentMode.Plan => SystemPromptBuilder.PlanInstructions,
+                        AgentMode.Research => SystemPromptBuilder.ResearchModeInstructions,
+                        _ => SystemPromptBuilder.BuildInstructions
+                    });
+            var available = _researchFiles is not null && research ? _researchFunctions : _functions;
+            chatOptions.Tools = [.. available.Where(function => IsToolAllowed(function.Name))];
             if (_parentQuestions is not null || mode == AgentMode.Plan) chatOptions.AllowMultipleToolCalls = false;
             _delegation?.Configure(subagentConfiguration?.Model ?? model,
                 subagentConfiguration?.ReasoningEffort ?? reasoningEffort, subagentConfiguration?.Provider ?? provider);

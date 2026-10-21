@@ -39,7 +39,12 @@ internal sealed class FooterComponent : PanelControl
         _permissions.Text = allowAll ? "[yellow]ext-read: all[/]" : "[grey70]ext-read: ask[/]";
 
     public void SetMode(LakeCode.Core.Agent.AgentMode mode) =>
-        _mode.Text = mode == LakeCode.Core.Agent.AgentMode.Plan ? "[cyan]plan[/]" : "[cyan]build[/]";
+        _mode.Text = mode switch
+        {
+            LakeCode.Core.Agent.AgentMode.Plan => "[cyan]plan[/]",
+            LakeCode.Core.Agent.AgentMode.Research => "[cyan]research[/]",
+            _ => "[cyan]build[/]"
+        };
 
     public FooterComponent(ConsoleWindowSystem windowSystem, ModelStore store, StatisticsStore statistics, string directory)
     {
@@ -56,7 +61,7 @@ internal sealed class FooterComponent : PanelControl
         var detailsColumn = new ColumnContainer(row) { FlexFactor = 1 };
         _details.HorizontalAlignment = HorizontalAlignment.Stretch;
         detailsColumn.AddContent(_details);
-        var modeColumn = new ColumnContainer(row) { FlexFactor = 0, Width = 5 };
+        var modeColumn = new ColumnContainer(row) { FlexFactor = 0, Width = 9 };
         modeColumn.AddContent(_mode);
         var permissionsColumn = new ColumnContainer(row) { FlexFactor = 0, Width = 15 };
         permissionsColumn.AddContent(_permissions);

@@ -91,6 +91,7 @@ using var slashCommands = new SlashCommandsComponent(window, input,
     ("/models", "Показать доступные модели"),
     ("/plan", "Планирование: диагностика с подтверждением"),
     ("/build", "Режим реализации для следующих сообщений"),
+    ("/research", "Общение и веб-ресёрч: без доступа к репозиторию"),
     ("/implement", "Реализовать готовый план"),
     ("/providers", "Настроить подключения и модели"),
     ("/permissions", "Переключить внешнее чтение без подтверждений"),
@@ -108,11 +109,16 @@ slashCommands.CommandSelected += (_, selected) =>
         chat.ShowOrAskSideQuestion(selected.Arguments);
         return;
     }
-    if (command is "/plan" or "/build" or "/implement")
+    if (command is "/plan" or "/build" or "/research" or "/implement")
     {
         input.Editor.Input = string.Empty;
         if (command == "/implement") chat.ExecutePlan();
-        else chat.SetMode(command == "/plan" ? LakeCode.Core.Agent.AgentMode.Plan : LakeCode.Core.Agent.AgentMode.Build);
+        else chat.SetMode(command switch
+        {
+            "/plan" => LakeCode.Core.Agent.AgentMode.Plan,
+            "/research" => LakeCode.Core.Agent.AgentMode.Research,
+            _ => LakeCode.Core.Agent.AgentMode.Build
+        });
     }
     else if (command.Equals("/new", StringComparison.OrdinalIgnoreCase))
     {
