@@ -29,4 +29,5 @@ public sealed record RewindPoint(int Index, RewindTargetKind Kind, string Text, 
     ToolCallUpdate? ToolCall = null, bool IncludesToolBatch = false);
 public sealed record AnswerQuestion(Guid InteractionId, string[][]? Answers) : ConversationCommand;
 public sealed record ResolveReadPermission(Guid InteractionId, ExternalReadDecision Decision) : ConversationCommand;
+public sealed record ToggleExternalReadPermissions : ConversationCommand;
 public sealed record FailInteraction(Guid InteractionId, string Error) : ConversationCommand;

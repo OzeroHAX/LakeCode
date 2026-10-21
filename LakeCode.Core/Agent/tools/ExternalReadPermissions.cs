@@ -5,6 +5,20 @@ internal sealed class ExternalReadPermissions
     private readonly Dictionary<string, bool> _decisions = new(
         OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal);
     private readonly SemaphoreSlim _promptGate = new(1, 1);
+    public bool AllowAll
+    {
+        get => Volatile.Read(ref _allowAll);
+        set
+        {
+            lock (_decisions)
+            {
+                _modeRevision++;
+                Volatile.Write(ref _allowAll, value);
+            }
+        }
+    }
+    private bool _allowAll;
+    private int _modeRevision;
     private readonly Func<ExternalReadRequest, CancellationToken, Task<ExternalReadDecision>>? _confirm;
 
     public ExternalReadPermissions(Func<ExternalReadRequest, CancellationToken, Task<ExternalReadDecision>>? confirm)
@@ -37,23 +51,31 @@ internal sealed class ExternalReadPermissions
         }
     }
 
-    public bool IsAllowed(string path) => FindDecision(path) == true;
+    public bool IsAllowed(string path) => AllowAll || FindDecision(path) == true;
 
     public async Task AuthorizeAsync(ExternalReadRequest request, CancellationToken cancellationToken)
     {
         await _promptGate.WaitAsync(cancellationToken);
         try
         {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (AllowAll) return;
             var allowed = FindDecision(request.Path);
             if (allowed is null)
             {
+                int modeRevision;
+                lock (_decisions) modeRevision = _modeRevision;
                 var choice = _confirm is null ? ExternalReadDecision.DenyOnce
                     : await _confirm(request, cancellationToken);
                 cancellationToken.ThrowIfCancellationRequested();
+                // Automatic approval must not become a remembered directory decision.
+                if (AllowAll) return;
                 allowed = choice == ExternalReadDecision.AllowSession;
                 if (choice is ExternalReadDecision.AllowSession or ExternalReadDecision.DenySession)
                 {
-                    lock (_decisions) _decisions[request.Directory] = allowed.Value;
+                    lock (_decisions)
+                        if (_modeRevision == modeRevision)
+                            _decisions[request.Directory] = allowed.Value;
                 }
             }
             if (allowed != true)

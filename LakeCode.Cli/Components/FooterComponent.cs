@@ -32,6 +32,12 @@ internal sealed class FooterComponent : PanelControl
     private readonly MarkupControl _mode = new(new List<string> { "[cyan]build[/]" })
     { HorizontalAlignment = HorizontalAlignment.Right, Height = 1 };
 
+    private readonly MarkupControl _permissions = new(["[grey70]ext-read: ask[/]"])
+    { HorizontalAlignment = HorizontalAlignment.Right, Height = 1 };
+
+    public void SetExternalReadPermissions(bool allowAll) =>
+        _permissions.Text = allowAll ? "[yellow]ext-read: all[/]" : "[grey70]ext-read: ask[/]";
+
     public void SetMode(LakeCode.Core.Agent.AgentMode mode) =>
         _mode.Text = mode == LakeCode.Core.Agent.AgentMode.Plan ? "[cyan]plan[/]" : "[cyan]build[/]";
 
@@ -52,7 +58,13 @@ internal sealed class FooterComponent : PanelControl
         detailsColumn.AddContent(_details);
         var modeColumn = new ColumnContainer(row) { FlexFactor = 0, Width = 5 };
         modeColumn.AddContent(_mode);
+        var permissionsColumn = new ColumnContainer(row) { FlexFactor = 0, Width = 15 };
+        permissionsColumn.AddContent(_permissions);
         row.AddColumn(detailsColumn);
+        row.AddColumn(permissionsColumn);
+        var separatorColumn = new ColumnContainer(row) { FlexFactor = 0, Width = 5 };
+        separatorColumn.AddContent(new MarkupControl(["  [grey50]│[/]  "]) { Height = 1 });
+        row.AddColumn(separatorColumn);
         row.AddColumn(modeColumn);
         AddControl(row);
         AddControl(_debug);

@@ -8,6 +8,11 @@ internal sealed class WorkspaceFiles
     public const int MaxFileBytes = 1_048_576;
     public string Root { get; }
     private readonly ExternalReadPermissions _externalReads;
+    internal bool AllowAllExternalReads
+    {
+        get => _externalReads.AllowAll;
+        set => _externalReads.AllowAll = value;
+    }
 
     public WorkspaceFiles(string? workspaceRoot = null,
         Func<ExternalReadRequest, CancellationToken, Task<ExternalReadDecision>>? confirmExternalRead = null)

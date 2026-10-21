@@ -93,6 +93,7 @@ using var slashCommands = new SlashCommandsComponent(window, input,
     ("/build", "Режим реализации для следующих сообщений"),
     ("/implement", "Реализовать готовый план"),
     ("/providers", "Настроить подключения и модели"),
+    ("/permissions", "Переключить внешнее чтение без подтверждений"),
     ("/sessions", "Открыть сохранённую сессию"),
     ("/rewind", "Открыть окно отката истории"),
     ("/compact", "Сжать контекст: summary со ссылками, архив сохраняется"),
@@ -120,6 +121,10 @@ slashCommands.CommandSelected += (_, selected) =>
     else if (command.Equals("/sessions", StringComparison.OrdinalIgnoreCase))
     {
         chat.ShowSessions();
+    }
+    else if (command.Equals("/permissions", StringComparison.OrdinalIgnoreCase))
+    {
+        chat.ToggleExternalReadPermissions();
     }
     else if (command.Equals("/compact", StringComparison.OrdinalIgnoreCase))
     {

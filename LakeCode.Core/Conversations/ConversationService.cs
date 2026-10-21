@@ -34,6 +34,7 @@ public sealed partial class ConversationService
         Settings.ImageGenerationConfiguration ImageGeneration)? _lastRequest;
     private readonly SemaphoreSlim _interactionGate = new(1, 1);
     private bool _finishing;
+    private bool _allowAllExternalReads;
     private SessionSnapshot? _snapshot;
     private readonly List<PendingMessage> _pending = [];
     private Task _operation = Task.CompletedTask;
@@ -102,6 +103,7 @@ public sealed partial class ConversationService
                 RewindToTurn rewind => BeginRewind(rewind),
                 AnswerQuestion answer => Answer(answer),
                 ResolveReadPermission permission => ResolvePermission(permission),
+                ToggleExternalReadPermissions => ToggleExternalReads(),
                 FailInteraction failure => Fail(failure),
                 _ => throw new ArgumentOutOfRangeException(nameof(command))
             };
@@ -163,7 +165,7 @@ public sealed partial class ConversationService
             _pending.Select(item => new PendingMessageState(item.Text, item.Images.Length, item.ModelId,
                 item.ReasoningEffort, item.Mode, item.ProviderId, item.Files.Length, item.AgentMode)).ToImmutableArray(),
             _statisticsModel, _statistics, _tokensPerSecond)
-            { CanCompact = CanCompact(), IsCompacting = _compactionCancellation is not null, Compaction = _agent?.Compaction,
+            { AllowAllExternalReads = _allowAllExternalReads, CanCompact = CanCompact(), IsCompacting = _compactionCancellation is not null, Compaction = _agent?.Compaction,
                  SideQuestions = CreateSideState(), Delegations = delegations, ActiveMode = _activeTurn?.AgentMode,
                 Plan = plan, PlanCallId = planCallId, CanExecutePlan = CanExecutePlan() };
     }
@@ -332,7 +334,7 @@ public sealed partial class ConversationService
     private AgentLoop CreateAgent(string sessionId)
     {
         var agent = new AgentLoop(_workspaceRoot, ConfirmExternalReadAsync, sessionId, AskUserAsync)
-        { ConfirmExecution = ConfirmExecutionAsync, SavePlan = SavePlan,
+        { AllowAllExternalReads = _allowAllExternalReads, ConfirmExecution = ConfirmExecutionAsync, SavePlan = SavePlan,
             IsExecutionClassifierEnabled = () => _activeClassifier.Settings.Enabled,
             AssessExecution = (request, token) => ExecutionApproval.JevExecutionClassifier.AssessAsync(
                 request, _activeClassifier, _providers.Profiles.Select(p => p.ApiKey)
@@ -427,6 +429,7 @@ public sealed partial class ConversationService
                     _tokensPerSecond = null;
                     _agent = null;
                     _snapshot = null;
+                    _allowAllExternalReads = false;
                     _backgroundOwners.Clear();
                     _lastRequest = null;
                     _contextFailed = false;
@@ -815,6 +818,8 @@ public sealed partial class ConversationService
                     _lastRequest = null;
                     _agent = agent;
                     _snapshot = snapshot;
+                    _allowAllExternalReads = false;
+                    agent.AllowAllExternalReads = false;
                     _pending.Clear();
                     _pending.AddRange(snapshot.PendingMessages);
                     // Restored work is visible but never executes without explicit user action.
@@ -991,6 +996,19 @@ public sealed partial class ConversationService
         return completion.TrySetResult(answer.Answers.Select(values => values.ToArray()).ToArray());
     }
 
+    private bool ToggleExternalReads()
+    {
+        if (_busy && _generation is null)
+            return Reject("Дождитесь завершения операции с сессией.");
+        _allowAllExternalReads = !_allowAllExternalReads;
+        if (_agent is { } agent) agent.AllowAllExternalReads = _allowAllExternalReads;
+        if (_allowAllExternalReads)
+            foreach (var completion in _permissions.Values)
+                completion.TrySetResult(ExternalReadDecision.AllowSession);
+        PublishState();
+        return true;
+    }
+
     private bool ResolvePermission(ResolveReadPermission permission) =>
         Enum.IsDefined(permission.Decision) && _permissions.TryGetValue(permission.InteractionId, out var completion) &&
         completion.TrySetResult(permission.Decision);
@@ -1032,7 +1050,13 @@ public sealed partial class ConversationService
             var id = Guid.NewGuid();
             var completion = new TaskCompletionSource<ExternalReadDecision>(TaskCreationOptions.RunContinuationsAsynchronously);
             using var registration = cancellationToken.Register(() => completion.TrySetCanceled(cancellationToken));
-            lock (_gate) { _permissions.Add(id, completion); Emit(new ReadPermissionRequested(id, request)); PublishState(); }
+            lock (_gate)
+            {
+                if (_allowAllExternalReads) return ExternalReadDecision.AllowSession;
+                _permissions.Add(id, completion);
+                Emit(new ReadPermissionRequested(id, request));
+                PublishState();
+            }
             try { return await completion.Task.ConfigureAwait(false); }
             finally { lock (_gate) { _permissions.Remove(id); Emit(new InteractionFinished(id)); PublishState(); } }
         }
@@ -1100,7 +1124,11 @@ public sealed partial class ConversationService
             {
                 var agent = CreateAgent(snapshot.Id);
                 if (checkpoint is { } savedState) await agent.RestoreSessionAsync(savedState, generationToken).ConfigureAwait(false);
-                _agent = agent;
+                lock (_gate)
+                {
+                    agent.AllowAllExternalReads = _allowAllExternalReads;
+                    _agent = agent;
+                }
             }
             if (snapshot.Turns.Count == 1) titleTask = GenerateSessionTitleAsync(message, model, provider, generationToken);
             checkpoint ??= await _agent.SerializeSessionAsync(generationToken).ConfigureAwait(false);

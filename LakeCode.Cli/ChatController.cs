@@ -125,6 +125,15 @@ internal sealed class ChatController : IDisposable
         }
     }
 
+    public void ToggleExternalReadPermissions()
+    {
+        if (!_conversation.Execute(new ToggleExternalReadPermissions())) return;
+        _input.Editor.Input = string.Empty;
+        _content.AddControl(new MarkupControl([_conversation.State.AllowAllExternalReads
+            ? "[yellow]Внешнее чтение разрешено без подтверждений до конца сессии. /permissions вернёт запросы разрешений.[/]"
+            : "[grey70]Запросы разрешений на внешнее чтение включены. Прежние решения по каталогам сохранены.[/]"]));
+    }
+
     public void StopGeneration() => _conversation.Execute(new StopGeneration());
     public void StartNewSession() => _conversation.Execute(new StartNewSession(_models.SelectedModel.Id, _models.SelectedProviderId));
     public void ShowSessions()
@@ -274,6 +283,7 @@ internal sealed class ChatController : IDisposable
         UpdatePlanAction();
         _btw.Apply(state.SideQuestions);
         _header.SetSessionTitle(state.Title);
+        _footer.SetExternalReadPermissions(state.AllowAllExternalReads);
         _header.SetDelegations(_subagents.Tasks);
         _input.SetSending(state.IsBusy && !state.IsGenerating);
         _statistics.Apply(state);

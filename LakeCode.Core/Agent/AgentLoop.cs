@@ -56,6 +56,11 @@ public sealed class AgentLoop : IDisposable, IAsyncDisposable
     private readonly AsyncLocal<Action<FileChange>?> _fileChangeObserver = new();
     private readonly AsyncLocal<Action<BashExecution>?> _bashOutputObserver = new();
     private readonly WorkspaceFiles _files;
+    internal bool AllowAllExternalReads
+    {
+        get => _files.AllowAllExternalReads;
+        set => _files.AllowAllExternalReads = value;
+    }
     private Settings.ImageGenerationConfiguration? _imageGeneration;
     private readonly Tools.Eval.EvalTool? _eval;
     private readonly DelegationCoordinator? _delegation;
