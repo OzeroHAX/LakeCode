@@ -13,7 +13,6 @@ internal sealed class BashToolCallComponent : CollapsiblePanel
 {
     private readonly ConsoleWindowSystem _windowSystem;
     private readonly ExecutionAssessmentComponent _assessment = new();
-    private readonly PanelControl _approvalHost = new() { HorizontalAlignment = HorizontalAlignment.Stretch };
     private ExecutionApprovalComponent? _approval;
     private readonly MarkupControl _activity = new(new List<string>());
     private readonly MarkupControl _output = new(new List<string>());
@@ -66,7 +65,6 @@ internal sealed class BashToolCallComponent : CollapsiblePanel
         _activity.Margin = new Margin(0, 0, 0, 1);
         AddControl(_activity);
         AddControl(_assessment);
-        AddControl(_approvalHost);
 
         // Same bounded auto-sizing viewport as UserMessageComponent; no fixed Height.
         _viewport.BorderStyle = BorderStyle.None;
@@ -133,8 +131,9 @@ internal sealed class BashToolCallComponent : CollapsiblePanel
     public ExecutionApprovalComponent ShowApproval(Action<bool> complete)
     {
         IsExpanded = true;
+        // Added only now: an always-present empty container would paint its own border line under the output.
         _approval = new ExecutionApprovalComponent(complete);
-        _approvalHost.AddControl(_approval);
+        AddControl(_approval);
         return _approval;
     }
 

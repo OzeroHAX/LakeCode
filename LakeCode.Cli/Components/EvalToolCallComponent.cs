@@ -14,7 +14,6 @@ internal sealed class EvalToolCallComponent : CollapsiblePanel
     private readonly MarkupControl _code;
     private readonly MarkupControl _result;
     private readonly ExecutionAssessmentComponent _assessment = new();
-    private readonly PanelControl _approvalHost = new() { HorizontalAlignment = HorizontalAlignment.Stretch };
     private ExecutionApprovalComponent? _approval;
     private readonly string _options;
     private ToolCallStatus _status;
@@ -61,7 +60,6 @@ internal sealed class EvalToolCallComponent : CollapsiblePanel
         parameters.Text = MarkupParser.Escape("Параметры: " + _options);
         AddControl(parameters);
         AddControl(_assessment);
-        AddControl(_approvalHost);
         AddControl(_result);
         Update(update);
     }
@@ -79,8 +77,9 @@ internal sealed class EvalToolCallComponent : CollapsiblePanel
     public ExecutionApprovalComponent ShowApproval(Action<bool> complete)
     {
         IsExpanded = true;
+        // Added only now: an always-present empty container would paint its own border line under the output.
         _approval = new ExecutionApprovalComponent(complete);
-        _approvalHost.AddControl(_approval);
+        AddControl(_approval);
         return _approval;
     }
 
