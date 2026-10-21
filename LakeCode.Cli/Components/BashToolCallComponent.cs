@@ -11,16 +11,18 @@ namespace LakeCode.Cli.Components;
 
 internal sealed class BashToolCallComponent : CollapsiblePanel
 {
+    private const string RunningPlaceholder = "ожидание вывода…";
+    private const string EmptyPlaceholder = "команда не вывела текст";
+
     private readonly ConsoleWindowSystem _windowSystem;
     private readonly ExecutionAssessmentComponent _assessment = new();
     private ExecutionApprovalComponent? _approval;
-    private readonly MarkupControl _activity = new(new List<string>());
     private readonly MarkupControl _output = new(new List<string>());
+    private readonly MarkupControl _note = new(new List<string>()) { Visible = false };
     private readonly ScrollablePanelControl _viewport = new();
     private readonly ButtonControl _follow = new();
     private readonly ButtonControl _pause = new();
     private readonly SpinnerTextAnimator _spinner;
-    private readonly string _directory;
     private readonly long _created = Stopwatch.GetTimestamp();
     private readonly CancellationTokenSource _clock = new();
     private readonly Task _clockTask;
@@ -42,29 +44,33 @@ internal sealed class BashToolCallComponent : CollapsiblePanel
         HorizontalAlignment = HorizontalAlignment.Stretch;
         Margin = new Margin(0, 0, 0, 1);
         Padding = new Padding(1, 1, 1, 1);
-        BackgroundColor = new Color(26, 26, 26);
-        BorderColor = new Color(85, 85, 85);
-        ForegroundColor = new Color(185, 185, 185);
-        FocusedBackgroundColor = new Color(45, 45, 45);
+        BackgroundColor = ToolCardStyle.Surface;
+        BorderColor = ToolCardStyle.Border;
+        ForegroundColor = ToolCardStyle.Output;
+        FocusedBackgroundColor = ToolCardStyle.Focused;
 
         using var arguments = JsonDocument.Parse(update.Arguments);
         var root = arguments.RootElement;
-        if (root.TryGetProperty("description", out var description) && description.ValueKind == JsonValueKind.String)
+        var described = root.TryGetProperty("description", out var description) && description.ValueKind == JsonValueKind.String;
+        if (described)
             AddControl(new MarkupControl(new List<string> { MarkupParser.Escape(description.GetString() ?? "") })
-            { Wrap = true, EnableSelection = true, HorizontalAlignment = HorizontalAlignment.Stretch });
+            {
+                Wrap = true, EnableSelection = true, HorizontalAlignment = HorizontalAlignment.Stretch,
+                ForegroundColor = ToolCardStyle.Description
+            });
         var command = root.TryGetProperty("command", out var value) ? value.GetString() ?? "" : "";
-        _directory = root.TryGetProperty("workingDirectory", out var directory) ? directory.GetString() ?? "." : ".";
-        AddControl(new MarkupControl(new List<string> { $"[bold]$ {MarkupParser.Escape(command)}[/]" })
+        var directory = root.TryGetProperty("workingDirectory", out var directoryValue) ? directoryValue.GetString() ?? "." : ".";
+        // The prompt carries the directory, so the card needs no separate activity line.
+        AddControl(new MarkupControl(new List<string>
+        {
+            $"[{ToolCardStyle.Prompt.ToMarkup()}]{MarkupParser.Escape(directory)} $[/] " +
+            $"[{ToolCardStyle.Command.ToMarkup()}]{MarkupParser.Escape(command)}[/]"
+        })
         {
             Wrap = true, EnableSelection = true, HorizontalAlignment = HorizontalAlignment.Stretch,
-            BackgroundColor = BackgroundColor, ForegroundColor = ForegroundColor
+            BackgroundColor = ToolCardStyle.CommandSurface, Padding = new Padding(1, 0, 1, 0),
+            ForegroundColor = ToolCardStyle.Command, Margin = new Margin(0, described ? 1 : 0, 0, 1)
         });
-        _activity.Wrap = true;
-        _activity.HorizontalAlignment = HorizontalAlignment.Stretch;
-        _activity.ForegroundColor = new Color(155, 155, 155);
-        _activity.Margin = new Margin(0, 0, 0, 1);
-        AddControl(_activity);
-        AddControl(_assessment);
 
         // Same bounded auto-sizing viewport as UserMessageComponent; no fixed Height.
         _viewport.BorderStyle = BorderStyle.None;
@@ -76,10 +82,20 @@ internal sealed class BashToolCallComponent : CollapsiblePanel
         _output.Wrap = true;
         _output.EnableSelection = true;
         _output.HorizontalAlignment = HorizontalAlignment.Stretch;
-        _output.BackgroundColor = BackgroundColor;
-        _output.ForegroundColor = ForegroundColor;
+        _output.BackgroundColor = ToolCardStyle.Surface;
+        _output.ForegroundColor = ToolCardStyle.Output;
+        _output.Padding = new Padding(1, 0, 1, 0);
         _viewport.AddControl(_output);
         AddControl(_viewport);
+        AddControl(_assessment);
+
+        // Warnings and failures live below the output instead of being glued into it.
+        _note.Wrap = true;
+        _note.EnableSelection = true;
+        _note.HorizontalAlignment = HorizontalAlignment.Stretch;
+        _note.Padding = new Padding(1, 0, 1, 0);
+        _note.Margin = new Margin(0, 1, 0, 0);
+        AddControl(_note);
 
         _follow.Text = "К свежему выводу";
         _follow.Visible = false;
@@ -93,16 +109,16 @@ internal sealed class BashToolCallComponent : CollapsiblePanel
             _viewport.ScrollToBottom();
             RenderStatus();
         };
-        AddControl(_follow);
-        _pause.Text = "Приостановить обновление лога";
+        _pause.Text = "Пауза";
         _pause.BackgroundColor = Color.Transparent;
-        _pause.ForegroundColor = new Color(155, 155, 155);
+        _pause.ForegroundColor = ToolCardStyle.Muted;
         _pause.Click += (_, _) =>
         {
             _paused = !_paused;
             if (!_paused) ShowOutput();
             RenderStatus();
         };
+        AddControl(_follow);
         AddControl(_pause);
         _viewport.Scrolled += (_, _) => RenderStatus();
         _spinner = new SpinnerTextAnimator(windowSystem, SpinnerStyle.Dots, frame =>
@@ -149,7 +165,7 @@ internal sealed class BashToolCallComponent : CollapsiblePanel
     {
         if (_status is not (ToolCallStatus.Running or ToolCallStatus.AwaitingApproval or ToolCallStatus.Classifying)) return;
         _status = ToolCallStatus.Cancelled;
-        _result = "Запрос завершён до получения результата команды.";
+        _result = null;
         _approval?.Cancel();
         StopActivity();
         if (!_paused) ShowOutput();
@@ -159,16 +175,17 @@ internal sealed class BashToolCallComponent : CollapsiblePanel
     private void ShowOutput()
     {
         _viewport.Visible = _status is not (ToolCallStatus.Classifying or ToolCallStatus.AwaitingApproval);
+        RenderNote();
         if (!_viewport.Visible) return;
-        var text = _execution is null ? BashOutputText.Normalize(_result ?? "Вывод пока не поступал.")
-            : BashOutputText.Normalize(_execution.Output);
-        if (_execution?.Truncated == true) text += "\n[Вывод ограничен 32 000 символами.]";
-        if (_execution is not null && _status == ToolCallStatus.Cancelled)
-            text += "\nКоманда отменена; полученный вывод сохранён.";
-        else if (_execution is not null && _status == ToolCallStatus.Failed && _result is not null &&
-                 !_result.StartsWith("Error: Exit code:", StringComparison.Ordinal))
-            text += "\n" + BashOutputText.Normalize(_result);
-        if (text.Length == 0) text = _status == ToolCallStatus.Running ? "Вывод пока не поступал." : "Команда не вывела текст.";
+        var text = _execution is null ? BashOutputText.Normalize(_result ?? "") : BashOutputText.Normalize(_execution.Output);
+        if (text.Length == 0)
+        {
+            var placeholder = _status == ToolCallStatus.Running ? RunningPlaceholder : EmptyPlaceholder;
+            if (_displayed == placeholder) return;
+            _output.Text = $"[{ToolCardStyle.Muted.ToMarkup()}]{placeholder}[/]";
+            _displayed = placeholder;
+            return;
+        }
         if (text == _displayed) return;
         // Append only when it is a true extension. CR progress and completion may replace text.
         if (_displayed.Length > 0 && text.StartsWith(_displayed, StringComparison.Ordinal))
@@ -177,35 +194,33 @@ internal sealed class BashToolCallComponent : CollapsiblePanel
         _displayed = text;
     }
 
+    private void RenderNote()
+    {
+        var notes = new List<string>();
+        if (_execution?.Truncated == true)
+            notes.Add($"[{ToolCardStyle.Warning.ToMarkup()}]вывод ограничен 32 000 символами[/]");
+        if (_status == ToolCallStatus.Failed && _execution is not null && _result is not null &&
+            !_result.StartsWith("Error: Exit code:", StringComparison.Ordinal))
+            notes.Add($"[{ToolCardStyle.Error.ToMarkup()}]{MarkupParser.Escape(BashOutputText.Normalize(_result).Trim())}[/]");
+        _note.Text = string.Join("\n", notes);
+        _note.Visible = notes.Count > 0;
+    }
+
     private void RenderStatus()
     {
         if (_disposed) return;
-        var (label, color) = _status switch
-        {
-            ToolCallStatus.Classifying => ("проверка Jev", "cyan"),
-            ToolCallStatus.Running => ("выполняется", "cyan"),
-            ToolCallStatus.AwaitingApproval => ("ожидает подтверждения", "yellow"),
-            ToolCallStatus.Completed => ("завершено", "green"),
-            ToolCallStatus.Failed => ("ошибка", "red"),
-            _ => ("отменено", "yellow")
-        };
+        var (label, color) = ToolCardStyle.Status(_status);
         var seconds = _execution?.ElapsedSeconds ?? _finishedSeconds ?? Stopwatch.GetElapsedTime(_created).TotalSeconds;
         if (_status == ToolCallStatus.Running && _execution is not null)
             seconds += Math.Max(0, (DateTimeOffset.UtcNow - _execution.StartedAt).TotalSeconds - _execution.ElapsedSeconds);
-        var duration = TimeSpan.FromSeconds(Math.Max(0, seconds));
-        var time = $"{(int)duration.TotalMinutes:00}:{duration.Seconds:00}";
-        var exit = _status != ToolCallStatus.Running && _execution?.ExitCode is { } code ? $" · exit {code}" : "";
-        Title = $"[bold]Bash[/] · [{color}]{label}{(_status == ToolCallStatus.Running ? " " + _frame : "")}[/]{(_execution is null ? "" : " · " + time)}{exit}";
-        var activity = _status is ToolCallStatus.AwaitingApproval or ToolCallStatus.Classifying ? "команда ещё не запущена" : _status == ToolCallStatus.Running
-            ? _execution?.LastOutputAt is { } last
-                ? $"последний вывод {Math.Max(0, (int)(DateTimeOffset.UtcNow - last).TotalSeconds)} с назад"
-                : _execution is null ? "запуск команды…" : "процесс запущен · вывод пока не поступал"
-            : _execution is null ? "команда не запускалась" : "полученный вывод сохранён";
-        var activityText = MarkupParser.Escape($"{_directory} · {activity}" + (_paused ? " · обновление лога приостановлено" : ""));
-        if (_activity.Text != activityText) _activity.Text = activityText;
+        var exit = _status != ToolCallStatus.Running && _execution?.ExitCode is { } code
+            ? $" · [{(code == 0 ? "green" : "red")}]exit {code}[/]"
+            : "";
+        Title = $"[bold]Bash[/] · [{color}]{label}{(_status == ToolCallStatus.Running && _frame.Length > 0 ? " " + _frame : "")}[/]" +
+            (_execution is null ? "" : $" · [grey70]{ToolCardStyle.Duration(seconds)}[/]") + exit;
         _follow.Visible = _paused || !_viewport.AutoScroll;
         _pause.Visible = _status == ToolCallStatus.Running || _paused;
-        _pause.Text = _paused ? "Возобновить обновление лога" : "Приостановить обновление лога";
+        _pause.Text = _paused ? "Продолжить" : "Пауза";
     }
 
     private async Task TickAsync(CancellationToken cancellationToken)
