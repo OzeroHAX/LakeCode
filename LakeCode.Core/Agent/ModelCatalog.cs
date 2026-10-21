@@ -6,8 +6,33 @@ namespace LakeCode.Core.Agent;
 /// Documented model specifications; sources are listed next to each model family.
 /// Third-party gateways may impose different limits or restrict capabilities.
 /// </summary>
+public enum ModelType { Unknown, Chat, ImageGeneration }
+
+public sealed record ImageModelInfo(string Id, string Name)
+{
+    public ModelType Type => ModelType.ImageGeneration;
+}
+
 public static class ModelCatalog
 {
+    // Image models do not have chat context/reasoning specifications.
+    // https://developers.openai.com/api/docs/guides/tools-image-generation
+    // Gateway aliases below are exact IDs observed in WikiVibe /models or Responses replies.
+    public static FrozenDictionary<string, ImageModelInfo> ImageModels { get; } = new[]
+    {
+        new ImageModelInfo("gpt-image-1", "GPT Image 1"),
+        new ImageModelInfo("gpt-image-1-mini", "GPT Image 1 Mini"),
+        new ImageModelInfo("gpt-image-1.5", "GPT Image 1.5"),
+        new ImageModelInfo("gpt-image-2", "GPT Image 2"),
+        new ImageModelInfo("gpt-image-2.5", "GPT Image 2.5 (gateway alias)"),
+        new ImageModelInfo("gpt-image-2.5-sunburst", "GPT Image 2.5 Sunburst"),
+        new ImageModelInfo("gpt-image-2.5-flare", "GPT Image 2.5 Flare"),
+        new ImageModelInfo("gpt-image-2-codex", "GPT Image 2 Codex (backend ID)")
+    }.ToFrozenDictionary(model => model.Id, StringComparer.Ordinal);
+
+    public static ModelType GetModelType(string id) => ImageModels.ContainsKey(id) ? ModelType.ImageGeneration
+        : Models.ContainsKey(id) ? ModelType.Chat : ModelType.Unknown;
+
     // Sources: https://developers.openai.com/api/docs/models/{model-id}
     // Image generation through a tool is not a native output modality.
     public static FrozenDictionary<string, ModelInfo> Models { get; } =

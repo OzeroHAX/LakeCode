@@ -123,6 +123,9 @@ internal sealed class ToolCallGroupComponent : CollapsiblePanel
             if (entry.Viewport is { } viewport) viewport.Visible = true;
         }
         var statusLabel = update.Delegation is { } state ? DelegationLabel(state.Status) : StatusLabel(update.Status);
+        if (ToolName == "generate_image" && update.Status == ToolCallStatus.Completed &&
+            update.Result?.Contains("\nWarning:", StringComparison.Ordinal) == true)
+            statusLabel += " · предупреждение о модели";
         entry.StatusLabel = statusLabel;
         entry.Panel.Title = MarkupParser.Escape($"{entry.Summary} · {statusLabel}");
         if (!_alwaysVisible)
@@ -315,6 +318,8 @@ internal sealed class ToolCallGroupComponent : CollapsiblePanel
             root.TryGetProperty("skillName", out var skill))
             return root.TryGetProperty("resourceName", out var resource)
                 ? $"{skill}: {resource}" : skill.ToString();
+        if (update.Name == "generate_image" && root.TryGetProperty("output_path", out var imagePath))
+            return imagePath.ToString();
         if (update.Name == "bash" && root.TryGetProperty("command", out var command))
             return command.ToString();
         var path = root.TryGetProperty("path", out var value) ? value.ToString() : ".";

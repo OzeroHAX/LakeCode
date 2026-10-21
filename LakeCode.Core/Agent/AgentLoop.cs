@@ -56,6 +56,7 @@ public sealed class AgentLoop : IDisposable, IAsyncDisposable
     private readonly AsyncLocal<Action<FileChange>?> _fileChangeObserver = new();
     private readonly AsyncLocal<Action<BashExecution>?> _bashOutputObserver = new();
     private readonly WorkspaceFiles _files;
+    private Settings.ImageGenerationConfiguration? _imageGeneration;
     private readonly Tools.Eval.EvalTool? _eval;
     private readonly DelegationCoordinator? _delegation;
     private readonly AskParentTool? _parentQuestions;
@@ -175,10 +176,12 @@ public sealed class AgentLoop : IDisposable, IAsyncDisposable
             var webSearch = new WebSearchTool(web);
             var readWeb = new ReadWebTool(web);
             var askTool = new AskTool(askUser);
+            var imageGeneration = new Tools.ImageGeneration.ImageGenerationTool(files, () => _imageGeneration, _cacheSessionId);
             functions = [.. functions,
                 AIFunctionFactory.Create(bash.RunAsync, name: "bash"),
                 AIFunctionFactory.Create(writeFile.WriteAsync, name: "write_file"),
                 AIFunctionFactory.Create(editFile.EditAsync, name: "edit_file"),
+                AIFunctionFactory.Create(imageGeneration.GenerateAsync, name: "generate_image"),
                 AIFunctionFactory.Create(webSearch.SearchAsync, name: "web_search"),
                 AIFunctionFactory.Create(readWeb.ReadAsync, name: "read_web"),
                 AIFunctionFactory.Create(askTool.AskAsync, name: "ask_tool"),
@@ -383,6 +386,25 @@ public sealed class AgentLoop : IDisposable, IAsyncDisposable
                     return "";
                 });
             }
+            if (accessError.Length == 0 && name == "generate_image")
+            {
+                accessError = await WorkspaceFiles.ExecuteAsync(async () =>
+                {
+                    if (_imageGeneration?.Provider is null || _imageGeneration.Error is not null)
+                        return "Error: " + (_imageGeneration?.Error ?? "Генерация изображений не настроена.");
+                    using var arguments = JsonDocument.Parse(argumentsJson);
+                    var root = arguments.RootElement;
+                    _files.ValidateNewImagePath(root.GetProperty("output_path").GetString()!);
+                    if (root.TryGetProperty("input_paths", out var paths) && paths.ValueKind != JsonValueKind.Null)
+                    {
+                        if (paths.ValueKind != JsonValueKind.Array || paths.GetArrayLength() > Attachments.ImageAttachments.MaxAttachments)
+                            return "Error: Invalid reference image list.";
+                        foreach (var path in paths.EnumerateArray())
+                            await _files.AuthorizeReadAsync(path.GetString()!, name, callId, cancellationToken);
+                    }
+                    return "";
+                });
+            }
             var result = accessError.Length == 0 ? await invoke(cancellationToken) : accessError;
             if (name == "delegate") delegation = _delegation?.SnapshotForInvocation(callId);
             var text = result switch
@@ -572,13 +594,15 @@ public sealed class AgentLoop : IDisposable, IAsyncDisposable
         string reasoningEffort,
         ProviderProfile provider,
         [EnumeratorCancellation] CancellationToken cancellationToken = default,
-        Settings.ModelConfiguration? subagentConfiguration = null, AgentMode mode = AgentMode.Build)
+        Settings.ModelConfiguration? subagentConfiguration = null, AgentMode mode = AgentMode.Build,
+        Settings.ImageGenerationConfiguration? imageGeneration = null)
     {
         try
         {
             if (!Enum.IsDefined(mode)) throw new ArgumentOutOfRangeException(nameof(mode));
             if (_mode != mode && mode == AgentMode.Plan) _eval?.Reset();
             _mode = mode;
+            _imageGeneration = imageGeneration;
             _planSubmitted = false;
             _historyCapture.Reset();
             _runTools.Clear();

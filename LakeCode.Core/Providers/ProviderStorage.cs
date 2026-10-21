@@ -66,6 +66,14 @@ public sealed class ProviderStorage
         await WriteAtomicAsync(FilePath, new Settings { Providers = profiles }, cancellationToken);
     }
 
+    /// <summary>Updates discovery only; credentials, overrides and connection revision are unchanged.</summary>
+    public Task SaveDiscoveryAsync(ProviderProfile profile, CancellationToken cancellationToken = default)
+    {
+        profile.Validate();
+        var discovery = profile.Discovery ?? throw new InvalidDataException("Список моделей отсутствует.");
+        return WriteAtomicAsync(CachePath(profile), new ModelCache(Fingerprint(profile), discovery), cancellationToken);
+    }
+
     private DiscoveredModels? LoadDiscovery(ProviderProfile profile)
     {
         var path = CachePath(profile);

@@ -15,6 +15,8 @@ internal sealed record PendingMessage(
     public Guid? ExecutingPlanId { get; init; }
     public bool IsBackgroundContinuation { get; init; }
     public Settings.ModelSelection? SubagentModel { get; init; }
+    public Settings.ImageGenerationSelection? ImageGeneration { get; init; }
+    [JsonIgnore] public Settings.ImageGenerationConfiguration? ImageGenerationConfiguration { get; init; }
     [JsonIgnore] public Settings.ModelConfiguration? SubagentConfiguration { get; init; }
     [JsonIgnore] public ProviderProfile? Connection { get; init; }
     [JsonIgnore] public ModelInfo? Model { get; init; }

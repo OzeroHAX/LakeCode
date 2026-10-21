@@ -44,7 +44,14 @@ public sealed record ModelOverride
 
 public sealed record DiscoveredModels(ImmutableArray<string> Ids, DateTimeOffset UpdatedAt);
 
-public sealed record ResolvedProviderModel(string ApiId, ModelInfo? Model, string Source, bool Available, string? Error);
+public enum ModelListingState { NotLoaded, Listed, Missing, Manual }
+
+public sealed record ResolvedProviderModel(string ApiId, ModelInfo? Model, string Source, bool Available, string? Error)
+{
+    // Listing is independent of capability resolution and does not assert live API support.
+    public ModelListingState Listing { get; init; }
+    public ModelType Type { get; init; } = ModelType.Unknown;
+}
 
 public static class ModelResolver
 {
@@ -53,7 +60,13 @@ public static class ModelResolver
         if (profile.Kind == ProviderKind.TypeSafe)
             return new(apiId, null, "Классификация", false, "System One не является чат-моделью.");
         profile.ModelOverrides.TryGetValue(apiId, out var rule);
-        var available = rule?.Manual == true || profile.Discovery?.Ids.Contains(apiId, StringComparer.Ordinal) == true;
+        var listing = rule?.Manual == true ? ModelListingState.Manual
+            : profile.Discovery is null ? ModelListingState.NotLoaded
+            : profile.Discovery.Ids.Contains(apiId, StringComparer.Ordinal) ? ModelListingState.Listed : ModelListingState.Missing;
+        var available = listing is ModelListingState.Manual or ModelListingState.Listed;
+        if (ModelCatalog.GetModelType(apiId) == ModelType.ImageGeneration)
+            return new(apiId, null, "Генерация изображений", available, null)
+                { Listing = listing, Type = ModelType.ImageGeneration };
         try
         {
             ModelInfo model;
@@ -77,9 +90,27 @@ public static class ModelResolver
                 if (rule?.Overrides is not null) source += " + overrides";
             }
             profile.ValidateModel(model);
-            return new(apiId, model, source, available, null);
+            return new(apiId, model, source, available, null) { Listing = listing, Type = ModelType.Chat };
         }
-        catch (InvalidDataException error) { return new(apiId, null, "Нужно настроить", available, error.Message); }
+        catch (InvalidDataException error) { return new(apiId, null, "Нужно настроить", available, error.Message) { Listing = listing }; }
+    }
+
+    public static string ListingDescription(ModelListingState state) => state switch
+    {
+        ModelListingState.Manual => "Ручной ID; наличие на сервере не проверено",
+        ModelListingState.Listed => "Объявлен в последнем списке провайдера",
+        ModelListingState.Missing => "ID отсутствует в последнем ответе сервера",
+        _ => "Список провайдера ещё не получен"
+    };
+
+    public static string? SelectionError(ProviderProfile profile, string apiId)
+    {
+        if (!ProviderProfile.ValidModelId(apiId)) return "Введите корректный API ID модели.";
+        var entry = Resolve(profile, apiId);
+        if (entry.Type == ModelType.ImageGeneration)
+            return "Это модель генерации изображений, не чат-модель и не carrier. Назначьте её как image model ID.";
+        if (entry.Error is not null) return entry.Error + " Настройте характеристики чат-модели в /providers.";
+        return entry.Available ? null : ListingDescription(entry.Listing) + ". Обновите список или явно разрешите ручной ID в /models.";
     }
 
     public static ImmutableArray<ResolvedProviderModel> ResolveAll(ProviderProfile profile) =>

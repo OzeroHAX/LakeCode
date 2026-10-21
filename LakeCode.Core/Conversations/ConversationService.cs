@@ -30,7 +30,8 @@ public sealed partial class ConversationService
     private SessionTurn? _activeTurn;
     private readonly Dictionary<string, (SessionTurn Turn, Guid RequestId)> _backgroundOwners = new(StringComparer.Ordinal);
     private (ProviderProfile Provider, ModelInfo Model, string Effort, Settings.ModelSelection? SubagentModel,
-        Settings.ModelConfiguration? SubagentConfiguration, AgentMode AgentMode, ExecutionApproval.ClassifierConfiguration Classifier)? _lastRequest;
+        Settings.ModelConfiguration? SubagentConfiguration, AgentMode AgentMode, ExecutionApproval.ClassifierConfiguration Classifier,
+        Settings.ImageGenerationConfiguration ImageGeneration)? _lastRequest;
     private readonly SemaphoreSlim _interactionGate = new(1, 1);
     private bool _finishing;
     private SessionSnapshot? _snapshot;
@@ -564,9 +565,11 @@ public sealed partial class ConversationService
             foreach (var image in saved) image.Decode();
         }
         catch (Exception error) { return Reject(error.Message); }
+        var imageGeneration = Settings.ImageGenerationConfiguration.Capture(_settings?.Current.ImageGeneration, _providers);
         var pending = new PendingMessage(command.Text, saved, model.Id, command.ReasoningEffort, command.Mode, provider.Id)
         { Connection = provider, Model = model, Files = files.ToArray(), Mentions = mentions.ToArray(),
             AgentMode = command.AgentMode, ExecutingPlanId = executingPlanId,
+            ImageGeneration = imageGeneration.Selection, ImageGenerationConfiguration = imageGeneration,
             ClassifierConfiguration = (_settings?.Current.Classifier ?? new ExecutionApproval.ClassifierSettings()).Capture(_providers),
             SubagentModel = command.SubagentModel, SubagentConfiguration = subagentConfiguration };
         if (command.Mode == SubmissionMode.Interrupt) _pending.Insert(0, pending);
@@ -639,6 +642,7 @@ public sealed partial class ConversationService
                 [], settings.Model.Id, settings.Effort, SubmissionMode.Enqueue, settings.Provider.Id)
             { Connection = settings.Provider, Model = settings.Model, IsBackgroundContinuation = true, AgentMode = settings.AgentMode,
                 ClassifierConfiguration = settings.Classifier,
+                ImageGeneration = settings.ImageGeneration.Selection, ImageGenerationConfiguration = settings.ImageGeneration,
                 SubagentModel = settings.SubagentModel, SubagentConfiguration = settings.SubagentConfiguration };
         }
         ImageData[] images;
@@ -673,7 +677,8 @@ public sealed partial class ConversationService
         }
         if (fromQueue) _pending.RemoveAt(0);
         _activeClassifier = pending.ClassifierConfiguration ?? (_settings?.Current.Classifier ?? new ExecutionApproval.ClassifierSettings()).Capture(_providers);
-        _lastRequest = (provider, model, pending.ReasoningEffort, pending.SubagentModel, subagentConfiguration, pending.AgentMode, _activeClassifier);
+        var imageGeneration = pending.ImageGenerationConfiguration ?? Settings.ImageGenerationConfiguration.Capture(pending.ImageGeneration, _providers);
+        _lastRequest = (provider, model, pending.ReasoningEffort, pending.SubagentModel, subagentConfiguration, pending.AgentMode, _activeClassifier, imageGeneration);
         Interlocked.Exchange(ref _boundaryStopRequested, 0);
         _replacementRequested = false;
         _stoppedAtBoundary = false;
@@ -708,7 +713,7 @@ public sealed partial class ConversationService
         PublishState();
         _operation = Task.Run(async () =>
         {
-            try { await SendAsync(request, model, pending.ReasoningEffort, provider, snapshot, turn, generation.Token, subagentConfiguration).ConfigureAwait(false); }
+            try { await SendAsync(request, model, pending.ReasoningEffort, provider, snapshot, turn, generation.Token, subagentConfiguration, imageGeneration).ConfigureAwait(false); }
             finally
             {
                 lock (_gate)
@@ -1055,7 +1060,7 @@ public sealed partial class ConversationService
 
     private async Task SendAsync(ChatMessage message, ModelInfo model, string reasoningEffort, ProviderProfile provider,
         SessionSnapshot snapshot, SessionTurn turn, CancellationToken generationToken,
-        Settings.ModelConfiguration? subagentConfiguration)
+        Settings.ModelConfiguration? subagentConfiguration, Settings.ImageGenerationConfiguration imageGeneration)
     {
         var checkpoint = snapshot.AgentState;
         Task<string?> titleTask = Task.FromResult<string?>(null);
@@ -1114,7 +1119,7 @@ public sealed partial class ConversationService
             _agent.BashOutputUpdated += OnBashOutput;
             _agent.BeforeModelRequest += OnBeforeModelRequest;
             long? firstTokenTimestamp = null, outputTokens = null;
-            await foreach (var update in _agent.RunAsync(message, model, reasoningEffort, provider, generationToken, subagentConfiguration, turn.AgentMode).ConfigureAwait(false))
+            await foreach (var update in _agent.RunAsync(message, model, reasoningEffort, provider, generationToken, subagentConfiguration, turn.AgentMode, imageGeneration).ConfigureAwait(false))
             {
                 foreach (var content in update.Contents)
                 {

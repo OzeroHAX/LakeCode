@@ -20,8 +20,9 @@ public sealed record ModelSelection(string ProviderId, string ModelId, string Re
         Validate(role);
         var provider = providers.Profiles.FirstOrDefault(item => item.Id == ProviderId)
             ?? throw new InvalidDataException($"Подключение {role} недоступно. Измените назначение в /models или восстановите подключение через /providers.");
-        var model = provider.Models.FirstOrDefault(item => item.Id == ModelId)
-            ?? throw new InvalidDataException($"Модель {role} недоступна. Измените назначение в /models.");
+        if (ModelResolver.SelectionError(provider, ModelId) is { } selectionError)
+            throw new InvalidDataException($"Модель {role}: {selectionError}");
+        var model = ModelResolver.Resolve(provider, ModelId).Model!;
         if (string.IsNullOrWhiteSpace(provider.ApiKey))
             throw new InvalidDataException($"Укажите API-ключ подключения {role} через /providers.");
         if (!model.ReasoningEfforts.Contains(ReasoningEffort))
@@ -40,6 +41,8 @@ public sealed record AgentSettings
     public ModelSelection? PlanModel { get; init; }
     // Null means not configured: /compact never silently sends history to another model.
     public ModelSelection? CompactionModel { get; init; }
+    // Null means disabled, never inherit a chat or subagent assignment.
+    public ImageGenerationSelection? ImageGeneration { get; init; }
     public ExecutionApproval.ClassifierSettings Classifier { get; init; } = new();
     [JsonExtensionData] public Dictionary<string, JsonElement>? AdditionalSettings { get; init; }
 
@@ -49,6 +52,7 @@ public sealed record AgentSettings
         SubagentModel?.Validate();
         PlanModel?.Validate("планирования");
         CompactionModel?.Validate("сжатия контекста");
+        ImageGeneration?.Validate();
         if (Classifier is null) throw new InvalidDataException("Некорректные настройки классификатора.");
         Classifier.Validate();
     }

@@ -116,6 +116,47 @@ internal sealed class WorkspaceFiles
         var encoding = new UTF8Encoding(false, true);
         if (encoding.GetByteCount(content) > MaxFileBytes)
             throw new IOException($"File exceeds the {MaxFileBytes}-byte text file limit.");
+        await WriteBytesCoreAsync(path, encoding.GetBytes(content), overwrite, cancellationToken);
+    }
+
+    public void ValidateNewImagePath(string path)
+    {
+        if (Path.IsPathRooted(path) || !string.Equals(Path.GetExtension(path), ".png", StringComparison.OrdinalIgnoreCase))
+            throw new ArgumentException("output_path must be a workspace-relative .png path.");
+        var destination = Resolve(path, allowMissing: true);
+        if (File.Exists(destination) || Directory.Exists(destination))
+            throw new IOException("Output already exists. Choose a new path; images are never overwritten.");
+        for (var parent = Path.GetDirectoryName(destination); parent is not null && parent != Root; parent = Path.GetDirectoryName(parent))
+            if (File.Exists(parent)) throw new IOException("Output parent is a file, not a directory.");
+    }
+
+    public async Task<byte[]> ReadImageBytesAsync(string path, CancellationToken cancellationToken)
+    {
+        await using var stream = new FileStream(ResolveRead(path), FileMode.Open, FileAccess.Read, FileShare.Read,
+            8192, FileOptions.Asynchronous | FileOptions.SequentialScan);
+        const int max = Attachments.ImageAttachments.MaxImageBytes;
+        if (stream.Length > max) throw new IOException("Input image exceeds the image size limit.");
+        using var buffer = new MemoryStream();
+        var block = new byte[8192];
+        int count;
+        while ((count = await stream.ReadAsync(block, cancellationToken)) != 0)
+        {
+            if (buffer.Length + count > max) throw new IOException("Input image exceeds the image size limit.");
+            buffer.Write(block, 0, count);
+        }
+        return buffer.ToArray();
+    }
+
+    public Task WriteImageAsync(string path, ReadOnlyMemory<byte> data, CancellationToken cancellationToken)
+    {
+        ValidateNewImagePath(path);
+        if (data.IsEmpty || data.Length > Attachments.ImageAttachments.MaxImageBytes)
+            throw new IOException("Invalid image size.");
+        return WriteBytesCoreAsync(path, data, overwrite: false, cancellationToken);
+    }
+
+    private async Task WriteBytesCoreAsync(string path, ReadOnlyMemory<byte> bytes, bool overwrite, CancellationToken cancellationToken)
+    {
         var destination = Resolve(path, allowMissing: true);
         var parent = Path.GetDirectoryName(destination)!;
         cancellationToken.ThrowIfCancellationRequested();
@@ -129,7 +170,7 @@ internal sealed class WorkspaceFiles
             await using (var stream = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None,
                              4096, FileOptions.Asynchronous))
             {
-                await stream.WriteAsync(encoding.GetBytes(content), cancellationToken);
+                await stream.WriteAsync(bytes, cancellationToken);
                 await stream.FlushAsync(cancellationToken);
             }
             if (!OperatingSystem.IsWindows() && File.Exists(destination))

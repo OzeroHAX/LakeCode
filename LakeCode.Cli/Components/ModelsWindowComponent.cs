@@ -1,4 +1,5 @@
 using LakeCode.Cli.State;
+using LakeCode.Core.Providers;
 using LakeCode.Core.Settings;
 using SharpConsoleUI;
 using SharpConsoleUI.Builders;
@@ -15,12 +16,16 @@ internal sealed class ModelsWindowComponent(ModelStore store, AgentSettingsStora
 
     public void Show(ConsoleWindowSystem windowSystem)
     {
-        var main = CreatePage(false, new ModelSelection(store.SelectedProviderId, store.SelectedModel.Id, store.SelectedReasoningEffort));
-        var planning = CreatePage(true, store.PlanModel);
-        var children = CreatePage(true, store.SubagentModel);
-        var compaction = CreatePage(true, store.CompactionModel, "Не назначена");
-        compaction.Panel.AddControl(Label("[yellow]/compact отправляет историю выбранному подключению. Платный запрос; запускается только вручную.[/]"));
+        var initialMain = string.IsNullOrEmpty(store.SelectedProviderId) ? null
+            : new ModelSelection(store.SelectedProviderId, store.SelectedModel.Id, store.SelectedReasoningEffort);
+        var main = CreatePage(initialMain, "Выберите подключение");
+        var planning = CreatePage(store.PlanModel, "Как у основного агента");
+        var children = CreatePage(store.SubagentModel, "Как у основного агента");
+        var compaction = CreatePage(store.CompactionModel, "Не назначена");
+        compaction.Picker.Panel.AddControl(Label("[yellow]/compact отправляет историю выбранному подключению. Платный запрос; запускается только вручную.[/]"));
+        var pages = new[] { main, planning, children, compaction };
         var classifier = new ClassifierModelPage(store.Providers, store.Settings.Classifier);
+        var images = new ImageGenerationModelPage(store.Providers, store.ImageGeneration);
         var tabs = new TabControl
         {
             HorizontalAlignment = HorizontalAlignment.Stretch, VerticalAlignment = VerticalAlignment.Fill,
@@ -28,11 +33,12 @@ internal sealed class ModelsWindowComponent(ModelStore store, AgentSettingsStora
             ActiveFocusedBackgroundColor = Highlight, ActiveUnfocusedBackgroundColor = Highlight,
             ActiveFocusedForegroundColor = Color.White, ActiveUnfocusedForegroundColor = Color.White
         };
-        tabs.AddTab("Основной агент", main.Panel, false);
-        tabs.AddTab("Планирование", planning.Panel, false);
-        tabs.AddTab("Сабагенты", children.Panel, false);
-        tabs.AddTab("Сжатие контекста", compaction.Panel, false);
+        tabs.AddTab("Основной агент", main.Picker.Panel, false);
+        tabs.AddTab("Планирование", planning.Picker.Panel, false);
+        tabs.AddTab("Сабагенты", children.Picker.Panel, false);
+        tabs.AddTab("Сжатие контекста", compaction.Picker.Panel, false);
         tabs.AddTab("Классификатор", classifier.Panel, false);
+        tabs.AddTab("Изображения", images.Panel, false);
         var status = Label("");
         var cancel = Button("Отмена");
         var apply = Button("Применить");
@@ -40,6 +46,9 @@ internal sealed class ModelsWindowComponent(ModelStore store, AgentSettingsStora
         buttons.HorizontalAlignment = HorizontalAlignment.Right;
         buttons.Margin = new Margin(2, 1, 2, 0);
         var busy = false;
+        var closed = false;
+        var lifetime = CancellationTokenSource.CreateLinkedTokenSource(shutdown);
+        var token = lifetime.Token;
         var window = new WindowBuilder(windowSystem)
             .WithTitle("Выбор модели").WithSize(88, 28)
             .Centered().AsModal().HideTitleButtons()
@@ -48,19 +57,62 @@ internal sealed class ModelsWindowComponent(ModelStore store, AgentSettingsStora
             .WithBackgroundColor(Surface).WithForegroundColor(Color.White)
             .AddControl(tabs).AddControl(status).AddControl(buttons)
             .AddControl(Label("[grey70]Tab — переход · ← → — вкладки · ↑ ↓ — модель · Esc — отмена[/]"))
+            .OnClosed((_, _) => { closed = true; lifetime.Cancel(); lifetime.Dispose(); })
             .Build();
+        foreach (var picker in pages.Select(p => p.Picker).Append(images.Carrier))
+        {
+            picker.RefreshRequested += id => _ = ProviderActionAsync(
+                ct => store.Providers.RefreshDiscoveryAsync(id, ct), "Получение списка моделей…", "Список обновлён и сохранён. Назначения не изменены.");
+            picker.ManualRequested += (id, modelId) => _ = ProviderActionAsync(
+                ct => store.Providers.AllowManualModelAsync(id, modelId, ct), "Сохранение ручного ID…", "Ручной ID разрешён в подключении. Назначения применяются отдельно.");
+        }
         cancel.Click += (_, _) => { if (!busy) windowSystem.CloseWindow(window); };
         apply.Click += (_, _) => _ = ApplyAsync();
         window.PreviewKeyPressed += (_, e) =>
         {
             if (e.KeyInfo.Key != ConsoleKey.Escape) return;
-            // Let an open dropdown consume Esc before closing the dialog.
-            if (main.Effort.IsDropdownOpen || planning.Effort.IsDropdownOpen || children.Effort.IsDropdownOpen || compaction.Effort.IsDropdownOpen || classifier.DropdownOpen) return;
+            if (pages.Any(p => p.Effort.IsDropdownOpen || p.Picker.DropdownOpen) || images.DropdownOpen || classifier.DropdownOpen) return;
             e.Handled = true;
             if (!busy) windowSystem.CloseWindow(window);
         };
         windowSystem.AddWindow(window);
         window.FocusControl(tabs);
+
+        void Busy(bool value)
+        {
+            busy = value;
+            tabs.IsEnabled = cancel.IsEnabled = apply.IsEnabled = !value;
+        }
+
+        async Task ProviderActionAsync(Func<CancellationToken, Task> action, string running, string success)
+        {
+            if (busy || closed) return;
+            Busy(true);
+            status.Text = Markup.Escape(running);
+            try
+            {
+                await Task.Run(() => action(token), token).ConfigureAwait(false);
+                windowSystem.EnqueueOnUIThread(() =>
+                {
+                    // Refresh does not replace a missing current assignment with another model.
+                    store.Refresh();
+                    if (closed) return;
+                    foreach (var page in pages) page.Refresh();
+                    images.Refresh();
+                    Busy(false);
+                    status.Text = Markup.Escape(success);
+                });
+            }
+            catch (Exception error)
+            {
+                windowSystem.EnqueueOnUIThread(() =>
+                {
+                    if (closed) return;
+                    Busy(false);
+                    ShowError(error);
+                });
+            }
+        }
 
         async Task ApplyAsync()
         {
@@ -70,34 +122,28 @@ internal sealed class ModelsWindowComponent(ModelStore store, AgentSettingsStora
             try
             {
                 mainSelection = main.Selection;
-                if (mainSelection is not null)
-                {
-                    var model = store.Providers.GetModel(mainSelection.ProviderId, mainSelection.ModelId);
-                    if (!model.ReasoningEfforts.Contains(mainSelection.ReasoningEffort))
-                        throw new InvalidOperationException("Выберите поддерживаемый reasoning основного агента.");
-                }
-                planning.Selection?.Resolve(store.Providers, "планирования");
-                children.Selection?.Resolve(store.Providers);
-                compaction.Selection?.Resolve(store.Providers, "сжатия контекста");
+                // An unchanged unavailable assignment must not prevent editing another role.
+                if (mainSelection != initialMain) mainSelection?.Resolve(store.Providers, "основного агента");
+                if (planning.Selection != store.PlanModel) planning.Selection?.Resolve(store.Providers, "планирования");
+                if (children.Selection != store.SubagentModel) children.Selection?.Resolve(store.Providers);
+                if (compaction.Selection != store.CompactionModel) compaction.Selection?.Resolve(store.Providers, "сжатия контекста");
                 settings = store.Settings with
                 {
                     PlanModel = planning.Selection, SubagentModel = children.Selection, CompactionModel = compaction.Selection,
-                    Classifier = classifier.Capture(store.Providers)
+                    Classifier = classifier.Capture(store.Providers), ImageGeneration = images.Capture(store.Providers)
                 };
             }
             catch (Exception error) { ShowError(error); return; }
-            busy = true;
-            tabs.IsEnabled = false;
-            cancel.IsEnabled = false;
-            apply.IsEnabled = false;
+            Busy(true);
             status.Text = "[cyan]Применение…[/]";
             try
             {
-                if (settings.SubagentModel != store.SubagentModel || settings.PlanModel != store.PlanModel || settings.CompactionModel != store.CompactionModel || settings.Classifier != store.Settings.Classifier)
-                    await Task.Run(() => settingsStorage.SaveAsync(settings, shutdown), shutdown).ConfigureAwait(false);
+                if (settings.SubagentModel != store.SubagentModel || settings.PlanModel != store.PlanModel || settings.CompactionModel != store.CompactionModel || settings.Classifier != store.Settings.Classifier || settings.ImageGeneration != store.ImageGeneration)
+                    await Task.Run(() => settingsStorage.SaveAsync(settings, token), token).ConfigureAwait(false);
                 windowSystem.EnqueueOnUIThread(() =>
                 {
-                    if (mainSelection is not null)
+                    if (closed) return;
+                    if (mainSelection is not null && mainSelection != initialMain)
                     {
                         store.SelectModel(mainSelection.ProviderId, mainSelection.ModelId);
                         store.SelectReasoningEffort(mainSelection.ReasoningEffort);
@@ -110,95 +156,61 @@ internal sealed class ModelsWindowComponent(ModelStore store, AgentSettingsStora
             {
                 windowSystem.EnqueueOnUIThread(() =>
                 {
-                    busy = false;
-                    tabs.IsEnabled = cancel.IsEnabled = apply.IsEnabled = true;
+                    if (closed) return;
+                    Busy(false);
                     ShowError(error);
                 });
             }
         }
 
-        void ShowError(Exception error) => status.Text = $"[yellow]{Markup.Escape(error.Message)}[/]";
+        void ShowError(Exception error) => status.Text = $"[yellow]{Markup.Escape(error is OperationCanceledException ? "Операция отменена." : error.Message)}[/]";
     }
 
-    private sealed class ModelPage(PanelControl panel, DropdownControl effort)
+    private sealed class ModelPage(ChatModelPicker picker, DropdownControl effort)
     {
-        public PanelControl Panel { get; } = panel;
+        public ChatModelPicker Picker { get; } = picker;
         public DropdownControl Effort { get; } = effort;
         public ModelSelection? Selection;
+        public Action Refresh { get; set; } = () => { };
     }
 
-    private ModelPage CreatePage(bool allowInheritance, ModelSelection? initial, string emptyLabel = "Как у основного агента")
+    private ModelPage CreatePage(ModelSelection? initial, string emptyLabel)
     {
-        var list = new ListControl
-        {
-            IsSelectable = true, BackgroundColor = Surface, FocusedBackgroundColor = Surface,
-            ForegroundColor = Color.White, HighlightBackgroundColor = Highlight, HighlightForegroundColor = Color.White,
-            HorizontalAlignment = HorizontalAlignment.Stretch, VerticalAlignment = VerticalAlignment.Fill,
-            Margin = new Margin(2, 1, 2, 1)
-        };
-        if (allowInheritance) list.AddItem(new ListItem(emptyLabel));
-        foreach (var provider in store.Providers.Profiles.OrderBy(item => item.Name, StringComparer.Ordinal))
-        foreach (var model in provider.Models.OrderBy(item => item.Id, StringComparer.Ordinal))
-            list.AddItem(new ListItem(Markup.Escape($"{provider.Name} · {model.Name}"))
-                { Tag = (provider.Id, model.Id) });
-        var selectedIndex = list.Items.FindIndex(item => item.Tag is ValueTuple<string, string> pair &&
-            pair.Item1 == initial?.ProviderId && pair.Item2 == initial.ModelId);
-        if (allowInheritance && initial is null) selectedIndex = 0;
-        if (initial is not null && selectedIndex < 0 && allowInheritance)
-        {
-            list.AddItem(new ListItem(Markup.Escape($"Недоступно: {initial.ProviderId} · {initial.ModelId}"))
-                { Tag = (initial.ProviderId, initial.ModelId) });
-            selectedIndex = list.Items.Count - 1;
-        }
-        if (list.Items.Count == 0) list.AddItem(new ListItem("Нет моделей. Настройте /providers."));
-        list.SelectedIndex = selectedIndex;
-        var effort = new DropdownControl("Reasoning: ")
-        {
-            BackgroundColor = Surface, ForegroundColor = Color.White,
-            FocusedBackgroundColor = Highlight, FocusedForegroundColor = Color.White,
-            HighlightBackgroundColor = Highlight, HighlightForegroundColor = Color.White,
-            HorizontalAlignment = HorizontalAlignment.Stretch, Margin = new Margin(2, 0, 2, 1)
-        };
-        var panel = new PanelControl
-        {
-            BackgroundColor = Surface, HorizontalAlignment = HorizontalAlignment.Stretch,
-            VerticalAlignment = VerticalAlignment.Fill
-        };
-        panel.AddControl(Label("Модель"));
-        panel.AddControl(list);
-        panel.AddControl(effort);
-        if (allowInheritance) panel.AddControl(Label("[grey70]Сохраняется для всех проектов.[/]"));
-        var page = new ModelPage(panel, effort) { Selection = initial };
+        var picker = new ChatModelPicker(store.Providers, initial?.ProviderId, initial?.ModelId, emptyLabel);
+        var effort = ProviderWindowControls.Dropdown("Reasoning: ");
+        picker.Panel.AddControl(effort);
+        var page = new ModelPage(picker, effort) { Selection = initial };
         var updating = false;
-        list.SelectedIndexChanged += (_, _) => UpdateSelection();
+        picker.Changed += () => UpdateSelection(preserveEffort: false);
         effort.SelectedIndexChanged += (_, _) =>
         {
             if (!updating && page.Selection is { } selection && effort.SelectedValue is { } value)
                 page.Selection = selection with { ReasoningEffort = value };
         };
-        UpdateSelection();
+        page.Refresh = () => { picker.Refresh(); UpdateSelection(preserveEffort: true); };
+        UpdateSelection(preserveEffort: true);
         return page;
 
-        void UpdateSelection()
+        void UpdateSelection(bool preserveEffort)
         {
             updating = true;
             try
             {
                 effort.ClearItems();
-                if (list.SelectedItem?.Tag is not ValueTuple<string, string> pair)
+                if (picker.ProviderId is not { } providerId)
                 {
                     page.Selection = null;
-                    effort.AddItem(allowInheritance ? emptyLabel : "Нет модели");
+                    effort.AddItem(emptyLabel);
                     effort.SelectedIndex = 0;
                     effort.IsEnabled = false;
                     return;
                 }
                 var previousEffort = page.Selection?.ReasoningEffort ?? store.SelectedReasoningEffort;
-                var provider = store.Providers.Profiles.FirstOrDefault(item => item.Id == pair.Item1);
-                var model = provider?.Models.FirstOrDefault(item => item.Id == pair.Item2);
+                var provider = store.Providers.Profiles.FirstOrDefault(p => p.Id == providerId);
+                var model = provider is null || !ProviderProfile.ValidModelId(picker.ModelId) ? null : ModelResolver.Resolve(provider, picker.ModelId).Model;
                 if (model is null)
                 {
-                    page.Selection = new ModelSelection(pair.Item1, pair.Item2, previousEffort);
+                    page.Selection = new ModelSelection(providerId, picker.ModelId, previousEffort);
                     effort.AddItem(previousEffort);
                     effort.SelectedIndex = 0;
                     effort.IsEnabled = false;
@@ -206,9 +218,10 @@ internal sealed class ModelsWindowComponent(ModelStore store, AgentSettingsStora
                 }
                 foreach (var value in model.ReasoningEfforts) effort.AddItem(value);
                 var index = model.ReasoningEfforts.IndexOf(previousEffort);
+                if (index < 0 && preserveEffort) { effort.AddItem(previousEffort); index = effort.Items.Count - 1; }
                 effort.SelectedIndex = index < 0 ? 0 : index;
                 effort.IsEnabled = true;
-                page.Selection = new ModelSelection(pair.Item1, pair.Item2, model.ReasoningEfforts[effort.SelectedIndex]);
+                page.Selection = new ModelSelection(providerId, picker.ModelId, effort.SelectedValue!);
             }
             finally { updating = false; }
         }

@@ -21,6 +21,7 @@ internal sealed class ModelStore : INotifyPropertyChanged
     public ModelSelection? SubagentModel => Settings.SubagentModel;
     public ModelSelection? PlanModel => Settings.PlanModel;
     public ModelSelection? CompactionModel => Settings.CompactionModel;
+    public ImageGenerationSelection? ImageGeneration => Settings.ImageGeneration;
 
     public ModelConfiguration GetRequestConfiguration(AgentMode mode) =>
         mode == AgentMode.Plan && PlanModel is { } selection
@@ -33,6 +34,7 @@ internal sealed class ModelStore : INotifyPropertyChanged
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(SubagentModel)));
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(PlanModel)));
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(CompactionModel)));
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(ImageGeneration)));
     }
 
     public event PropertyChangedEventHandler? PropertyChanged;
@@ -60,9 +62,8 @@ internal sealed class ModelStore : INotifyPropertyChanged
     public void Refresh()
     {
         if (HasSelection) SelectModel(SelectedProviderId, SelectedModel.Id);
-        else if (Providers.Profiles.FirstOrDefault(profile => !profile.Models.IsEmpty) is { } profile)
-            SelectModel(profile.Id, profile.Models[0].Id);
-        else { SelectedProviderId = ""; NotifySelection(); }
+        // Discovery is not a user selection. Keep a missing assignment visible instead of routing to another model.
+        else NotifySelection();
     }
 
     private void NotifySelection()

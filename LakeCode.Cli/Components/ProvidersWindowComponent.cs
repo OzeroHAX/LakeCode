@@ -221,7 +221,7 @@ internal sealed class ProvidersWindowComponent(ProviderRegistry providers, Model
         DiscoveredModels? CurrentDiscovery() => SameConnection(Connection()) ? discovery : null;
         void Capture()
         {
-            if (currentId is null || editingClassifier) return;
+            if (currentId is null || editingClassifier || LakeCode.Core.Agent.ModelCatalog.GetModelType(currentId) == LakeCode.Core.Agent.ModelType.ImageGeneration) return;
             drafts[currentId] = modelEditor.Capture();
             var row = modelList.Items.FirstOrDefault(item => item.Tag as string == currentId);
             if (row is not null) row.Text = ModelCaption(currentId);
@@ -243,8 +243,8 @@ internal sealed class ProvidersWindowComponent(ProviderRegistry providers, Model
                     ModelOverrides = rule is null ? ImmutableDictionary<string, ModelOverride>.Empty
                         : ImmutableDictionary<string, ModelOverride>.Empty.Add(apiId, rule)
                 }, apiId);
-                text = entry.Error is not null ? "Нужно настроить" : !entry.Available ? "Нет в discovery" : entry.Source;
-                if (rule?.Manual == true) text += " · вручную";
+                text = ModelResolver.ListingDescription(entry.Listing);
+                text += entry.Error is not null ? " · для чата нужны характеристики" : " · " + entry.Source;
             }
             catch (InvalidDataException) { text = "Нужно настроить"; }
             return Markup.Escape($"{apiId} · {text}");
@@ -252,12 +252,18 @@ internal sealed class ProvidersWindowComponent(ProviderRegistry providers, Model
         void LoadSelected()
         {
             currentId = modelList.SelectedItem?.Tag as string;
-            modelEditor.Control.Visible = currentId is not null && !editingClassifier;
+            var imageModel = currentId is not null && LakeCode.Core.Agent.ModelCatalog.GetModelType(currentId) == LakeCode.Core.Agent.ModelType.ImageGeneration;
+            modelEditor.Control.Visible = currentId is not null && !editingClassifier && !imageModel;
             removeManual.IsEnabled = currentId is not null && (editingClassifier
                 ? classificationIds.Contains(currentId) : CurrentDiscovery()?.Ids.Contains(currentId, StringComparer.Ordinal) != true);
             reset.Visible = !editingClassifier;
             reset.IsEnabled = currentId is not null && !editingClassifier;
             selectedLabel.Text = currentId is null ? "" : Markup.Escape("API ID: " + currentId);
+            if (imageModel)
+            {
+                selectedLabel.Text = Markup.Escape($"API ID: {currentId} · Генерация изображений. Назначение: /models → Изображения. Чат-характеристики не требуются.");
+                return;
+            }
             if (currentId is null || editingClassifier) return;
             if (!drafts.ContainsKey(currentId)) drafts[currentId] = ProviderModelEditor.Draft.FromRule(null);
             modelEditor.Load(currentId, drafts[currentId]);
@@ -279,8 +285,7 @@ internal sealed class ProvidersWindowComponent(ProviderRegistry providers, Model
             if (modelList.Items.Count == 0) modelList.AddItem(new ListItem("Обновите список или добавьте API ID вручную."));
             discoveryStatus.Text = editingClassifier
                 ? "[grey70]System One: discovery может вернуть только алиасы. Для классификатора добавьте фиксированный ID, например jev-1.13.0. Reasoning и чат-параметры не нужны.[/]"
-                : visibleDiscovery is null ? "[grey70]Список ещё не получен. Известные ID сопоставляются с каталогом автоматически.[/]"
-                : Markup.Escape($"Получено {visibleDiscovery.Ids.Length} моделей · {visibleDiscovery.UpdatedAt.ToLocalTime():g}. При смене подключения обновите список.");
+                : Markup.Escape(ChatModelPicker.DiscoveryText(Connection() with { Discovery = visibleDiscovery }));
             rebuilding = false;
             LoadSelected();
         }
