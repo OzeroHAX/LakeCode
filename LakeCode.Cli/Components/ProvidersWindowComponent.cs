@@ -285,7 +285,7 @@ internal sealed class ProvidersWindowComponent(ProviderRegistry providers, Model
             if (modelList.Items.Count == 0) modelList.AddItem(new ListItem("Обновите список или добавьте API ID вручную."));
             discoveryStatus.Text = editingClassifier
                 ? "[grey70]System One: discovery может вернуть только алиасы. Для классификатора добавьте фиксированный ID, например jev-1.13.0. Reasoning и чат-параметры не нужны.[/]"
-                : Markup.Escape(ChatModelPicker.DiscoveryText(Connection() with { Discovery = visibleDiscovery }));
+                : Markup.Escape(DiscoveryText(Connection() with { Discovery = visibleDiscovery }));
             rebuilding = false;
             LoadSelected();
         }

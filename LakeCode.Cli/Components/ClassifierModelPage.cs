@@ -1,51 +1,79 @@
 using System.Globalization;
 using LakeCode.Core.ExecutionApproval;
 using LakeCode.Core.Providers;
+using SharpConsoleUI;
 using SharpConsoleUI.Controls;
-using Spectre.Console;
+using SharpConsoleUI.Layout;
+using Markup = Spectre.Console.Markup;
 using static LakeCode.Cli.Components.ProviderWindowControls;
 
 namespace LakeCode.Cli.Components;
 
-/// <summary>Role assignment inside /models. Connections and credentials are edited only in /providers.</summary>
+/// <summary>Role assignment inside /models; connections and credentials are edited only in /providers.</summary>
 internal sealed class ClassifierModelPage
 {
-    public ScrollablePanelControl Panel { get; } = Form();
-    private readonly DropdownControl _mode;
-    private readonly ListControl _models;
+    private readonly DropdownControl _mode = Dropdown("Режим: ", "Вручную", "Авто");
+    private readonly DropdownControl _model = Dropdown("Модель: ");
+    private readonly List<ClassifierModelSelection?> _models = [null];
     private readonly PromptControl _timeout;
     private readonly PromptControl _allow;
     private readonly PromptControl _deny;
-    public bool DropdownOpen => _mode.IsDropdownOpen;
+    public PanelControl Panel { get; } = new()
+    {
+        HorizontalAlignment = HorizontalAlignment.Stretch, BackgroundColor = Surface, BorderStyle = BorderStyle.None
+    };
+    public bool DropdownOpen => _mode.IsDropdownOpen || _model.IsDropdownOpen;
+    /// <summary>Raised when the draft changes, so the section summary stays current.</summary>
+    public event Action? Changed;
 
     public ClassifierModelPage(ProviderRegistry providers, ClassifierSettings settings)
     {
-        _mode = Dropdown("Plan: ", "Ручное подтверждение", "Автоматическая оценка");
         _mode.SelectedIndex = settings.Enabled ? 1 : 0;
-        _models = Choices(4);
-        _models.AddItem(new ListItem("Не назначена"));
-        foreach (var provider in providers.Profiles.Where(p => p.Kind == ProviderKind.TypeSafe).OrderBy(p => p.Name, StringComparer.Ordinal))
-        foreach (var model in provider.ClassificationModels.Where(m => m.IsVersioned))
-            _models.AddItem(new ListItem(Markup.Escape($"{provider.Name} · {model.Id}"))
-                { Tag = new ClassifierModelSelection(provider.Id, model.Id) });
-        var selected = _models.Items.FindIndex(item => item.Tag is ClassifierModelSelection value && value == settings.Model);
+        _model.AddItem("Не назначена");
+        foreach (var provider in providers.Profiles.Where(profile => profile.Kind == ProviderKind.TypeSafe)
+                     .OrderBy(profile => profile.Name, StringComparer.Ordinal))
+        foreach (var model in provider.ClassificationModels.Where(model => model.IsVersioned))
+        {
+            _model.AddItem(Markup.Escape($"{provider.Name} · {model.Id}"));
+            _models.Add(new ClassifierModelSelection(provider.Id, model.Id));
+        }
+        var selected = settings.Model is null ? 0 : _models.IndexOf(settings.Model);
         if (settings.Model is not null && selected < 0)
         {
-            _models.AddItem(new ListItem(Markup.Escape($"Недоступно: {settings.Model.ProviderId} · {settings.Model.ModelId}")) { Tag = settings.Model });
-            selected = _models.Items.Count - 1;
+            // Preserve an explicit assignment instead of replacing it with the first available model.
+            _model.AddItem(Markup.Escape($"Недоступно: {settings.Model.ProviderId} · {settings.Model.ModelId}"));
+            _models.Add(settings.Model);
+            selected = _models.Count - 1;
         }
-        _models.SelectedIndex = selected < 0 ? 0 : selected;
-        _timeout = Field("Таймаут, секунд: ", settings.TimeoutSeconds.ToString(CultureInfo.InvariantCulture));
-        _allow = Field("Порог авторазрешения: ", settings.AllowThreshold.ToString(CultureInfo.InvariantCulture));
-        _deny = Field("Порог запрета: ", settings.DenyThreshold.ToString(CultureInfo.InvariantCulture));
+        _model.SelectedIndex = Math.Max(0, selected);
+        _timeout = Field("Таймаут, с: ", settings.TimeoutSeconds.ToString(CultureInfo.InvariantCulture));
+        _allow = Field("Разрешать ≥: ", settings.AllowThreshold.ToString(CultureInfo.InvariantCulture));
+        _deny = Field("Запрещать ≥: ", settings.DenyThreshold.ToString(CultureInfo.InvariantCulture));
         Panel.AddControl(_mode);
-        Panel.AddControl(Label("Модель классификатора · подключение и фиксированный ID настраиваются в /providers"));
-        Panel.AddControl(_models);
-        Panel.AddControl(_timeout);
-        Panel.AddControl(_allow);
-        Panel.AddControl(_deny);
-        Panel.AddControl(Label("[yellow]Включение разрешает платную отправку команды/кода, описания и параметров выбранному провайдеру. История и дополнительные файлы не отправляются. Это не sandbox: модель может ошибаться.[/]"));
-        Panel.AddControl(Label("Авторазрешение требует safe ≥ порога по всем шести критериям. Запрет: risk ≥ порога для несоответствия описания или передачи непубличных данных. По каждому критерию: нет риска при safe ≥ порога, иначе есть риск. Недостаточная понятность, изменения и финансовые эффекты → ручное решение. Настройки действуют для следующих сообщений."));
+        Panel.AddControl(_model);
+        var thresholds = new HorizontalGridControl { HorizontalAlignment = HorizontalAlignment.Stretch };
+        foreach (var field in new[] { _timeout, _allow, _deny })
+        {
+            var column = new ColumnContainer(thresholds) { FlexFactor = 1 };
+            column.AddContent(field);
+            thresholds.AddColumn(column);
+        }
+        Panel.AddControl(thresholds);
+        Panel.AddControl(Label("[grey70]Платно · описание и параметры уходят провайдеру[/]"));
+        _mode.SelectedIndexChanged += (_, _) => Changed?.Invoke();
+        _model.SelectedIndexChanged += (_, _) => Changed?.Invoke();
+    }
+
+    /// <summary>One-line draft summary for the collapsed section header.</summary>
+    public string Summary
+    {
+        get
+        {
+            var mode = _mode.SelectedIndex == 1 ? "авто" : "выкл";
+            var index = _model.SelectedIndex;
+            var model = index > 0 && index < _models.Count ? _models[index]?.ModelId : null;
+            return model is null ? mode : $"{mode} · {model}";
+        }
     }
 
     public ClassifierSettings Capture(ProviderRegistry providers)
@@ -53,7 +81,7 @@ internal sealed class ClassifierModelPage
         var settings = new ClassifierSettings
         {
             Enabled = _mode.SelectedIndex == 1,
-            Model = _models.SelectedItem?.Tag as ClassifierModelSelection,
+            Model = _model.SelectedIndex > 0 && _model.SelectedIndex < _models.Count ? _models[_model.SelectedIndex] : null,
             TimeoutSeconds = int.Parse(_timeout.Input, CultureInfo.InvariantCulture),
             AllowThreshold = double.Parse(_allow.Input, CultureInfo.InvariantCulture),
             DenyThreshold = double.Parse(_deny.Input, CultureInfo.InvariantCulture)

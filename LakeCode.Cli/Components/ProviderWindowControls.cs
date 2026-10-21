@@ -1,3 +1,4 @@
+using LakeCode.Core.Providers;
 using SharpConsoleUI;
 using SharpConsoleUI.Builders;
 using SharpConsoleUI.Controls;
@@ -8,6 +9,10 @@ namespace LakeCode.Cli.Components;
 /// <summary>Shared styling for the provider list and its editors.</summary>
 internal static class ProviderWindowControls
 {
+    internal static string DiscoveryText(ProviderProfile profile) => profile.Discovery is { } discovery
+        ? $"Последний список: {discovery.UpdatedAt.ToLocalTime():g} · ID: {discovery.Ids.Length}. Это не проверка доступности и возможностей API."
+        : "Список ещё не получен. Загрузите его или явно разрешите ручной ID.";
+
     internal static readonly Color Surface = new(30, 36, 39);
     internal static readonly Color Highlight = new(35, 65, 75);
 
