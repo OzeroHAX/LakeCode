@@ -28,9 +28,9 @@
 - Each `AgentLoop` holds one session; run main requests sequentially and fully consume each response stream.
 - Connection, model, reasoning, and message data are captured at submission; later settings changes do not affect accepted requests.
 - Cancellation and rewind do not undo completed side effects.
-- `SystemPromptBuilder` reads global `~/.agents/AGENTS.md`, then project `AGENTS.md`, once at session creation, before the fixed environment context. Skip missing or empty files; propagate other read errors.
+- `Prompt/InstructionsReader` reads global `~/.agents/AGENTS.md`, then project `AGENTS.md`, once at session creation; role prompt builders place them before the fixed environment context. Skip missing or empty files; propagate other read errors.
 - Provider settings in `~/.lakecode/providers.json` store unencrypted keys; preserve access restrictions. Never include keys in persisted sessions or message queues.
-- Shared file restrictions live in `LakeCode.Core/Agent/tools/WorkspaceFiles.cs`.
+- Shared file restrictions live in `LakeCode.Core/Agent/Tools/Files/WorkspaceFiles.cs`.
 - File writes must remain atomic, preserve applicable permissions, and leave no partial result if cancelled before commit.
 - Send original image bytes, not previews; validate format, limits, and model support. Attachment preparation failures must preserve the draft.
 

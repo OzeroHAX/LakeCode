@@ -50,7 +50,7 @@ public static class FileAttachments
                         if ((attributes & FileAttributes.ReparsePoint) != 0) continue;
                         if ((attributes & FileAttributes.Directory) != 0)
                         {
-                            if (!WorkspaceFiles.SkipDirectory(entry) && Path.GetFileName(entry) != "node_modules")
+                            if (!files.SkipDirectory(entry) && Path.GetFileName(entry) != "node_modules")
                                 directories.Push(entry);
                             continue;
                         }
