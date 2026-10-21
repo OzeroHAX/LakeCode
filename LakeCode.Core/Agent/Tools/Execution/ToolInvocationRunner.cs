@@ -15,16 +15,14 @@ internal sealed class ToolInvocationRunner(
     Func<EvalTool?> getEval,
     Func<DelegationCoordinator?> getDelegation,
     Func<Settings.ImageGenerationConfiguration?> getImageGeneration,
-    Action validateSkillRoots)
+    Action validateSkillRoots,
+    ToolExecutionApproval approval)
 {
     private readonly AsyncLocal<Action<FileChange>?> _fileChangeObserver = new();
     private readonly AsyncLocal<Action<BashExecution>?> _bashOutputObserver = new();
     private readonly AsyncLocal<ToolCallUpdate?> _delegationInvocation = new();
     private readonly AsyncLocal<IServiceProvider?> _services = new();
     private readonly ConcurrentDictionary<string, ToolCallUpdate> _results = new(StringComparer.Ordinal);
-    internal Func<ExecutionApprovalRequest, CancellationToken, Task<bool>>? ConfirmExecution { get; init; }
-    internal Func<ExecutionApprovalRequest, CancellationToken, Task<ExecutionApproval.ExecutionAssessment>>? AssessExecution { get; init; }
-    internal Func<bool>? IsExecutionClassifierEnabled { get; init; }
 
     public event Action<ToolCallUpdate>? ToolCallUpdated;
     public event Action<BashOutputUpdate>? BashOutputUpdated;
@@ -80,7 +78,7 @@ internal sealed class ToolInvocationRunner(
         var requiresApproval = registered && registration.ExecutionPolicy == ToolExecutionPolicy.RequireApproval;
         var call = new ToolCallUpdate(callId, name, argumentsJson,
             requiresApproval
-                ? IsExecutionClassifierEnabled?.Invoke() == true ? ToolCallStatus.Classifying : ToolCallStatus.AwaitingApproval
+                ? approval.ClassifierEnabled ? ToolCallStatus.Classifying : ToolCallStatus.AwaitingApproval
                 : ToolCallStatus.Running);
         if (name != "delegate") Publish(call);
         FileChange? fileChange = null;
@@ -101,40 +99,8 @@ internal sealed class ToolInvocationRunner(
             var accessError = !registered ? $"Error: Tool '{name}' is unavailable in the current configuration."
                 : configuration.IsComplete() ? configuration.CompletionError : "";
             if (accessError.Length == 0 && (requiresApproval || name is "bash" or "eval"))
-            {
-                using var args = JsonDocument.Parse(argumentsJson);
-                var root = args.RootElement;
-                if (!root.TryGetProperty("description", out var description) || description.ValueKind != JsonValueKind.String ||
-                    string.IsNullOrWhiteSpace(description.GetString()))
-                    accessError = "Error: description is required: explain action, purpose and expected side effects.";
-                else if (name is ("bash" or "eval") &&
-                         (!root.TryGetProperty(name == "bash" ? "command" : "code", out var code) ||
-                          code.ValueKind != JsonValueKind.String || string.IsNullOrWhiteSpace(code.GetString())))
-                    accessError = "Error: Nonempty command/code is required.";
-                else if (requiresApproval)
-                {
-                    using (callId.StartsWith("eval-", StringComparison.Ordinal) ? getEval()?.PauseTimeout() : null)
-                    {
-                        var request = new ExecutionApprovalRequest(callId, name, description.GetString()!, argumentsJson);
-                        var assessment = AssessExecution is null
-                            ? new ExecutionApproval.ExecutionAssessment(ExecutionApproval.ExecutionDecision.AskUser, "Классификатор недоступен.")
-                            : await AssessExecution(request, cancellationToken);
-                        cancellationToken.ThrowIfCancellationRequested();
-                        call = call with { Assessment = assessment };
-                        if (assessment.Decision == ExecutionApproval.ExecutionDecision.Deny)
-                            accessError = "Error: Execution denied by policy. " + assessment.Reason + " Action was not executed. Do not bypass through another tool.";
-                        else if (assessment.Decision == ExecutionApproval.ExecutionDecision.AskUser)
-                        {
-                            Publish(call with { Status = ToolCallStatus.AwaitingApproval });
-                            var allowed = ConfirmExecution is not null && await ConfirmExecution(request with { Assessment = assessment }, cancellationToken);
-                            call = call with { Assessment = assessment with { ManualAllowed = allowed } };
-                            if (!allowed) accessError = "Error: Execution denied by user or approval unavailable. Action was not executed. Do not retry through another tool.";
-                        }
-                    }
-                    cancellationToken.ThrowIfCancellationRequested();
-                    if (accessError.Length == 0) Publish(call with { Status = ToolCallStatus.Running });
-                }
-            }
+                accessError = await approval.CheckAsync(call, requiresApproval, getEval(),
+                    update => call = update, Publish, cancellationToken);
             if (accessError.Length == 0 && call.Name is "load_skill" or "read_skill_resource")
             {
                 accessError = await WorkspaceFiles.ExecuteAsync(() =>

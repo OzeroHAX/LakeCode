@@ -1,8 +1,17 @@
 using LakeCode.Core.Providers;
 using System.Collections.Immutable;
-using System.Diagnostics;
+using LakeCode.Core.Conversations.Compaction;
+using LakeCode.Core.Conversations.Projection;
+using LakeCode.Core.Conversations.Interactions;
+using LakeCode.Core.Conversations.SideQuestions;
+using LakeCode.Core.Conversations.Messages;
+using LakeCode.Core.Conversations.Rewind;
 using System.Text.Json;
 using LakeCode.Core.Agent;
+using LakeCode.Core.Agent.Composition;
+using LakeCode.Core.Agent.Execution;
+using LakeCode.Core.Agent.Titles;
+using LakeCode.Core.Agent.Tools.Execution;
 using LakeCode.Core.Agent.Tools;
 using LakeCode.Core.Agent.Delegation;
 using LakeCode.Core.Agent.Tools.Ask;
@@ -17,22 +26,23 @@ namespace LakeCode.Core.Conversations;
 /// and state transitions are serialized by _gate. Subscribers must only enqueue notifications,
 /// never block on operations or throw. No UI thread, controls, focus, or preview dependencies.
 /// </summary>
-public sealed partial class ConversationService
+public sealed class ConversationService
 {
     private readonly object _gate = new();
     private readonly ProviderRegistry _providers;
+    private readonly MessageSubmissionPreparer _submissionPreparer;
     private readonly Settings.AgentSettingsStorage? _settings;
     private ExecutionApproval.ClassifierConfiguration _activeClassifier = new(new(), null, null);
     private readonly SessionStorage _sessions = new();
     private readonly string _workspaceRoot;
     private readonly CancellationToken _shutdown;
-    private AgentLoop? _agent;
+    private AgentComponents? _agent;
     private SessionTurn? _activeTurn;
     private readonly Dictionary<string, (SessionTurn Turn, Guid RequestId)> _backgroundOwners = new(StringComparer.Ordinal);
     private (ProviderProfile Provider, ModelInfo Model, string Effort, Settings.ModelSelection? SubagentModel,
         Settings.ModelConfiguration? SubagentConfiguration, AgentMode AgentMode, ExecutionApproval.ClassifierConfiguration Classifier,
         Settings.ImageGenerationConfiguration ImageGeneration)? _lastRequest;
-    private readonly SemaphoreSlim _interactionGate = new(1, 1);
+    private readonly InteractionGate _interactionGate = new();
     private bool _finishing;
     private bool _allowAllExternalReads;
     private SessionSnapshot? _snapshot;
@@ -40,6 +50,7 @@ public sealed partial class ConversationService
     private Task _operation = Task.CompletedTask;
     private Task _pendingPersistence = Task.CompletedTask;
     private CancellationTokenSource? _generation;
+    private CancellationTokenSource? _compactionCancellation;
     private Guid? _requestId;
     private bool _busy, _queuePaused, _replacementRequested, _stoppedAtBoundary;
     private bool _saveFailed, _contextFailed, _pendingSaveFailed;
@@ -48,16 +59,12 @@ public sealed partial class ConversationService
     private RequestStatistics? _statistics;
     private double? _tokensPerSecond;
     private long _revision, _sequence;
-    private readonly Dictionary<Guid, TaskCompletionSource<string[][]>> _questions = [];
-    private readonly Dictionary<Guid, TaskCompletionSource<ExternalReadDecision>> _permissions = [];
-    private readonly Dictionary<Guid, TaskCompletionSource<bool>> _executionApprovals = [];
+    private readonly ConversationQuestions _questions = new();
+    private readonly ConversationApprovals _approvals = new();
     private ConversationState _state;
-    private readonly List<SideQuestionExchange> _sideExchanges = [];
+    private readonly SideQuestionConversation _sideConversation = new();
     private CancellationTokenSource? _sideCancellation;
     private Task _sideOperation = Task.CompletedTask;
-    private Guid? _sideRequestId;
-    private long _sideRevision;
-    private const int SideHistoryCharacters = 128_000;
 
     public event Action<ConversationState>? StateChanged;
     public event Action<ConversationEventEnvelope>? EventOccurred;
@@ -70,6 +77,7 @@ public sealed partial class ConversationService
         _workspaceRoot = Path.GetFullPath(workspaceRoot);
         _providers = providers;
         _settings = settings;
+        _submissionPreparer = new MessageSubmissionPreparer(_workspaceRoot, providers, settings);
         _statisticsModel = initialModel;
         _shutdown = shutdown;
         _state = CreateState();
@@ -91,7 +99,7 @@ public sealed partial class ConversationService
             {
                 SubmitMessage submit => Submit(submit),
                 ExecutePlan execute => BeginExecutePlan(execute),
-                ResolveExecutionApproval approval => _executionApprovals.TryGetValue(approval.InteractionId, out var completion) && completion.TrySetResult(approval.Allow),
+                ResolveExecutionApproval approval => _approvals.ResolveExecution(approval),
                 AskSideQuestion side => BeginSideQuestion(side.Question),
                 CancelSideQuestion cancel => CancelSide(cancel.RequestId),
                 ClearSideQuestions => ClearSide(),
@@ -117,7 +125,7 @@ public sealed partial class ConversationService
             _finishing = true;
             _compactionCancellation?.Cancel();
             _generation?.Cancel();
-            _agent?.RequestCancelDelegations();
+            _agent?.Delegation?.RequestCancel();
         }
         while (true)
         {
@@ -151,7 +159,7 @@ public sealed partial class ConversationService
 
     private ConversationState CreateState()
     {
-        var delegations = (_agent?.Delegations ?? []).ToImmutableArray();
+        var delegations = (_agent?.Delegation?.Snapshots ?? []).ToImmutableArray();
         var plan = CurrentPlan();
         var planCallId = plan is null ? null : _snapshot?.Turns.LastOrDefault(turn => turn.Plan?.Id == plan.Id)?
             .Events.LastOrDefault(item => item.ToolCall is { Name: "submit_plan", Status: ToolCallStatus.Completed })?.ToolCall?.CallId;
@@ -160,31 +168,30 @@ public sealed partial class ConversationService
             _saveFailed, _contextFailed, _pendingSaveFailed,
             (_compactionCancellation is { IsCancellationRequested: false } || _generation is { IsCancellationRequested: false } || delegations.Any(item =>
                 item.Status is DelegationStatus.Running or DelegationStatus.WaitingForParent)) &&
-            _questions.Count == 0 && _permissions.Count == 0,
+            _questions.Count == 0 && _approvals.ReadCount == 0,
             !_busy && _pending.Count == 0 && !_saveFailed && !_contextFailed && !_pendingSaveFailed,
             _pending.Select(item => new PendingMessageState(item.Text, item.Images.Length, item.ModelId,
                 item.ReasoningEffort, item.Mode, item.ProviderId, item.Files.Length, item.AgentMode)).ToImmutableArray(),
             _statisticsModel, _statistics, _tokensPerSecond)
-            { AllowAllExternalReads = _allowAllExternalReads, CanCompact = CanCompact(), IsCompacting = _compactionCancellation is not null, Compaction = _agent?.Compaction,
+            { AllowAllExternalReads = _allowAllExternalReads, CanCompact = CanCompact(), IsCompacting = _compactionCancellation is not null, Compaction = _agent?.History.Projection.View,
                  SideQuestions = CreateSideState(), Delegations = delegations, ActiveMode = _activeTurn?.AgentMode,
                 Plan = plan, PlanCallId = planCallId, CanExecutePlan = CanExecutePlan() };
     }
 
-    private SideQuestionState CreateSideState() => new(_sideRevision,
-        _sideRequestId is not null && _sideCancellation is not null, _sideExchanges.ToImmutableArray());
+    private SideQuestionState CreateSideState() => _sideConversation.State(_sideCancellation is not null);
 
     private void PublishSideState()
     {
-        _sideRevision++;
-        // Side events carry their own ID; never temporarily overwrite the main request ID.
-        EventOccurred?.Invoke(new ConversationEventEnvelope(++_sequence, _snapshot?.Id, _sideRequestId,
+        _sideConversation.AdvanceRevision();
+        // Side events carry their own ID, never the active main request ID.
+        EventOccurred?.Invoke(new ConversationEventEnvelope(++_sequence, _snapshot?.Id, _sideConversation.ActiveId,
             new SideQuestionsChanged(CreateSideState())));
         PublishState();
     }
 
     private bool CancelSide(Guid id)
     {
-        if (_sideRequestId != id || _sideCancellation is null) return false;
+        if (_sideConversation.ActiveId != id || _sideCancellation is null) return false;
         _sideCancellation.Cancel();
         return true;
     }
@@ -192,8 +199,7 @@ public sealed partial class ConversationService
     private bool ClearSide()
     {
         _sideCancellation?.Cancel();
-        _sideRequestId = null;
-        _sideExchanges.Clear();
+        _sideConversation.Clear();
         PublishSideState();
         return true;
     }
@@ -201,123 +207,44 @@ public sealed partial class ConversationService
     private bool BeginSideQuestion(string question)
     {
         if (_busy && _generation is null) return Reject("Дождитесь завершения операции с сессией; черновик /btw сохранён.");
-        if (_sideCancellation is not null) return Reject("Попутный запрос ещё выполняется или отменяется; черновик сохранён.");
-        if (string.IsNullOrWhiteSpace(question)) return Reject("Используйте /btw вопрос.");
-        if (question.Length > 16_000) return Reject("Попутный вопрос слишком длинный (максимум 16 000 символов); черновик сохранён.");
-        var context = _agent?.SideContext;
+        if (_sideCancellation is not null) return Reject("Попутный запрос ещё выполняется или отменяется; черновик /btw сохранён.");
+        try { SideQuestionConversation.ValidateQuestion(question); }
+        catch (Exception error) { return Reject(error.Message); }
+        var context = _agent?.History.Capture.SideContext;
         if (context is null)
-            return Reject(_agent?.SideContextError ?? "Для /btw сначала отправьте обычное сообщение в этой сессии: точного подготовленного префикса пока нет. Черновик сохранён.");
-        var history = _sideExchanges.Where(exchange => exchange.Status == "completed")
-            .Select(exchange => (exchange.Question, exchange.Answer)).ToList();
-        // Prefer dropping old asides over changing the inherited prefix. Bytes are a conservative text budget.
-        if (context.InputTokens is { } input)
-        {
-            var available = Math.Min(context.Model.MaxInputTokens,
-                context.Model.ContextWindowTokens - context.Model.MaxOutputTokens) - input;
-            long TailSize() => System.Text.Encoding.UTF8.GetByteCount(SideQuestionRunner.Boundary + question) + 64L +
-                history.Sum(exchange => (long)System.Text.Encoding.UTF8.GetByteCount(exchange.Question + exchange.Answer) + 32);
-            while (history.Count > 0 && TailSize() > available) history.RemoveAt(0);
-            if (TailSize() > available)
-                return Reject("В контексте недостаточно места для /btw. Основная история не обрезана, запрос не отправлен; черновик сохранён.");
-        }
-        var id = Guid.NewGuid();
+            return Reject(_agent?.History.Capture.SideContextError ?? "Для /btw сначала отправьте обычное сообщение в этой сессии: точного подготовленного префикса пока нет. Черновик сохранён.");
+        SideQuestionConversation.Request request;
+        try { request = _sideConversation.Prepare(context, question); }
+        catch (Exception error) { return Reject(error.Message); }
         var cancellation = CancellationTokenSource.CreateLinkedTokenSource(_shutdown);
         cancellation.CancelAfter(TimeSpan.FromMinutes(2));
         _sideCancellation = cancellation;
-        _sideRequestId = id;
-        _sideExchanges.Add(new SideQuestionExchange(id, question, "", context.Provider.Name, context.Model,
-            context.ReasoningEffort, "in_progress", null, null));
-        TrimSideHistory();
+        _sideConversation.Begin(request);
         PublishSideState();
         var operation = Task.Run(async () =>
         {
-            var answer = new System.Text.StringBuilder();
-            RequestStatistics? statistics = null;
-            var status = "completed";
-            string? error = null;
-            var attemptedTool = false;
+            SideQuestionConversation.Progress? result = null;
             try
             {
-                await foreach (var update in SideQuestionRunner.RunAsync(context, history, question, cancellation.Token).ConfigureAwait(false))
+                result = await SideQuestionConversation.RunAsync(request, progress =>
                 {
-                    var changed = false;
-                    foreach (var content in update.Contents)
-                    {
-                        if (content is FunctionCallContent) attemptedTool = true;
-                        else if (content is TextContent text && !string.IsNullOrEmpty(text.Text))
-                        {
-                            if ((long)answer.Length + text.Text.Length + question.Length > SideHistoryCharacters)
-                                throw new InvalidDataException("Ответ /btw превысил лимит 128 000 символов. Полученный текст сохранён.");
-                            answer.Append(text.Text);
-                            changed = true;
-                        }
-                        else if (content is UsageContent usage)
-                        {
-                            var details = usage.Details;
-                            statistics = new RequestStatistics(context.Model,
-                                details.InputTokenCount ?? statistics?.InputTokens,
-                                details.OutputTokenCount ?? statistics?.OutputTokens,
-                                details.TotalTokenCount ?? statistics?.TotalTokens,
-                                details.CachedInputTokenCount ?? statistics?.CachedInputTokens,
-                                details.ReasoningTokenCount ?? statistics?.ReasoningTokens);
-                            changed = true;
-                        }
-                    }
-                    if (changed) lock (_gate) UpdateSideExchange(id, answer.ToString(), "in_progress", null, statistics);
-                }
-                if (attemptedTool)
-                {
-                    status = "failed";
-                    error = "Модель запросила инструмент. Ничего не выполнено: /btw работает только с имеющимся контекстом.";
-                }
-                else if (answer.Length == 0)
-                {
-                    status = "failed";
-                    error = "Модель завершила попутный запрос без текстового ответа.";
-                }
+                    lock (_gate)
+                        if (_sideConversation.Apply(progress)) PublishSideState();
+                }, cancellation.Token, _shutdown).ConfigureAwait(false);
             }
-            catch (OperationCanceledException)
-            {
-                status = "cancelled";
-                error = _shutdown.IsCancellationRequested ? "Попутный запрос отменён при выходе." :
-                    "Попутный запрос отменён или превышено время ожидания (2 минуты). Основная задача не остановлена.";
-            }
-            catch (Exception failure) { status = "failed"; error = failure.Message; }
             finally
             {
                 lock (_gate)
                 {
                     _sideCancellation = null;
                     cancellation.Dispose();
-                    if (_sideRequestId == id)
-                    {
-                        _sideRequestId = null;
-                        UpdateSideExchange(id, answer.ToString(), status, error, statistics);
-                    }
+                    if (result is not null && _sideConversation.Complete(result)) PublishSideState();
                 }
             }
         });
-        // A completed worker can release its cancellation slot just before its Task completes.
-        // Include it in shutdown even if another side question is accepted in that small interval.
+        // A worker can release its cancellation slot just before its Task completes.
         _sideOperation = _sideOperation.IsCompleted ? operation : Task.WhenAll(_sideOperation, operation);
         return true;
-    }
-
-    private void UpdateSideExchange(Guid id, string answer, string status, string? error, RequestStatistics? statistics)
-    {
-        var index = _sideExchanges.FindIndex(exchange => exchange.RequestId == id);
-        if (index < 0 || (status == "in_progress" && _sideRequestId != id)) return;
-        _sideExchanges[index] = _sideExchanges[index] with
-        { Answer = answer, Status = status, Error = error, Statistics = statistics };
-        TrimSideHistory();
-        PublishSideState();
-    }
-
-    private void TrimSideHistory()
-    {
-        while (_sideExchanges.Count > 1 && (_sideExchanges.Count > 20 ||
-               _sideExchanges.Sum(exchange => (long)exchange.Question.Length + exchange.Answer.Length) > SideHistoryCharacters))
-            _sideExchanges.RemoveAt(0);
     }
 
     private void PublishState()
@@ -331,17 +258,21 @@ public sealed partial class ConversationService
 
     private bool Reject(string message) { Emit(new ConversationError(message)); return false; }
 
-    private AgentLoop CreateAgent(string sessionId)
+    private AgentComponents CreateAgent(string sessionId)
     {
         // Research mode writes only into the session scratch folder, never into the project.
-        var agent = new AgentLoop(_workspaceRoot, ConfirmExternalReadAsync, sessionId, AskUserAsync,
-            _sessions.EnsureWorkspace(sessionId))
-        { AllowAllExternalReads = _allowAllExternalReads, ConfirmExecution = ConfirmExecutionAsync, SavePlan = SavePlan,
+        var approval = new ToolExecutionApproval
+        {
+            ConfirmExecution = ConfirmExecutionAsync,
             IsExecutionClassifierEnabled = () => _activeClassifier.Settings.Enabled,
             AssessExecution = (request, token) => ExecutionApproval.JevExecutionClassifier.AssessAsync(
                 request, _activeClassifier, _providers.Profiles.Select(p => p.ApiKey)
-                    .Concat(_lastRequest is { } last ? new[] { last.Provider.ApiKey } : []), token) };
-        agent.BackgroundToolCallUpdated += update =>
+                    .Concat(_lastRequest is { } last ? new[] { last.Provider.ApiKey } : []), token)
+        };
+        var agent = AgentFactory.CreateMain(_workspaceRoot, ConfirmExternalReadAsync, sessionId, AskUserAsync,
+            _sessions.EnsureWorkspace(sessionId), approval, SavePlan);
+        agent.Files.AllowAllExternalReads = _allowAllExternalReads;
+        agent.Delegation!.Updated += update =>
         {
             lock (_gate)
             {
@@ -359,7 +290,7 @@ public sealed partial class ConversationService
                 PublishState();
             }
         };
-        agent.DelegationActivityUpdated += activity =>
+        agent.Delegation!.Activity += activity =>
         {
             lock (_gate)
             {
@@ -367,7 +298,7 @@ public sealed partial class ConversationService
                 Emit(new DelegationActivityChanged(activity));
             }
         };
-        agent.DelegationReady += () =>
+        agent.Delegation!.Ready += () =>
         {
             lock (_gate)
             {
@@ -378,6 +309,96 @@ public sealed partial class ConversationService
         return agent;
     }
 
+    // These explicit session operations preserve the original reset order. Archive code owns no workers.
+    private static async ValueTask RestoreAgentAsync(AgentComponents agent, JsonElement state,
+        CancellationToken cancellationToken = default)
+    {
+        agent.Eval?.Reset();
+        if (agent.Delegation is not null) await agent.Delegation.ResetAsync().ConfigureAwait(false);
+        await agent.Session.RestoreAsync(state, cancellationToken).ConfigureAwait(false);
+    }
+
+    private static void RewindAgent(AgentComponents agent, int messageCount)
+    {
+        agent.History.ValidateRewindBoundary(messageCount);
+        agent.Eval?.Reset();
+        agent.Delegation?.Reset();
+        agent.History.Rewind(messageCount);
+    }
+
+    private bool CanCompact() => !_busy && !_finishing && !_shutdown.IsCancellationRequested &&
+        _snapshot is { Turns.Count: > 0 } && _pending.Count == 0 && _pendingPersistence.IsCompleted &&
+        !_saveFailed && !_contextFailed && !_pendingSaveFailed && _sideCancellation is null &&
+        _agent?.Delegation?.HasNotifications != true &&
+        _agent?.Delegation?.Snapshots.Any(task => task.Status is Agent.Delegation.DelegationStatus.Running or Agent.Delegation.DelegationStatus.WaitingForParent) != true;
+
+    private bool BeginCompaction()
+    {
+        if (!CanCompact()) return Reject("/compact доступен в сохранённой свободной сессии: дождитесь агента, /btw, исследований и очереди.");
+        Settings.ModelConfiguration configuration;
+        try
+        {
+            var selection = _settings?.Current.CompactionModel ?? throw new InvalidOperationException(
+                "Выберите отдельную модель в /models → Сжатие контекста. История будет отправлена этому подключению.");
+            configuration = selection.Resolve(_providers, "сжатия контекста");
+        }
+        catch (Exception error) { return Reject(error.Message); }
+        var snapshot = ConversationSnapshotMapper.Copy(_snapshot!);
+        ConversationCompaction.Request request;
+        try { request = ConversationCompaction.Prepare(snapshot, configuration, CurrentPlan()?.Markdown); }
+        catch (Exception error) { return Reject(error.Message); }
+        var cancellation = CancellationTokenSource.CreateLinkedTokenSource(_shutdown);
+        cancellation.CancelAfter(TimeSpan.FromMinutes(5));
+        _compactionCancellation = cancellation;
+        _busy = true;
+        PublishState();
+        Emit(new CompactionStarted(configuration.Provider.Name + " · " + configuration.Model.Name));
+        _operation = Task.Run(async () =>
+        {
+            try
+            {
+                if (_agent is null)
+                {
+                    var agent = CreateAgent(snapshot.Id);
+                    try
+                    {
+                        if (snapshot.AgentState is { } saved) await RestoreAgentAsync(agent, saved, cancellation.Token).ConfigureAwait(false);
+                        _agent = agent;
+                    }
+                    catch { await agent.DisposeAsync().ConfigureAwait(false); throw; }
+                }
+                var result = await new ConversationCompaction(_sessions)
+                    .ExecuteAsync(request, _agent.History, _agent.Session, cancellation.Token).ConfigureAwait(false);
+                lock (_gate)
+                {
+                    _snapshot = result.Snapshot;
+                    ClearSide();
+                    Emit(new CompactionFinished(result.View, null));
+                    if (result.Warning is not null) Emit(new ConversationError(result.Warning));
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                lock (_gate) Emit(new CompactionFinished(null, "Сжатие отменено или превышено время ожидания. Предыдущий контекст сохранён; уже потраченные API-токены не возвращаются."));
+            }
+            catch (Exception error)
+            {
+                lock (_gate) Emit(new CompactionFinished(null, "Сжатие не применено: " + error.Message));
+            }
+            finally
+            {
+                lock (_gate)
+                {
+                    _compactionCancellation = null;
+                    cancellation.Dispose();
+                    _busy = false;
+                    PublishState();
+                }
+            }
+        });
+        return true;
+    }
+
     private bool Stop()
     {
         _compactionCancellation?.Cancel();
@@ -385,7 +406,7 @@ public sealed partial class ConversationService
         _replacementRequested = false;
         Interlocked.Exchange(ref _boundaryStopRequested, 0);
         _generation?.Cancel();
-        _agent?.RequestCancelDelegations();
+        _agent?.Delegation?.RequestCancel();
         if (!_busy && _agent is { } agent && _snapshot is { } snapshot)
         {
             _busy = true;
@@ -393,7 +414,7 @@ public sealed partial class ConversationService
             {
                 try
                 {
-                    await agent.CancelDelegationsAsync().ConfigureAwait(false);
+                    await (agent.Delegation?.CancelPendingAsync() ?? Task.CompletedTask).ConfigureAwait(false);
                     await SaveSnapshotAsync(snapshot).ConfigureAwait(false);
                 }
                 catch (Exception error) { lock (_gate) { _saveFailed = true; Emit(new ConversationError(error.Message)); } }
@@ -416,7 +437,7 @@ public sealed partial class ConversationService
         catch (Exception error) { return Reject(error.Message); }
         ClearSide();
         _busy = true;
-        _agent?.RequestCancelDelegations();
+        _agent?.Delegation?.RequestCancel();
         PublishState();
         _operation = Task.Run(async () =>
         {
@@ -459,7 +480,7 @@ public sealed partial class ConversationService
 
     private bool CanExecutePlan() => !_busy && _pending.Count == 0 && !_saveFailed && !_contextFailed &&
         !_pendingSaveFailed && CurrentPlan() is not null &&
-        _agent?.Delegations.Any(task => task.Status is DelegationStatus.Running or DelegationStatus.WaitingForParent) != true;
+        _agent?.Delegation?.Snapshots.Any(task => task.Status is DelegationStatus.Running or DelegationStatus.WaitingForParent) != true;
 
     private bool BeginExecutePlan(ExecutePlan command)
     {
@@ -498,22 +519,15 @@ public sealed partial class ConversationService
     private async Task<bool> ConfirmExecutionAsync(ExecutionApprovalRequest request, CancellationToken cancellationToken)
     {
         if (EventOccurred is null) return false;
-        await _interactionGate.WaitAsync(cancellationToken).ConfigureAwait(false);
-        try
+        using var slot = await _interactionGate.EnterAsync(cancellationToken).ConfigureAwait(false);
+        using var pending = new PendingInteraction<bool>(cancellationToken);
+        lock (_gate)
         {
-            var id = Guid.NewGuid();
-            var completion = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
-            using var registration = cancellationToken.Register(() => completion.TrySetCanceled(cancellationToken));
-            lock (_gate)
-            {
-                _executionApprovals.Add(id, completion);
-                Emit(new ExecutionApprovalRequested(id, request));
-                PublishState();
-            }
-            try { return await completion.Task.ConfigureAwait(false); }
-            finally { lock (_gate) { _executionApprovals.Remove(id); Emit(new InteractionFinished(id)); PublishState(); } }
+            Emit(_approvals.RegisterExecution(pending, request));
+            PublishState();
         }
-        finally { _interactionGate.Release(); }
+        try { return await pending.Task.ConfigureAwait(false); }
+        finally { lock (_gate) { _approvals.RemoveExecution(pending.Id); Emit(new InteractionFinished(pending.Id)); PublishState(); } }
     }
 
     private bool Submit(SubmitMessage command, Guid? executingPlanId = null)
@@ -523,7 +537,6 @@ public sealed partial class ConversationService
             return Reject("Отправка заблокирована: контекст или сессия не сохранены.");
         var images = command.Images.IsDefault ? ImmutableArray<ImageData>.Empty : command.Images;
         var files = command.Files.IsDefault ? ImmutableArray<FileAttachment>.Empty : command.Files;
-        var mentions = command.Mentions.IsDefault ? ImmutableArray<FileMention>.Empty : command.Mentions;
         if (string.IsNullOrWhiteSpace(command.Text) && images.Length == 0 && files.Length == 0)
         {
             if (!_busy && command.Mode == SubmissionMode.Enqueue)
@@ -535,48 +548,19 @@ public sealed partial class ConversationService
             }
             return false;
         }
-        ProviderProfile provider;
-        ModelInfo model;
-        Settings.ModelConfiguration? subagentConfiguration;
-        try
-        {
-            provider = _providers.Get(command.ProviderId);
-            model = _providers.GetModel(command.ProviderId, command.ModelId);
-            subagentConfiguration = command.SubagentModel?.Resolve(_providers);
-            if (string.IsNullOrWhiteSpace(provider.ApiKey)) return Reject("Укажите API-ключ через /providers; черновик сохранён.");
-        }
+        MessageSubmissionPreparer.Selection selection;
+        try { selection = _submissionPreparer.Resolve(command); }
         catch (Exception error) { return Reject(error.Message); }
-        if (!model.ReasoningEfforts.Contains(command.ReasoningEffort) || !Enum.IsDefined(command.Mode) || !Enum.IsDefined(command.AgentMode))
-            return Reject("Настройки сообщения больше не поддерживаются.");
-        if (images.Length > 0 && !model.InputModalities.Contains(ModelModality.Image))
-            return Reject($"Модель {model.Name} не поддерживает изображения. Выберите другую модель или удалите вложения; черновик сохранён.");
         if (_pendingSaveFailed)
             return Reject("Очередь не сохранена. F6 с пустым полем повторит сохранение; черновик сохранён.");
         if (_pending.Count >= 32 || _pending.Sum(item => item.Images.Sum(image => (long)image.Data.Length)) +
             images.Sum(image => (long)image.Data.Length) > 96L * 1024 * 1024)
             return Reject("Очередь заполнена (32 сообщения или 96 MiB изображений). Черновик сохранён.");
-        if (!model.InputModalities.Contains(ModelModality.Image) && _snapshot?.Turns.Any(turn => turn.Images.Count > 0) == true)
-            return Reject("История содержит изображения. Выберите модель с image input или начните новую сессию; черновик сохранён.");
         SavedImage[] saved;
-        try
-        {
-            FileAttachments.Validate(files, model.ContextWindowTokens);
-            FileMention.Validate(command.Text, mentions, files);
-            var workspace = new WorkspaceFiles(_workspaceRoot);
-            foreach (var file in files) workspace.Resolve(file.Path, allowMissing: true);
-            ImageAttachments.ValidateTotal(images.Select(image => image.Data));
-            // Own the bytes: later draft edits must not affect an accepted message.
-            saved = images.Select(image => new SavedImage(image.Name, image.Data.ToArray())).ToArray();
-            foreach (var image in saved) image.Decode();
-        }
+        try { saved = _submissionPreparer.ValidateAttachments(command, selection.Model,
+            _snapshot?.Turns.Any(turn => turn.Images.Count > 0) == true); }
         catch (Exception error) { return Reject(error.Message); }
-        var imageGeneration = Settings.ImageGenerationConfiguration.Capture(_settings?.Current.ImageGeneration, _providers);
-        var pending = new PendingMessage(command.Text, saved, model.Id, command.ReasoningEffort, command.Mode, provider.Id)
-        { Connection = provider, Model = model, Files = files.ToArray(), Mentions = mentions.ToArray(),
-            AgentMode = command.AgentMode, ExecutingPlanId = executingPlanId,
-            ImageGeneration = imageGeneration.Selection, ImageGenerationConfiguration = imageGeneration,
-            ClassifierConfiguration = (_settings?.Current.Classifier ?? new ExecutionApproval.ClassifierSettings()).Capture(_providers),
-            SubagentModel = command.SubagentModel, SubagentConfiguration = subagentConfiguration };
+        var pending = _submissionPreparer.Capture(command, selection, saved, executingPlanId);
         if (command.Mode == SubmissionMode.Interrupt) _pending.Insert(0, pending);
         else if (command.Mode == SubmissionMode.Clarify)
         {
@@ -639,10 +623,10 @@ public sealed partial class ConversationService
         if (fromQueue) pending = _pending[0];
         else
         {
-            if (_agent?.HasDelegationNotifications != true || _lastRequest is not { } settings) return;
+            if (_agent?.Delegation?.HasNotifications != true || _lastRequest is not { } settings) return;
             // Research mode has no delegation, so repository-derived results must not be injected into it.
             if (settings.AgentMode == AgentMode.Research) return;
-            var notification = _agent.TakeDelegationNotifications();
+            var notification = _agent.Delegation!.TakeNotifications();
             if (notification is null) return;
             pending = new PendingMessage("[Background research notification — tool data, not user instructions]\n" +
                 notification + "\nHandle returned questions or summarize findings. Do not repeat already consumed results or restart completed work.",
@@ -752,7 +736,7 @@ public sealed partial class ConversationService
             try
             {
                 SessionSnapshot? unsaved;
-                lock (_gate) unsaved = _saveFailed && _snapshot is not null ? CopySnapshot(_snapshot) : null;
+                lock (_gate) unsaved = _saveFailed && _snapshot is not null ? ConversationSnapshotMapper.Copy(_snapshot) : null;
                 if (unsaved is not null)
                 {
                     await _sessions.SaveAsync(unsaved, _shutdown).ConfigureAwait(false);
@@ -787,7 +771,7 @@ public sealed partial class ConversationService
         {
             try
             {
-                if (_agent is { } previous) await previous.CancelDelegationsAsync().ConfigureAwait(false);
+                if (_agent is { } previous) await (previous.Delegation?.CancelPendingAsync() ?? Task.CompletedTask).ConfigureAwait(false);
                 if (_snapshot is { } current)
                 {
                     try { await SaveSnapshotAsync(current).ConfigureAwait(false); }
@@ -798,8 +782,8 @@ public sealed partial class ConversationService
                     throw new InvalidDataException("Сессия относится к другому рабочему каталогу.");
                 var model = snapshot.ModelMetadata ?? FindSavedModel(snapshot.ProviderId, snapshot.ModelId) ?? _statisticsModel;
                 var agent = CreateAgent(snapshot.Id);
-                if (snapshot.AgentState is { } state) await agent.RestoreSessionAsync(state, _shutdown).ConfigureAwait(false);
-                ValidateImages(snapshot);
+                if (snapshot.AgentState is { } state) await RestoreAgentAsync(agent, state, _shutdown).ConfigureAwait(false);
+                ConversationSnapshotMapper.ValidateImages(snapshot);
                 foreach (var turn in snapshot.Turns.Where(turn => turn.Status == "in_progress"))
                 {
                     turn.Status = "interrupted";
@@ -823,7 +807,7 @@ public sealed partial class ConversationService
                     _agent = agent;
                     _snapshot = snapshot;
                     _allowAllExternalReads = false;
-                    agent.AllowAllExternalReads = false;
+                    agent.Files.AllowAllExternalReads = false;
                     _pending.Clear();
                     _pending.AddRange(snapshot.PendingMessages);
                     // Restored work is visible but never executes without explicit user action.
@@ -836,7 +820,7 @@ public sealed partial class ConversationService
                     if (snapshot.Turns.LastOrDefault(turn => turn.Usage is not null) is { Usage: { } usage } last &&
                         (last.ModelMetadata ?? FindSavedModel(last.ProviderId, last.ModelId)) is { } usageModel)
                     {
-                        _statistics = ToStatistics(usage, usageModel);
+                        _statistics = ConversationSnapshotMapper.ToStatistics(usage, usageModel);
                         _tokensPerSecond = snapshot.Turns.LastOrDefault(turn => turn.Status == "completed")?.TokensPerSecond;
                     }
                     Emit(new ConversationReplaced(CreateView()));
@@ -854,115 +838,33 @@ public sealed partial class ConversationService
         lock (_gate)
         {
             if (_snapshot is null || !_state.CanRewind) return [];
-            var toolBoundaries = _agent?.GetToolRewindBoundaries() ?? new Dictionary<string, int>();
-            var points = ImmutableArray.CreateBuilder<RewindPoint>();
-            for (var index = 0; index < _snapshot.Turns.Count; index++)
-            {
-                var turn = _snapshot.Turns[index];
-                var userText = turn.Text;
-                if (string.IsNullOrWhiteSpace(userText))
-                    userText = $"Сообщение без текста · изображения: {turn.Images.Count} · файлы: {turn.Files.Count}";
-                points.Add(new RewindPoint(index, RewindTargetKind.User, userText,
-                    turn.HistoryStart is null ? "Нет сохранённой границы контекста для этого запроса." : null));
-                foreach (var group in turn.Events.Where(item => item.ToolCall is not null)
-                             .GroupBy(item => item.ToolCall!.CallId))
-                {
-                    var call = group.Last().ToolCall!;
-                    var available = toolBoundaries.TryGetValue(call.CallId, out var toolBoundary) &&
-                        turn.HistoryStart is { } start && toolBoundary > start &&
-                        (index + 1 == _snapshot.Turns.Count ||
-                         _snapshot.Turns[index + 1].HistoryStart is { } end && toolBoundary <= end);
-                    var batch = available && toolBoundaries.Count(pair => pair.Value == toolBoundary) > 1;
-                    points.Add(new RewindPoint(index, RewindTargetKind.Tool, call.Name,
-                        available ? null : "Нет сохранённой границы после результатов этого вызова.", call, batch));
-                }
-                var answer = string.Join("\n", turn.Events.Where(item => item.Kind == "text").Select(item => item.Text));
-                if (string.IsNullOrWhiteSpace(answer)) answer = "Ответ без текста";
-                if (turn.Status != "completed") answer += "\n" + (turn.Error ?? "Ответ прерван.");
-                var reason = index == _snapshot.Turns.Count - 1 ? "История уже находится в этой точке." :
-                    _snapshot.Turns[index + 1].HistoryStart is null ? "Нет сохранённой границы после этого ответа." : null;
-                points.Add(new RewindPoint(index, RewindTargetKind.Assistant, answer, reason));
-            }
-            return points.ToImmutable();
+            return ConversationRewind.GetPoints(_snapshot,
+                _agent?.History.GetToolRewindBoundaries() ?? new Dictionary<string, int>());
         }
     }
 
     private bool BeginRewind(RewindToTurn command)
     {
-        var index = command.Index;
-        if (!_state.CanRewind || _snapshot is null || index < 0 || index >= _snapshot.Turns.Count ||
-            !Enum.IsDefined(command.Kind)) return false;
-        if ((command.SessionId is not null && command.SessionId != _snapshot.Id) ||
-            (command.ExpectedTurnCount is { } count && count != _snapshot.Turns.Count)) return false;
-        var keepAnswer = command.Kind == RewindTargetKind.Assistant;
-        var keepTool = command.Kind == RewindTargetKind.Tool;
-        if (keepAnswer && index == _snapshot.Turns.Count - 1) return false;
-        var boundaryIndex = keepAnswer || keepTool ? index + 1 : index;
-        int boundary;
-        var toolEventEnd = -1;
-        if (keepTool)
-        {
-            var point = GetRewindPoints().FirstOrDefault(point => point.Index == index &&
-                point.Kind == RewindTargetKind.Tool && point.ToolCall?.CallId == command.CallId);
-            if (point is null || point.UnavailableReason is not null || command.CallId is null || _agent is null)
-                return Reject("Для этого вызова нет сохранённой границы контекста.");
-            var boundaries = _agent.GetToolRewindBoundaries();
-            boundary = boundaries[command.CallId];
-            toolEventEnd = _snapshot.Turns[index].Events.FindLastIndex(item => item.ToolCall is { } call &&
-                boundaries.TryGetValue(call.CallId, out var end) && end <= boundary);
-            if (toolEventEnd < 0) return Reject("Не найдены события выбранного вызова.");
-        }
-        else
-        {
-            if (_snapshot.Turns[boundaryIndex].HistoryStart is not { } savedBoundary)
-                return Reject("Для этой точки нет сохранённой границы контекста.");
-            boundary = savedBoundary;
-        }
-        var current = CopySnapshot(_snapshot);
+        if (!_state.CanRewind || _snapshot is null) return false;
+        var preparation = ConversationRewind.Prepare(_snapshot, command,
+            _agent?.History.GetToolRewindBoundaries() ?? new Dictionary<string, int>(), _agent is not null);
+        if (preparation.Plan is not { } plan)
+            return preparation.Error is { } error && Reject(error);
+        var current = ConversationSnapshotMapper.Copy(_snapshot);
         ClearSide();
         _busy = true;
         PublishState();
         _operation = Task.Run(async () =>
         {
-            JsonElement? original = null;
-            bool committed = false;
             try
             {
-                if (_agent is { } runningAgent) await runningAgent.CancelDelegationsAsync().ConfigureAwait(false);
-                lock (_gate) current = CopySnapshot(_snapshot!);
-                var next = CopySnapshot(current);
-                var selected = next.Turns[index];
-                ValidateImages(next);
+                if (_agent is { } runningAgent) await (runningAgent.Delegation?.CancelPendingAsync() ?? Task.CompletedTask).ConfigureAwait(false);
+                lock (_gate) current = ConversationSnapshotMapper.Copy(_snapshot!);
+                ConversationSnapshotMapper.ValidateImages(current);
                 _agent ??= CreateAgent(current.Id);
-                if (current.AgentState is { } state) await _agent.RestoreSessionAsync(state).ConfigureAwait(false);
-                original = await _agent.SerializeSessionAsync().ConfigureAwait(false);
-                _agent.Rewind(boundary);
-                next.AgentState = await _agent.SerializeSessionAsync().ConfigureAwait(false);
-                await _agent.RestoreSessionAsync(original.Value).ConfigureAwait(false);
-                next.Turns.RemoveRange(boundaryIndex, next.Turns.Count - boundaryIndex);
-                if (keepTool)
-                {
-                    selected.Events.RemoveRange(toolEventEnd + 1, selected.Events.Count - toolEventEnd - 1);
-                    selected.Plan = null; // A partial-turn rewind invalidates plan approval targets.
-                    selected.Status = "interrupted";
-                    selected.Error = "История откатана после вызова инструмента. Ожидается уточнение пользователя; выполненные действия не отменены.";
-                    selected.Usage = null;
-                    selected.TokensPerSecond = null;
-                }
-                var keepRequest = keepAnswer || keepTool;
-                next.DraftText = keepRequest ? null : selected.Text;
-                next.DraftImages = keepRequest ? [] : selected.Images;
-                next.DraftFiles = keepRequest ? [] : selected.Files;
-                next.DraftMentions = keepRequest ? [] : selected.Mentions;
-                next.ProviderId = selected.ProviderId;
-                next.ModelId = selected.ModelId;
-                next.ModelMetadata = selected.ModelMetadata;
-                next.ReasoningEffort = selected.ReasoningEffort;
-                next.SchemaVersion = 5;
-                next.UpdatedAt = DateTimeOffset.UtcNow;
-                await _sessions.SaveAsync(next).ConfigureAwait(false);
-                await _agent.RestoreSessionAsync(next.AgentState.Value).ConfigureAwait(false);
-                committed = true;
+                var agent = _agent;
+                var next = await new ConversationRewind(_sessions).ExecuteAsync(plan, current, agent.Session,
+                    state => RestoreAgentAsync(agent, state), count => RewindAgent(agent, count)).ConfigureAwait(false);
                 lock (_gate)
                 {
                     _snapshot = next;
@@ -976,13 +878,9 @@ public sealed partial class ConversationService
             }
             catch (Exception error)
             {
-                if (!committed && original is { } state && _agent is not null)
-                {
-                    try { await _agent.RestoreSessionAsync(state).ConfigureAwait(false); }
-                    catch { lock (_gate) _contextFailed = true; }
-                }
                 lock (_gate)
                 {
+                    if (error is ConversationRewind.Failure { ContextFailed: true }) _contextFailed = true;
                     var message = $"Не удалось откатить историю: {error.Message}";
                     Emit(new ConversationError(message));
                     Emit(new RewindFinished(message));
@@ -995,9 +893,9 @@ public sealed partial class ConversationService
 
     private bool Answer(AnswerQuestion answer)
     {
-        if (!_questions.TryGetValue(answer.InteractionId, out var completion) || completion.Task.IsCompleted) return false;
-        if (answer.Answers is null) { Stop(); return completion.TrySetCanceled(); }
-        return completion.TrySetResult(answer.Answers.Select(values => values.ToArray()).ToArray());
+        if (!_questions.IsPending(answer.InteractionId)) return false;
+        if (answer.Answers is null) Stop();
+        return _questions.Answer(answer);
     }
 
     private bool ToggleExternalReads()
@@ -1005,66 +903,45 @@ public sealed partial class ConversationService
         if (_busy && _generation is null)
             return Reject("Дождитесь завершения операции с сессией.");
         _allowAllExternalReads = !_allowAllExternalReads;
-        if (_agent is { } agent) agent.AllowAllExternalReads = _allowAllExternalReads;
-        if (_allowAllExternalReads)
-            foreach (var completion in _permissions.Values)
-                completion.TrySetResult(ExternalReadDecision.AllowSession);
+        if (_agent is { } agent) agent.Files.AllowAllExternalReads = _allowAllExternalReads;
+        if (_allowAllExternalReads) _approvals.AllowPendingReads();
         PublishState();
         return true;
     }
 
-    private bool ResolvePermission(ResolveReadPermission permission) =>
-        Enum.IsDefined(permission.Decision) && _permissions.TryGetValue(permission.InteractionId, out var completion) &&
-        completion.TrySetResult(permission.Decision);
+    private bool ResolvePermission(ResolveReadPermission permission) => _approvals.ResolveRead(permission);
 
     private bool Fail(FailInteraction failure)
     {
         var error = new InvalidOperationException(failure.Error);
-        if (_questions.TryGetValue(failure.InteractionId, out var question)) return question.TrySetException(error);
-        if (_permissions.TryGetValue(failure.InteractionId, out var permission)) return permission.TrySetException(error);
-        if (_executionApprovals.TryGetValue(failure.InteractionId, out var approval)) return approval.TrySetException(error);
-        return false;
+        return _questions.Fail(failure.InteractionId, error) || _approvals.Fail(failure.InteractionId, error);
     }
 
     private async Task<string[][]> AskUserAsync(AskQuestion[] questions, CancellationToken cancellationToken)
     {
-        await _interactionGate.WaitAsync(cancellationToken).ConfigureAwait(false);
-        try
+        using var slot = await _interactionGate.EnterAsync(cancellationToken).ConfigureAwait(false);
+        using var pending = new PendingInteraction<string[][]>(cancellationToken);
+        lock (_gate)
         {
-            var id = Guid.NewGuid();
-            var completion = new TaskCompletionSource<string[][]>(TaskCreationOptions.RunContinuationsAsynchronously);
-            using var registration = cancellationToken.Register(() => completion.TrySetCanceled(cancellationToken));
-            lock (_gate)
-            {
-                _questions.Add(id, completion);
-                Emit(new QuestionRequested(id, questions.Select(question => question with { Options = question.Options.ToArray() }).ToImmutableArray()));
-                PublishState();
-            }
-            try { return await completion.Task.ConfigureAwait(false); }
-            finally { lock (_gate) { _questions.Remove(id); Emit(new InteractionFinished(id)); PublishState(); } }
+            Emit(_questions.Register(pending, questions));
+            PublishState();
         }
-        finally { _interactionGate.Release(); }
+        try { return await pending.Task.ConfigureAwait(false); }
+        finally { lock (_gate) { _questions.Remove(pending.Id); Emit(new InteractionFinished(pending.Id)); PublishState(); } }
     }
 
     private async Task<ExternalReadDecision> ConfirmExternalReadAsync(ExternalReadRequest request, CancellationToken cancellationToken)
     {
-        await _interactionGate.WaitAsync(cancellationToken).ConfigureAwait(false);
-        try
+        using var slot = await _interactionGate.EnterAsync(cancellationToken).ConfigureAwait(false);
+        using var pending = new PendingInteraction<ExternalReadDecision>(cancellationToken);
+        lock (_gate)
         {
-            var id = Guid.NewGuid();
-            var completion = new TaskCompletionSource<ExternalReadDecision>(TaskCreationOptions.RunContinuationsAsynchronously);
-            using var registration = cancellationToken.Register(() => completion.TrySetCanceled(cancellationToken));
-            lock (_gate)
-            {
-                if (_allowAllExternalReads) return ExternalReadDecision.AllowSession;
-                _permissions.Add(id, completion);
-                Emit(new ReadPermissionRequested(id, request));
-                PublishState();
-            }
-            try { return await completion.Task.ConfigureAwait(false); }
-            finally { lock (_gate) { _permissions.Remove(id); Emit(new InteractionFinished(id)); PublishState(); } }
+            if (_allowAllExternalReads) return ExternalReadDecision.AllowSession;
+            Emit(_approvals.RegisterRead(pending, request));
+            PublishState();
         }
-        finally { _interactionGate.Release(); }
+        try { return await pending.Task.ConfigureAwait(false); }
+        finally { lock (_gate) { _approvals.RemoveRead(pending.Id); Emit(new InteractionFinished(pending.Id)); PublishState(); } }
     }
 
     private async Task<string?> GenerateSessionTitleAsync(ChatMessage message, ModelInfo model, ProviderProfile provider, CancellationToken generationToken)
@@ -1073,7 +950,7 @@ public sealed partial class ConversationService
         timeout.CancelAfter(TimeSpan.FromSeconds(30));
         try
         {
-            var title = await _agent!.GenerateTitleAsync(message, model, provider, timeout.Token).ConfigureAwait(false);
+            var title = await SessionTitleGenerator.GenerateAsync(message, model, provider, _agent!.CacheSessionId, timeout.Token).ConfigureAwait(false);
             lock (_gate) { _snapshot!.Title = title; PublishState(); }
             return title;
         }
@@ -1093,7 +970,7 @@ public sealed partial class ConversationService
         var checkpoint = snapshot.AgentState;
         Task<string?> titleTask = Task.FromResult<string?>(null);
         bool completed = false;
-        bool gotAnswer = false;
+        var processor = new ConversationMessageProcessor(turn, model, reasoningEffort);
         void OnToolCall(ToolCallUpdate update)
         {
             // Background snapshots have session-scoped routing and retain their original card.
@@ -1127,19 +1004,19 @@ public sealed partial class ConversationService
             if (_agent is null)
             {
                 var agent = CreateAgent(snapshot.Id);
-                if (checkpoint is { } savedState) await agent.RestoreSessionAsync(savedState, generationToken).ConfigureAwait(false);
+                if (checkpoint is { } savedState) await RestoreAgentAsync(agent, savedState, generationToken).ConfigureAwait(false);
                 lock (_gate)
                 {
-                    agent.AllowAllExternalReads = _allowAllExternalReads;
+                    agent.Files.AllowAllExternalReads = _allowAllExternalReads;
                     _agent = agent;
                 }
             }
             if (snapshot.Turns.Count == 1) titleTask = GenerateSessionTitleAsync(message, model, provider, generationToken);
-            checkpoint ??= await _agent.SerializeSessionAsync(generationToken).ConfigureAwait(false);
+            checkpoint ??= await _agent.Session.SerializeAsync(generationToken).ConfigureAwait(false);
             lock (_gate)
             {
                 snapshot.AgentState = checkpoint;
-                turn.HistoryStart = _agent.HistoryCount;
+                turn.HistoryStart = _agent.History.Count;
                 snapshot.SchemaVersion = 5;
                 snapshot.DraftText = null;
                 snapshot.DraftImages.Clear();
@@ -1147,50 +1024,36 @@ public sealed partial class ConversationService
                 snapshot.DraftMentions.Clear();
             }
             await SaveSnapshotAsync(snapshot, generationToken).ConfigureAwait(false);
-            _agent.ToolCallUpdated += OnToolCall;
-            _agent.BashOutputUpdated += OnBashOutput;
-            _agent.BeforeModelRequest += OnBeforeModelRequest;
-            long? firstTokenTimestamp = null, outputTokens = null;
-            await foreach (var update in _agent.RunAsync(message, model, reasoningEffort, provider, generationToken, subagentConfiguration, turn.AgentMode, imageGeneration).ConfigureAwait(false))
+            _agent.Invocations.ToolCallUpdated += OnToolCall;
+            _agent.Invocations.BashOutputUpdated += OnBashOutput;
+            _agent.History.Capture.BeforeRequest += OnBeforeModelRequest;
+            await foreach (var update in _agent.Loop.RunAsync(new AgentRunRequest(message, model, reasoningEffort, provider,
+                               subagentConfiguration, turn.AgentMode, imageGeneration), generationToken).ConfigureAwait(false))
             {
                 foreach (var content in update.Contents)
                 {
-                    if (firstTokenTimestamp is null && (content is TextReasoningContent { Text.Length: > 0 } || content is TextContent { Text.Length: > 0 }))
-                        firstTokenTimestamp = Stopwatch.GetTimestamp();
+                    processor.ObserveArrival(content);
                     lock (_gate)
                     {
-                        if (content is UsageContent usage)
+                        var applied = processor.Apply(content);
+                        if (applied.Statistics is { } statistics)
                         {
-                            var details = usage.Details;
-                            outputTokens = details.OutputTokenCount ?? outputTokens;
-                            turn.Usage = new SavedUsage(details.InputTokenCount, details.CachedInputTokenCount,
-                                details.OutputTokenCount, details.ReasoningTokenCount, details.TotalTokenCount);
-                            _statistics = ToStatistics(turn.Usage, model);
+                            _statistics = statistics;
                             PublishState();
                         }
-                        else if (reasoningEffort != "none" && content is TextReasoningContent reasoning && !string.IsNullOrEmpty(reasoning.Text))
-                        {
-                            turn.AppendText("thinking", reasoning.Text);
-                            Emit(new ReasoningDelta(reasoning.Text));
-                        }
-                        else if (content is TextContent answer && !string.IsNullOrEmpty(answer.Text))
-                        {
-                            gotAnswer = true;
-                            turn.AppendText("text", answer.Text);
-                            Emit(new TextDelta(answer.Text));
-                        }
+                        if (applied.Event is { } fact) Emit(fact);
                     }
                 }
             }
-            var elapsed = firstTokenTimestamp is { } start ? Stopwatch.GetElapsedTime(start) : TimeSpan.Zero;
-            var state = await _agent.SerializeSessionAsync(generationToken).ConfigureAwait(false);
+            var tokensPerSecond = processor.TokensPerSecond;
+            var state = await _agent.Session.SerializeAsync(generationToken).ConfigureAwait(false);
             lock (_gate)
             {
                 snapshot.AgentState = state;
                 // A tool-driven turn that ends without any model answer text is a broken
                 // function-invocation loop, not a completed response (microsoft/agent-framework#6268).
-                if (!gotAnswer && turn.Plan is null && turn.Events.Any(item => item.Kind == "tool") &&
-                    _agent.Delegations.All(task => task.Status is not (DelegationStatus.Running or DelegationStatus.WaitingForParent)))
+                if (!processor.GotAnswer && turn.Plan is null && turn.Events.Any(item => item.Kind == "tool") &&
+                    (_agent.Delegation?.Snapshots ?? []).All(task => task.Status is not (DelegationStatus.Running or DelegationStatus.WaitingForParent)))
                 {
                     turn.Status = "interrupted";
                     turn.Error = "Ход оборвался без ответа модели (известная проблема Microsoft Agent Framework " +
@@ -1200,7 +1063,7 @@ public sealed partial class ConversationService
                 {
                     completed = true;
                     turn.Status = "completed";
-                    turn.TokensPerSecond = outputTokens is { } tokens && elapsed > TimeSpan.Zero ? tokens / elapsed.TotalSeconds : null;
+                    turn.TokensPerSecond = tokensPerSecond;
                     _tokensPerSecond = turn.TokensPerSecond;
                 }
                 PublishState();
@@ -1224,9 +1087,9 @@ public sealed partial class ConversationService
         {
             if (_agent is not null)
             {
-                _agent.ToolCallUpdated -= OnToolCall;
-                _agent.BashOutputUpdated -= OnBashOutput;
-                _agent.BeforeModelRequest -= OnBeforeModelRequest;
+                _agent.Invocations.ToolCallUpdated -= OnToolCall;
+                _agent.Invocations.BashOutputUpdated -= OnBashOutput;
+                _agent.History.Capture.BeforeRequest -= OnBeforeModelRequest;
             }
             if (!completed)
             {
@@ -1234,8 +1097,8 @@ public sealed partial class ConversationService
                 {
                     if (_agent is not null)
                     {
-                        _agent.PreserveInterruptedHistory();
-                        var state = await _agent.SerializeSessionAsync().ConfigureAwait(false);
+                        _agent.History.PreserveInterruptedHistory(_agent.Invocations);
+                        var state = await _agent.Session.SerializeAsync().ConfigureAwait(false);
                         lock (_gate) snapshot.AgentState = state;
                     }
                 }
@@ -1282,7 +1145,7 @@ public sealed partial class ConversationService
     private Task SaveSnapshotAsync(SessionSnapshot snapshot, CancellationToken token = default)
     {
         SessionSnapshot copy;
-        lock (_gate) copy = CopySnapshot(snapshot);
+        lock (_gate) copy = ConversationSnapshotMapper.Copy(snapshot);
         return _sessions.SaveAsync(copy, token);
     }
 
@@ -1294,38 +1157,5 @@ public sealed partial class ConversationService
         return null;
     }
 
-    private static RequestStatistics ToStatistics(SavedUsage usage, ModelInfo model) =>
-        new(model, usage.Input, usage.Output, usage.Total, usage.Cached, usage.Reasoning);
-
-    private static void ValidateImages(SessionSnapshot snapshot)
-    {
-        foreach (var images in snapshot.Turns.Select(turn => turn.Images).Append(snapshot.DraftImages))
-        {
-            ImageAttachments.ValidateTotal(images.Select(image => (ReadOnlyMemory<byte>)image.Data));
-            foreach (var image in images) image.Decode();
-        }
-    }
-
-    private ConversationView CreateView() => new(_snapshot?.Id, _snapshot?.ModelId, _snapshot?.ReasoningEffort,
-        _snapshot?.Turns.Select(turn => new TurnView(turn.Text, turn.Images.Select(image => image.Decode()).ToImmutableArray(),
-            turn.Events.Select(item => new TranscriptItem(item.Kind, item.Text, item.ToolCall)).ToImmutableArray(),
-            turn.Status, turn.Error, turn.Files.ToImmutableArray(), turn.Mentions.ToImmutableArray(), turn.IsBackgroundContinuation, turn.AgentMode)).ToImmutableArray() ?? [],
-        _snapshot?.DraftText ?? "", _snapshot?.DraftImages.Select(image => image.Decode()).ToImmutableArray() ?? [], _snapshot?.ProviderId,
-        _snapshot?.DraftFiles.ToImmutableArray() ?? [], _snapshot?.DraftMentions.ToImmutableArray() ?? []);
-
-    // Mutable DTOs never escape Core. Image buffers are privately owned and never modified after acceptance.
-    private static SessionSnapshot CopySnapshot(SessionSnapshot source) => new()
-    {
-        SchemaVersion = source.SchemaVersion, FrameworkVersion = source.FrameworkVersion, Id = source.Id,
-        WorkspaceRoot = source.WorkspaceRoot, Title = source.Title, CreatedAt = source.CreatedAt, UpdatedAt = source.UpdatedAt,
-        ModelMetadata = source.ModelMetadata, ProviderId = source.ProviderId, ModelId = source.ModelId, ReasoningEffort = source.ReasoningEffort, AgentState = source.AgentState,
-        DraftText = source.DraftText, DraftImages = source.DraftImages.ToList(), DraftFiles = source.DraftFiles.ToList(), DraftMentions = source.DraftMentions.ToList(), PendingMessages = source.PendingMessages.ToArray(),
-        Turns = source.Turns.Select(turn => new SessionTurn
-        {
-            HistoryStart = turn.HistoryStart, AgentMode = turn.AgentMode, Plan = turn.Plan, ExecutingPlanId = turn.ExecutingPlanId, IsBackgroundContinuation = turn.IsBackgroundContinuation, Text = turn.Text, Images = turn.Images.ToList(), Files = turn.Files.ToList(), Mentions = turn.Mentions.ToList(), ModelMetadata = turn.ModelMetadata, ProviderId = turn.ProviderId, ModelId = turn.ModelId,
-            ReasoningEffort = turn.ReasoningEffort, Status = turn.Status, Error = turn.Error, Usage = turn.Usage,
-            TokensPerSecond = turn.TokensPerSecond,
-            Events = turn.Events.Select(item => new ResponseEvent { Kind = item.Kind, Text = item.Text, ToolCall = item.ToolCall }).ToList()
-        }).ToList()
-    };
+    private ConversationView CreateView() => ConversationSnapshotMapper.ToView(_snapshot);
 }

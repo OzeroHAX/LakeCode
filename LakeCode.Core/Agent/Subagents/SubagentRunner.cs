@@ -1,5 +1,6 @@
 using LakeCode.Core.Agent.Delegation;
 using LakeCode.Core.Agent.Execution;
+using LakeCode.Core.Agent.Composition;
 using LakeCode.Core.Agent.Prompt;
 using LakeCode.Core.Agent.Tools;
 using LakeCode.Core.Agent.Tools.ReadFile;
@@ -14,7 +15,7 @@ namespace LakeCode.Core.Agent.Subagents;
 /// <summary>Independent read-only executor; reuses session mechanics, not a user-facing role.</summary>
 internal sealed class SubagentRunner : IDisposable
 {
-    private readonly AgentLoop _session;
+    private readonly AgentComponents _components;
 
     public SubagentRunner(WorkspaceFiles files, SystemPromptContext context, InstructionsReader instructions,
         AskParentTool questions, string permissionCallId)
@@ -34,29 +35,29 @@ internal sealed class SubagentRunner : IDisposable
         agent.AddTool(listDirectory.AgentTool());
         agent.AddTool(grep.AgentTool());
         agent.AddTool(questions.AgentTool());
-        _session = new AgentLoop(files, configuration);
+        _components = AgentFactory.CreateSubagent(files, configuration);
     }
 
     public event Action? BeforeModelRequest
     {
-        add => _session.BeforeModelRequest += value;
-        remove => _session.BeforeModelRequest -= value;
+        add => _components.History.Capture.BeforeRequest += value;
+        remove => _components.History.Capture.BeforeRequest -= value;
     }
     public event Action<ToolCallUpdate>? ToolCallUpdated
     {
-        add => _session.ToolCallUpdated += value;
-        remove => _session.ToolCallUpdated -= value;
+        add => _components.Invocations.ToolCallUpdated += value;
+        remove => _components.Invocations.ToolCallUpdated -= value;
     }
     public event Action<ChatResponse>? ResponseCompleted
     {
-        add => _session.ResponseCompleted += value;
-        remove => _session.ResponseCompleted -= value;
+        add => _components.History.Capture.ResponseCompleted += value;
+        remove => _components.History.Capture.ResponseCompleted -= value;
     }
 
     public IAsyncEnumerable<AgentResponseUpdate> RunAsync(ChatMessage message, ModelInfo model,
         string effort, ProviderProfile provider, CancellationToken cancellationToken) =>
-        _session.RunAsync(message, model, effort, provider, cancellationToken);
+        _components.Loop.RunAsync(new AgentRunRequest(message, model, effort, provider), cancellationToken);
 
-    public void PreserveInterruptedHistory() => _session.PreserveInterruptedHistory();
-    public void Dispose() => _session.Dispose();
+    public void PreserveInterruptedHistory() => _components.History.PreserveInterruptedHistory(_components.Invocations);
+    public void Dispose() => _components.Dispose();
 }
