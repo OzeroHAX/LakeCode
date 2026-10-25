@@ -32,6 +32,7 @@ public sealed class ConversationService
     private readonly ProviderRegistry _providers;
     private readonly MessageSubmissionPreparer _submissionPreparer;
     private readonly Settings.AgentSettingsStorage? _settings;
+    private readonly Mcp.McpSettingsStorage? _mcp;
     private ExecutionApproval.ClassifierConfiguration _activeClassifier = new(new(), null, null);
     private readonly SessionStorage _sessions = new();
     private readonly string _workspaceRoot;
@@ -41,7 +42,7 @@ public sealed class ConversationService
     private readonly Dictionary<string, (SessionTurn Turn, Guid RequestId)> _backgroundOwners = new(StringComparer.Ordinal);
     private (ProviderProfile Provider, ModelInfo Model, string Effort, Settings.ModelSelection? SubagentModel,
         Settings.ModelConfiguration? SubagentConfiguration, AgentMode AgentMode, ExecutionApproval.ClassifierConfiguration Classifier,
-        Settings.ImageGenerationConfiguration ImageGeneration)? _lastRequest;
+        Settings.ImageGenerationConfiguration ImageGeneration, Mcp.McpRequestConfiguration Mcp)? _lastRequest;
     private readonly InteractionGate _interactionGate = new();
     private bool _finishing;
     private bool _allowAllExternalReads;
@@ -72,12 +73,13 @@ public sealed class ConversationService
     public static string ResolveWorkspaceRoot() => WorkspaceFiles.ResolveRoot();
 
     public ConversationService(string workspaceRoot, ProviderRegistry providers,
-        ModelInfo initialModel, CancellationToken shutdown = default, Settings.AgentSettingsStorage? settings = null)
+        ModelInfo initialModel, CancellationToken shutdown = default, Settings.AgentSettingsStorage? settings = null, Mcp.McpSettingsStorage? mcp = null)
     {
         _workspaceRoot = Path.GetFullPath(workspaceRoot);
         _providers = providers;
         _settings = settings;
-        _submissionPreparer = new MessageSubmissionPreparer(_workspaceRoot, providers, settings);
+        _mcp = mcp;
+        _submissionPreparer = new MessageSubmissionPreparer(_workspaceRoot, providers, settings, mcp);
         _statisticsModel = initialModel;
         _shutdown = shutdown;
         _state = CreateState();
@@ -324,6 +326,7 @@ public sealed class ConversationService
         agent.Eval?.Reset();
         agent.Delegation?.Reset();
         agent.History.Rewind(messageCount);
+
     }
 
     private bool CanCompact() => !_busy && !_finishing && !_shutdown.IsCancellationRequested &&
@@ -632,7 +635,7 @@ public sealed class ConversationService
                 notification + "\nHandle returned questions or summarize findings. Do not repeat already consumed results or restart completed work.",
                 [], settings.Model.Id, settings.Effort, SubmissionMode.Enqueue, settings.Provider.Id)
             { Connection = settings.Provider, Model = settings.Model, IsBackgroundContinuation = true, AgentMode = settings.AgentMode,
-                ClassifierConfiguration = settings.Classifier,
+                ClassifierConfiguration = settings.Classifier, McpServers = settings.Mcp.Selection, McpConfiguration = settings.Mcp,
                 ImageGeneration = settings.ImageGeneration.Selection, ImageGenerationConfiguration = settings.ImageGeneration,
                 SubagentModel = settings.SubagentModel, SubagentConfiguration = settings.SubagentConfiguration };
         }
@@ -640,8 +643,11 @@ public sealed class ConversationService
         ModelInfo model;
         ProviderProfile provider;
         Settings.ModelConfiguration? subagentConfiguration;
+        Mcp.McpRequestConfiguration mcpConfiguration;
         try
         {
+            mcpConfiguration = pending.McpConfiguration ?? _mcp?.Resolve(pending.McpServers) ?? Mcp.McpRequestConfiguration.Empty;
+            if (pending.AgentMode == AgentMode.Build && mcpConfiguration.Error is { } mcpError) throw new InvalidDataException(mcpError);
             provider = pending.Connection ?? _providers.Get(pending.ProviderId);
             model = pending.Model ?? _providers.GetModel(pending.ProviderId, pending.ModelId);
             subagentConfiguration = pending.SubagentConfiguration ?? pending.SubagentModel?.Resolve(_providers);
@@ -669,7 +675,7 @@ public sealed class ConversationService
         if (fromQueue) _pending.RemoveAt(0);
         _activeClassifier = pending.ClassifierConfiguration ?? (_settings?.Current.Classifier ?? new ExecutionApproval.ClassifierSettings()).Capture(_providers);
         var imageGeneration = pending.ImageGenerationConfiguration ?? Settings.ImageGenerationConfiguration.Capture(pending.ImageGeneration, _providers);
-        _lastRequest = (provider, model, pending.ReasoningEffort, pending.SubagentModel, subagentConfiguration, pending.AgentMode, _activeClassifier, imageGeneration);
+        _lastRequest = (provider, model, pending.ReasoningEffort, pending.SubagentModel, subagentConfiguration, pending.AgentMode, _activeClassifier, imageGeneration, mcpConfiguration);
         Interlocked.Exchange(ref _boundaryStopRequested, 0);
         _replacementRequested = false;
         _stoppedAtBoundary = false;
@@ -704,7 +710,7 @@ public sealed class ConversationService
         PublishState();
         _operation = Task.Run(async () =>
         {
-            try { await SendAsync(request, model, pending.ReasoningEffort, provider, snapshot, turn, generation.Token, subagentConfiguration, imageGeneration).ConfigureAwait(false); }
+            try { await SendAsync(request, model, pending.ReasoningEffort, provider, snapshot, turn, generation.Token, subagentConfiguration, imageGeneration, mcpConfiguration).ConfigureAwait(false); }
             finally
             {
                 lock (_gate)
@@ -864,7 +870,13 @@ public sealed class ConversationService
                 _agent ??= CreateAgent(current.Id);
                 var agent = _agent;
                 var next = await new ConversationRewind(_sessions).ExecuteAsync(plan, current, agent.Session,
-                    state => RestoreAgentAsync(agent, state), count => RewindAgent(agent, count)).ConfigureAwait(false);
+                    state => RestoreAgentAsync(agent, state), count =>
+                    {
+                        RewindAgent(agent, count);
+                        agent.Mcp?.RewindDisclosure(current.Turns.Take(plan.BoundaryIndex).SelectMany((turn, index) =>
+                            plan.KeepTool && index == plan.Index ? turn.Events.Take(plan.ToolEventEnd + 1) : turn.Events)
+                            .Where(e => e.ToolCall is not null).Select(e => e.ToolCall!));
+                    }).ConfigureAwait(false);
                 lock (_gate)
                 {
                     _snapshot = next;
@@ -965,7 +977,7 @@ public sealed class ConversationService
 
     private async Task SendAsync(ChatMessage message, ModelInfo model, string reasoningEffort, ProviderProfile provider,
         SessionSnapshot snapshot, SessionTurn turn, CancellationToken generationToken,
-        Settings.ModelConfiguration? subagentConfiguration, Settings.ImageGenerationConfiguration imageGeneration)
+        Settings.ModelConfiguration? subagentConfiguration, Settings.ImageGenerationConfiguration imageGeneration, Mcp.McpRequestConfiguration mcpConfiguration)
     {
         var checkpoint = snapshot.AgentState;
         Task<string?> titleTask = Task.FromResult<string?>(null);
@@ -1028,7 +1040,7 @@ public sealed class ConversationService
             _agent.Invocations.BashOutputUpdated += OnBashOutput;
             _agent.History.Capture.BeforeRequest += OnBeforeModelRequest;
             await foreach (var update in _agent.Loop.RunAsync(new AgentRunRequest(message, model, reasoningEffort, provider,
-                               subagentConfiguration, turn.AgentMode, imageGeneration), generationToken).ConfigureAwait(false))
+                               subagentConfiguration, turn.AgentMode, imageGeneration, mcpConfiguration), generationToken).ConfigureAwait(false))
             {
                 foreach (var content in update.Contents)
                 {

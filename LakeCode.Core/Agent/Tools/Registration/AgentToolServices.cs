@@ -27,6 +27,7 @@ internal sealed class AgentToolServices
     private readonly string _sessionId;
     private readonly Func<Settings.ImageGenerationConfiguration?> _imageGeneration;
 
+    public Mcp.McpSearchTool? McpSearch { get; init; }
     public WorkspaceFiles Files { get; }
     public ToolInvocationRunner Invocations { get; }
     public ReadFileTool ReadFile { get; }

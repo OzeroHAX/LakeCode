@@ -21,6 +21,7 @@ internal sealed class ToolCallGroupComponent : CollapsiblePanel
         public string StatusLabel { get; set; } = "running";
         public DelegationStatus? DelegationStatus { get; set; }
         public ExternalReadPermissionComponent? Permission { get; set; }
+        public ExecutionApprovalComponent? Approval { get; set; }
         public ScrollablePanelControl? Viewport { get; set; }
         public ButtonControl? ExecutePlan { get; set; }
         public Action? ExecutePlanAction { get; set; }
@@ -115,6 +116,7 @@ internal sealed class ToolCallGroupComponent : CollapsiblePanel
             AddControl(panel);
         }
         entry.Status = update.Status;
+        if (update.Status is not (ToolCallStatus.AwaitingApproval or ToolCallStatus.Classifying)) entry.Approval?.Cancel();
         entry.DelegationStatus = update.Delegation?.Status;
         if (update.Status != ToolCallStatus.Running && entry.DelegationStatus is not (DelegationStatus.Running or DelegationStatus.WaitingForParent))
         {
@@ -142,6 +144,15 @@ internal sealed class ToolCallGroupComponent : CollapsiblePanel
             entry.Body.SetMarkdown(planArgs.RootElement.GetProperty("markdown").GetString()!);
         }
         UpdateTitle();
+    }
+
+    public ExecutionApprovalComponent ShowApproval(string callId, Action<bool> complete)
+    {
+        var entry = _calls[callId];
+        IsExpanded = entry.Panel.IsExpanded = true;
+        entry.Approval = new ExecutionApprovalComponent(complete, mcp: true);
+        entry.Panel.AddControl(entry.Approval);
+        return entry.Approval;
     }
 
     public void SetPlanAction(string callId, ImplementationPlan? plan, bool enabled, Action? execute)
@@ -196,10 +207,11 @@ internal sealed class ToolCallGroupComponent : CollapsiblePanel
     {
         foreach (var entry in _calls.Values.Distinct())
         {
-            if (entry.Status != ToolCallStatus.Running ||
+            if (entry.Status is not (ToolCallStatus.Running or ToolCallStatus.AwaitingApproval or ToolCallStatus.Classifying) ||
                 entry.DelegationStatus is DelegationStatus.Running or DelegationStatus.WaitingForParent) continue;
             entry.Permission?.Cancel();
             entry.Status = ToolCallStatus.Cancelled;
+            entry.Approval?.Cancel();
             entry.Panel.Title = MarkupParser.Escape($"{entry.Summary} · interrupted");
             if (!_alwaysVisible)
                 entry.Body.Header = MarkupParser.Escape($"{ToolName}: {entry.Summary} · interrupted");
@@ -285,6 +297,12 @@ internal sealed class ToolCallGroupComponent : CollapsiblePanel
 
     internal static string Summarize(ToolCallUpdate update)
     {
+        if (update.DisplayName is { } displayName) return displayName;
+        if (update.Name == "search_mcp_tools")
+        {
+            using var search = JsonDocument.Parse(update.Arguments);
+            return search.RootElement.TryGetProperty("query", out var query) ? query.ToString() : "Поиск MCP-инструментов";
+        }
         if (update.Delegation is { } research)
         {
             var title = research.Task.Split('\n')[0];

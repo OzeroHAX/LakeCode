@@ -34,10 +34,11 @@ internal static class AgentFactory
         EvalTool? eval = null;
         DelegationCoordinator? delegation = null;
         AgentSkills? skills = null;
+        var mcp = new Mcp.McpSession(workspaceRoot);
         try
         {
             var invocations = new ToolInvocationRunner(() => preparer!.Configuration, () => eval, () => delegation,
-                () => preparer!.ImageGeneration, () => skills?.ValidateRoots(), approval);
+                () => preparer!.ImageGeneration, () => skills?.ValidateRoots(), approval, mcp);
             var context = new SystemPromptContext(files.Root, RuntimeInformation.OSDescription,
                 RuntimeInformation.OSArchitecture.ToString(), RuntimeInformation.ProcessArchitecture.ToString())
             { SessionWorkspaceRoot = sessionWorkspaceRoot };
@@ -49,14 +50,14 @@ internal static class AgentFactory
                 () => preparer!.Configuration.Tools.DescribeEvalTools());
             skills = new AgentSkills(files);
             var services = new AgentToolServices(files, eval, delegation, history.Projection, invocations,
-                new AskTool(askUser), sessionId, () => preparer!.ImageGeneration);
+                new AskTool(askUser), sessionId, () => preparer!.ImageGeneration) { McpSearch = new(mcp) };
             var researchFiles = string.IsNullOrWhiteSpace(sessionWorkspaceRoot) ? null
                 : new WorkspaceFiles(sessionWorkspaceRoot, allowExternalReads: false) { ReportAbsolutePaths = true };
             var roles = new AgentRoleFactory(context, instructions, researchFiles, services, savePlan);
             preparer = new AgentRunPreparer(roles.Get(AgentMode.Build).Configuration, roles, skills,
                 invocations, delegation, client, history, sessionId);
             var components = Complete("LakeCode", sessionId, files, history, preparer, invocations,
-                skills, eval, delegation, allowMultipleToolCalls: null);
+                skills, eval, delegation, allowMultipleToolCalls: null, mcp);
             session = components.Session;
             return components;
         }
@@ -98,9 +99,10 @@ internal static class AgentFactory
 
     private static AgentComponents Complete(string name, string sessionId, WorkspaceFiles files,
         AgentHistory history, AgentRunPreparer preparer, ToolInvocationRunner invocations,
-        AgentSkills? skills, EvalTool? eval, DelegationCoordinator? delegation, bool? allowMultipleToolCalls)
+        AgentSkills? skills, EvalTool? eval, DelegationCoordinator? delegation, bool? allowMultipleToolCalls, Mcp.McpSession? mcp = null)
     {
-        var agent = new ChatClientAgent(history.Capture, new ChatClientAgentOptions
+        IChatClient pipeline = mcp is null ? history.Capture : new Mcp.McpToolsChatClient(history.Capture, mcp, () => preparer.Configuration);
+        var agent = new ChatClientAgent(pipeline, new ChatClientAgentOptions
         {
             Name = name,
             ChatHistoryProvider = history.Provider,
@@ -110,8 +112,8 @@ internal static class AgentFactory
             AIContextProviders = [new RoleAwareContextProvider(skills?.Provider, () => preparer.Configuration,
                 () => skills?.ValidateRoots())]
         }).AsBuilder().Use(invocations.ObserveToolCallAsync).Build();
-        var session = new AgentSessionState(agent, history);
-        var loop = new AgentLoop(agent, session, preparer, delegation);
-        return new AgentComponents(sessionId, files, loop, session, history, invocations, eval, delegation);
+        var session = new AgentSessionState(agent, history, mcp);
+        var loop = new AgentLoop(agent, session, preparer, delegation, mcp);
+        return new AgentComponents(sessionId, files, loop, session, history, invocations, eval, delegation, mcp);
     }
 }

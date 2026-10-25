@@ -16,6 +16,8 @@ internal sealed record PendingMessage(
     public bool IsBackgroundContinuation { get; init; }
     public Settings.ModelSelection? SubagentModel { get; init; }
     public Settings.ImageGenerationSelection? ImageGeneration { get; init; }
+    public Mcp.McpServerSelection[]? McpServers { get; init; }
+    [JsonIgnore] public Mcp.McpRequestConfiguration? McpConfiguration { get; init; }
     [JsonIgnore] public Settings.ImageGenerationConfiguration? ImageGenerationConfiguration { get; init; }
     [JsonIgnore] public Settings.ModelConfiguration? SubagentConfiguration { get; init; }
     [JsonIgnore] public ProviderProfile? Connection { get; init; }

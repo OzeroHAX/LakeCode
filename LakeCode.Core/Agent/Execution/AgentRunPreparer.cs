@@ -28,7 +28,7 @@ internal sealed class AgentRunPreparer(
     /// <summary>Runs before session creation, preserving turn-reset and validation order.</summary>
     public void BeginTurn(AgentRunRequest request)
     {
-        var (message, model, reasoningEffort, _, _, mode, imageGeneration) = request;
+        var (message, model, reasoningEffort, _, _, mode, imageGeneration, _) = request;
         if (!Enum.IsDefined(mode)) throw new ArgumentOutOfRangeException(nameof(mode));
         if (roles is not null)
         {
@@ -58,7 +58,7 @@ internal sealed class AgentRunPreparer(
     /// <summary>Runs after session creation so checks include the restored archive.</summary>
     public PreparedAgentRun Prepare(AgentRunRequest request, AgentSessionState session)
     {
-        var (message, model, reasoningEffort, provider, subagentConfiguration, _, _) = request;
+        var (message, model, reasoningEffort, provider, subagentConfiguration, _, _, _) = request;
         if (!model.InputModalities.Contains(ModelModality.Image) && history.Messages
             .SelectMany(item => item.Contents).OfType<DataContent>()
             .Any(content => content.MediaType.StartsWith("image/", StringComparison.OrdinalIgnoreCase)))

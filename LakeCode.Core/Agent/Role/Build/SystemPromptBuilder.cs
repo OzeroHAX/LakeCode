@@ -11,6 +11,7 @@ internal static class SystemPromptBuilder
             Prompts.Instructions.Text,
             Sections.ProjectInvestigation.Text,
             Sections.ToolUse.Text,
+            Sections.Mcp.Text,
             Sections.CapabilityLimits.Text,
             Sections.Safety.Text,
             Sections.Answers.Text,

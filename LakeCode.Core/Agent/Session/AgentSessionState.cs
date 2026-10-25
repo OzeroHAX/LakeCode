@@ -6,7 +6,7 @@ using Microsoft.Agents.AI;
 namespace LakeCode.Core.Agent.Session;
 
 /// <summary>Owns one MAF session and preserves the persisted LakeCode envelope.</summary>
-internal sealed class AgentSessionState(AIAgent agent, AgentHistory history)
+internal sealed class AgentSessionState(AIAgent agent, AgentHistory history, Mcp.McpSession? mcp = null)
 {
     public AgentSession? Current { get; private set; }
     public string? HistoryOrigin { get; set; }
@@ -23,7 +23,7 @@ internal sealed class AgentSessionState(AIAgent agent, AgentHistory history)
         var session = await GetOrCreateAsync(cancellationToken);
         HistoryProjection.ValidateState(compaction, history.Messages);
         var state = await agent.SerializeSessionAsync(session, cancellationToken: cancellationToken);
-        return JsonSerializer.SerializeToElement(new { LakeCodeHistoryOrigin = HistoryOrigin, LakeCodeCompaction = compaction, FrameworkState = state });
+        return JsonSerializer.SerializeToElement(new { LakeCodeHistoryOrigin = HistoryOrigin, LakeCodeCompaction = compaction, LakeCodeMcpTools = mcp?.SaveDisclosure() ?? [], FrameworkState = state });
     }
 
     public async ValueTask RestoreAsync(JsonElement state, CancellationToken cancellationToken = default)
@@ -33,6 +33,7 @@ internal sealed class AgentSessionState(AIAgent agent, AgentHistory history)
         var compaction = state.TryGetProperty("LakeCodeCompaction", out var savedCompaction)
             ? savedCompaction.Deserialize<CompactionState>() ?? throw new InvalidDataException("Повреждён checkpoint summary.")
             : CompactionState.Empty;
+        mcp?.RestoreDisclosure(state.TryGetProperty("LakeCodeMcpTools", out var savedMcp) ? savedMcp.Deserialize<string[]>() ?? [] : []);
         if (state.TryGetProperty("FrameworkState", out var frameworkState))
         {
             HistoryOrigin = state.GetProperty("LakeCodeHistoryOrigin").GetString();

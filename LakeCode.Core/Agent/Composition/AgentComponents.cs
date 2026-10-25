@@ -16,7 +16,7 @@ internal sealed class AgentComponents(
     AgentHistory history,
     ToolInvocationRunner invocations,
     EvalTool? eval,
-    DelegationCoordinator? delegation) : IDisposable, IAsyncDisposable
+    DelegationCoordinator? delegation, Mcp.McpSession? mcp = null) : IDisposable, IAsyncDisposable
 {
     private int _disposed;
     public string CacheSessionId { get; } = cacheSessionId;
@@ -27,6 +27,7 @@ internal sealed class AgentComponents(
     public ToolInvocationRunner Invocations { get; } = invocations;
     public EvalTool? Eval { get; } = eval;
     public DelegationCoordinator? Delegation { get; } = delegation;
+    public Mcp.McpSession? Mcp { get; } = mcp;
 
     public async ValueTask DisposeAsync()
     {
@@ -37,8 +38,12 @@ internal sealed class AgentComponents(
         }
         finally
         {
-            try { Eval?.Dispose(); }
-            finally { History.Capture.Dispose(); }
+            try { if (Mcp is not null) await Mcp.DisposeAsync().ConfigureAwait(false); }
+            finally
+            {
+                try { Eval?.Dispose(); }
+                finally { History.Capture.Dispose(); }
+            }
         }
     }
 
@@ -48,8 +53,12 @@ internal sealed class AgentComponents(
         try { Delegation?.Dispose(); }
         finally
         {
-            try { Eval?.Dispose(); }
-            finally { History.Capture.Dispose(); }
+            try { Mcp?.DisposeAsync().AsTask().GetAwaiter().GetResult(); }
+            finally
+            {
+                try { Eval?.Dispose(); }
+                finally { History.Capture.Dispose(); }
+            }
         }
     }
 }

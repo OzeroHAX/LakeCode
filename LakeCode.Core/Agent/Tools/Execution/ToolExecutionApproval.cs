@@ -13,12 +13,13 @@ internal sealed class ToolExecutionApproval
     public bool ClassifierEnabled => IsExecutionClassifierEnabled?.Invoke() == true;
 
     public async Task<string> CheckAsync(ToolCallUpdate call, bool requiresApproval, EvalTool? eval,
-        Action<ToolCallUpdate> updateCall, Action<ToolCallUpdate> publish, CancellationToken cancellationToken)
+        Action<ToolCallUpdate> updateCall, Action<ToolCallUpdate> publish, CancellationToken cancellationToken, string? manualDescription = null)
     {
         using var args = JsonDocument.Parse(call.Arguments);
         var root = args.RootElement;
-        if (!root.TryGetProperty("description", out var description) || description.ValueKind != JsonValueKind.String ||
-            string.IsNullOrWhiteSpace(description.GetString()))
+        var descriptionText = manualDescription;
+        if (descriptionText is null && (!root.TryGetProperty("description", out var description) || description.ValueKind != JsonValueKind.String ||
+            string.IsNullOrWhiteSpace(descriptionText = description.GetString())))
             return "Error: description is required: explain action, purpose and expected side effects.";
         if (call.Name is ("bash" or "eval") &&
             (!root.TryGetProperty(call.Name == "bash" ? "command" : "code", out var code) ||
@@ -29,8 +30,10 @@ internal sealed class ToolExecutionApproval
         var error = "";
         using (call.CallId.StartsWith("eval-", StringComparison.Ordinal) ? eval?.PauseTimeout() : null)
         {
-            var request = new ExecutionApprovalRequest(call.CallId, call.Name, description.GetString()!, call.Arguments);
-            var assessment = AssessExecution is null
+            var request = new ExecutionApprovalRequest(call.CallId, call.Name, descriptionText!, call.Arguments);
+            var assessment = manualDescription is not null
+                ? new ExecutionApproval.ExecutionAssessment(ExecutionApproval.ExecutionDecision.AskUser, "Политика MCP-сервера: ручное подтверждение каждого вызова.")
+                : AssessExecution is null
                 ? new ExecutionApproval.ExecutionAssessment(ExecutionApproval.ExecutionDecision.AskUser, "Классификатор недоступен.")
                 : await AssessExecution(request, cancellationToken);
             cancellationToken.ThrowIfCancellationRequested();

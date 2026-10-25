@@ -16,7 +16,8 @@ internal sealed class ToolInvocationRunner(
     Func<DelegationCoordinator?> getDelegation,
     Func<Settings.ImageGenerationConfiguration?> getImageGeneration,
     Action validateSkillRoots,
-    ToolExecutionApproval approval)
+    ToolExecutionApproval approval,
+    Mcp.McpSession? mcp = null)
 {
     private readonly AsyncLocal<Action<FileChange>?> _fileChangeObserver = new();
     private readonly AsyncLocal<Action<BashExecution>?> _bashOutputObserver = new();
@@ -41,6 +42,7 @@ internal sealed class ToolInvocationRunner(
     public async ValueTask<object?> ObserveToolCallAsync(AIAgent agent, FunctionInvocationContext context,
         Func<FunctionInvocationContext, CancellationToken, ValueTask<object?>> next, CancellationToken cancellationToken)
     {
+        using var mcpInvocation = mcp?.EnterInvocation(context.Options);
         var previousServices = _services.Value;
         _services.Value = context.Arguments.Services;
         try
@@ -75,11 +77,12 @@ internal sealed class ToolInvocationRunner(
     {
         var configuration = getConfiguration();
         var registered = configuration.Tools.TryGet(name, out var registration);
-        var requiresApproval = registered && registration.ExecutionPolicy == ToolExecutionPolicy.RequireApproval;
+        var manualApproval = registered && registration.ExecutionPolicy == ToolExecutionPolicy.RequireManualApproval;
+        var requiresApproval = registered && registration.ExecutionPolicy != ToolExecutionPolicy.None;
         var call = new ToolCallUpdate(callId, name, argumentsJson,
             requiresApproval
-                ? approval.ClassifierEnabled ? ToolCallStatus.Classifying : ToolCallStatus.AwaitingApproval
-                : ToolCallStatus.Running);
+                ? !manualApproval && approval.ClassifierEnabled ? ToolCallStatus.Classifying : ToolCallStatus.AwaitingApproval
+                : ToolCallStatus.Running) { DisplayName = registered ? registration.ApprovalDescription : null };
         if (name != "delegate") Publish(call);
         FileChange? fileChange = null;
         BashExecution? bashExecution = null;
@@ -100,7 +103,7 @@ internal sealed class ToolInvocationRunner(
                 : configuration.IsComplete() ? configuration.CompletionError : "";
             if (accessError.Length == 0 && (requiresApproval || name is "bash" or "eval"))
                 accessError = await approval.CheckAsync(call, requiresApproval, getEval(),
-                    update => call = update, Publish, cancellationToken);
+                    update => call = update, Publish, cancellationToken, manualApproval ? registration.ApprovalDescription : null);
             if (accessError.Length == 0 && call.Name is "load_skill" or "read_skill_resource")
             {
                 accessError = await WorkspaceFiles.ExecuteAsync(() =>

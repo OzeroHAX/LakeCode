@@ -14,6 +14,7 @@ public enum ToolCallStatus
 public sealed record ToolCallUpdate(
     string CallId, string Name, string Arguments, ToolCallStatus Status, string? Result = null)
 {
+    public string? DisplayName { get; init; }
     public ExecutionApproval.ExecutionAssessment? Assessment { get; init; }
     public FileChange? FileChange { get; init; }
     public BashExecution? BashExecution { get; init; }

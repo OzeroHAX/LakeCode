@@ -12,7 +12,7 @@ internal sealed class ExecutionApprovalComponent : PanelControl
     private readonly MarkupControl _status;
     private bool _finished;
 
-    public ExecutionApprovalComponent(Action<bool> complete)
+    public ExecutionApprovalComponent(Action<bool> complete, bool mcp = false)
     {
         HorizontalAlignment = HorizontalAlignment.Stretch;
         Margin = new Margin(0, 1, 0, 1);
@@ -23,7 +23,8 @@ internal sealed class ExecutionApprovalComponent : PanelControl
         AddControl(_buttons);
         _status = new MarkupControl(new List<string>
         {
-            "Команда не запущена. Разрешение только на этот вызов, не на реализацию плана. Это не sandbox.",
+            mcp ? "MCP-инструмент не вызван. Разрешение только на этот вызов и показанные аргументы. Внешний сервер — не sandbox."
+                : "Команда не запущена. Разрешение только на этот вызов, не на реализацию плана. Это не sandbox.",
             "[grey70]Tab — выбор · Enter — решение · Esc дважды — остановить запрос[/]"
         }) { Wrap = true, HorizontalAlignment = HorizontalAlignment.Stretch };
         AddControl(_status);
@@ -35,7 +36,9 @@ internal sealed class ExecutionApprovalComponent : PanelControl
             if (_finished) return;
             _finished = true;
             _buttons.Visible = false;
-            _status.Text = approved ? "[green]Разрешено вручную.[/]" : "[yellow]Отклонено пользователем · команда не запускалась.[/]";
+            _status.Text = approved ? "[green]Разрешено вручную.[/]" : mcp
+                ? "[yellow]Отклонено пользователем · MCP-инструмент не вызван.[/]"
+                : "[yellow]Отклонено пользователем · команда не запускалась.[/]";
             complete(approved);
         }
     }

@@ -15,11 +15,14 @@ var shutdown = new CancellationTokenSource();
 ProviderRegistry providers;
 AgentSettingsStorage settingsStorage;
 AgentSettings settings;
+LakeCode.Core.Mcp.McpSettingsStorage mcpStorage;
 try
 {
     providers = new ProviderRegistry();
     settingsStorage = new AgentSettingsStorage();
     settings = await settingsStorage.LoadAsync(shutdown.Token);
+    mcpStorage = new LakeCode.Core.Mcp.McpSettingsStorage();
+    await mcpStorage.LoadAsync(shutdown.Token);
 }
 catch (Exception error)
 {
@@ -31,7 +34,8 @@ var statisticsStore = new StatisticsStore(modelStore.SelectedModel);
 var modelsWindow = new ModelsWindowComponent(modelStore, settingsStorage, shutdown.Token);
 var providersWindow = new ProvidersWindowComponent(providers, modelStore, shutdown.Token);
 var sessionsWindow = new SessionsWindowComponent();
-var conversation = new ConversationService(workspaceRoot, providers, modelStore.SelectedModel, shutdown.Token, settingsStorage);
+var mcpWindow = new McpWindowComponent(mcpStorage, shutdown.Token);
+var conversation = new ConversationService(workspaceRoot, providers, modelStore.SelectedModel, shutdown.Token, settingsStorage, mcpStorage);
 
 var windowSystem = new ConsoleWindowSystem(
     new NetConsoleDriver(RenderMode.Buffer),
@@ -94,6 +98,7 @@ using var slashCommands = new SlashCommandsComponent(window, input,
     ("/research", "Общение и веб-ресёрч: без доступа к репозиторию"),
     ("/implement", "Реализовать готовый план"),
     ("/providers", "Настроить подключения и модели"),
+    ("/mcp", "Настроить MCP-серверы и подтверждения"),
     ("/permissions", "Переключить внешнее чтение без подтверждений"),
     ("/sessions", "Открыть сохранённую сессию"),
     ("/rewind", "Открыть окно отката истории"),
@@ -150,6 +155,11 @@ slashCommands.CommandSelected += (_, selected) =>
     {
         input.Editor.Input = string.Empty;
         providersWindow.Show(windowSystem);
+    }
+    else if (command.Equals("/mcp", StringComparison.OrdinalIgnoreCase))
+    {
+        input.Editor.Input = string.Empty;
+        mcpWindow.Show(windowSystem);
     }
     else if (command.Equals("/models", StringComparison.OrdinalIgnoreCase))
     {

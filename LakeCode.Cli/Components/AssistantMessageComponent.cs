@@ -144,6 +144,7 @@ internal sealed class AssistantMessageComponent : CollapsiblePanel
     {
         if (_bashCalls.TryGetValue(callId, out var bash)) return bash.ShowApproval(complete);
         if (_evalCalls.TryGetValue(callId, out var eval)) return eval.ShowApproval(complete);
+        if (_toolCalls.TryGetValue(callId, out var tool)) return tool.ShowApproval(callId, complete);
         throw new InvalidOperationException("Карточка команды для подтверждения не найдена.");
     }
 

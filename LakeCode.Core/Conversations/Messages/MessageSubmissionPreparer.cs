@@ -9,7 +9,7 @@ namespace LakeCode.Core.Conversations.Messages;
 
 /// <summary>Validates and captures an accepted message, without queueing, persistence or cancellation.</summary>
 internal sealed class MessageSubmissionPreparer(
-    string workspaceRoot, ProviderRegistry providers, Settings.AgentSettingsStorage? settings)
+    string workspaceRoot, ProviderRegistry providers, Settings.AgentSettingsStorage? settings, Mcp.McpSettingsStorage? mcp = null)
 {
     internal sealed record Selection(ProviderProfile Provider, ModelInfo Model, Settings.ModelConfiguration? Subagent);
 
@@ -51,10 +51,12 @@ internal sealed class MessageSubmissionPreparer(
         var files = command.Files.IsDefault ? ImmutableArray<FileAttachment>.Empty : command.Files;
         var mentions = command.Mentions.IsDefault ? ImmutableArray<FileMention>.Empty : command.Mentions;
         var imageGeneration = Settings.ImageGenerationConfiguration.Capture(settings?.Current.ImageGeneration, providers);
+        var mcpConfiguration = command.AgentMode == AgentMode.Build ? mcp?.Capture() ?? Mcp.McpRequestConfiguration.Empty : Mcp.McpRequestConfiguration.Empty;
         return new PendingMessage(command.Text, images, selection.Model.Id, command.ReasoningEffort, command.Mode, selection.Provider.Id)
         {
             Connection = selection.Provider, Model = selection.Model, Files = files.ToArray(), Mentions = mentions.ToArray(),
             AgentMode = command.AgentMode, ExecutingPlanId = executingPlanId,
+            McpServers = mcpConfiguration.Selection, McpConfiguration = mcpConfiguration,
             ImageGeneration = imageGeneration.Selection, ImageGenerationConfiguration = imageGeneration,
             ClassifierConfiguration = (settings?.Current.Classifier ?? new ExecutionApproval.ClassifierSettings()).Capture(providers),
             SubagentModel = command.SubagentModel, SubagentConfiguration = selection.Subagent

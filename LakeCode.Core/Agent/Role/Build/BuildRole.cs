@@ -11,6 +11,7 @@ internal sealed class BuildRole : AgentRole
         { UseSkills = true })
     {
         var agent = Configuration.Tools;
+        if (services.McpSearch is { } search) agent.AddTool(search.AgentTool());
         agent.AddTool(services.ReadFile.AgentTool());
         agent.AddTool(services.ListDirectory.AgentTool());
         agent.AddTool(services.Grep.AgentTool());

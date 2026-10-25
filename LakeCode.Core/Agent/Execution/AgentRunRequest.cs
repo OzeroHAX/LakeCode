@@ -11,4 +11,5 @@ internal sealed record AgentRunRequest(
     ProviderProfile Provider,
     Settings.ModelConfiguration? SubagentConfiguration = null,
     AgentMode Mode = AgentMode.Build,
-    Settings.ImageGenerationConfiguration? ImageGeneration = null);
+    Settings.ImageGenerationConfiguration? ImageGeneration = null,
+    Mcp.McpRequestConfiguration? Mcp = null);

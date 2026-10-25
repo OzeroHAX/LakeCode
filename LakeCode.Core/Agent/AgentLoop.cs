@@ -11,7 +11,7 @@ internal sealed class AgentLoop(
     AIAgent agent,
     AgentSessionState session,
     AgentRunPreparer preparer,
-    DelegationCoordinator? delegation)
+    DelegationCoordinator? delegation, Mcp.McpSession? mcp = null)
 {
     public async IAsyncEnumerable<AgentResponseUpdate> RunAsync(
         AgentRunRequest request,
@@ -20,6 +20,7 @@ internal sealed class AgentLoop(
         try
         {
             preparer.BeginTurn(request);
+            if (mcp is not null) await mcp.BeginTurnAsync(request.Mode, request.Mcp ?? Mcp.McpRequestConfiguration.Empty, preparer.Configuration, cancellationToken);
             var currentSession = await session.GetOrCreateAsync(cancellationToken);
             var prepared = preparer.Prepare(request, session);
             var updates = agent.RunStreamingAsync(prepared.Message, currentSession,
