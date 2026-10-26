@@ -72,6 +72,19 @@ internal sealed class ToolInvocationRunner(
         };
     }
 
+    private static string ResultText(object? result) => result switch
+    {
+        string value => value,
+        JsonElement { ValueKind: JsonValueKind.String } value => value.GetString()!,
+        IEnumerable<AIContent> contents => string.Join(" ", contents.Select(content => content switch
+        {
+            TextContent text => text.Text,
+            DataContent data => $"[image {data.MediaType}, {data.Data.Length} bytes]",
+            _ => $"[{content.GetType().Name}]"
+        })),
+        _ => JsonSerializer.Serialize(result)
+    };
+
     private async ValueTask<object?> InvokeAsync(string callId, string name, string argumentsJson,
         Func<CancellationToken, ValueTask<object?>> invoke, CancellationToken cancellationToken)
     {
@@ -147,12 +160,7 @@ internal sealed class ToolInvocationRunner(
             }
             var result = accessError.Length == 0 ? await invoke(cancellationToken) : accessError;
             if (name == "delegate") delegation = getDelegation()?.SnapshotForInvocation(callId);
-            var text = result switch
-            {
-                string value => value,
-                JsonElement { ValueKind: JsonValueKind.String } value => value.GetString()!,
-                _ => JsonSerializer.Serialize(result)
-            };
+            var text = ResultText(result);
             Publish(call with
             {
                 Status = text.StartsWith("Error:", StringComparison.Ordinal) || delegation?.Status == DelegationStatus.Failed
