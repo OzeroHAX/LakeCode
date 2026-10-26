@@ -18,7 +18,7 @@ public sealed record SessionsListed(ImmutableArray<SessionSummary> Sessions, Imm
 public sealed record SessionsListFailed(string Error) : ConversationEvent;
 public sealed record TurnStarted(string Text, ImmutableArray<ImageData> Images,
     ImmutableArray<FileAttachment> Files, ImmutableArray<FileMention> Mentions, bool IsBackgroundContinuation = false, AgentMode AgentMode = AgentMode.Build) : ConversationEvent;
-public sealed record ReasoningDelta(string Text) : ConversationEvent;
+public sealed record ReasoningDelta(string Text, bool StartsNewBlock = false) : ConversationEvent;
 public sealed record TextDelta(string Text) : ConversationEvent;
 public sealed record ToolCallChanged(ToolCallUpdate Call) : ConversationEvent;
 public sealed record BackgroundToolCallChanged(ToolCallUpdate Call) : ConversationEvent;

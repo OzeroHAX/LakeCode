@@ -983,6 +983,7 @@ public sealed class ConversationService
         Task<string?> titleTask = Task.FromResult<string?>(null);
         bool completed = false;
         var processor = new ConversationMessageProcessor(turn, model, reasoningEffort);
+        (string ItemId, int SummaryIndex)? previousReasoningSummary = null;
         void OnToolCall(ToolCallUpdate update)
         {
             // Background snapshots have session-scoped routing and retain their original card.
@@ -1042,12 +1043,18 @@ public sealed class ConversationService
             await foreach (var update in _agent.Loop.RunAsync(new AgentRunRequest(message, model, reasoningEffort, provider,
                                subagentConfiguration, turn.AgentMode, imageGeneration, mcpConfiguration), generationToken).ConfigureAwait(false))
             {
+                var summary = ReasoningSummaryFormatter.GetSummary(update);
+                var startsNewReasoningBlock = summary is { } current &&
+                    previousReasoningSummary is { } previous && previous != current;
+                if (summary is { } currentSummary)
+                    previousReasoningSummary = currentSummary;
+
                 foreach (var content in update.Contents)
                 {
                     processor.ObserveArrival(content);
                     lock (_gate)
                     {
-                        var applied = processor.Apply(content);
+                        var applied = processor.Apply(content, startsNewReasoningBlock);
                         if (applied.Statistics is { } statistics)
                         {
                             _statistics = statistics;

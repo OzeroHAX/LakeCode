@@ -8,6 +8,15 @@ namespace LakeCode.Core.Agent.Execution;
 /// <summary>Separates independent Markdown reasoning summaries without buffering the response.</summary>
 internal static class ReasoningSummaryFormatter
 {
+    public static (string ItemId, int SummaryIndex)? GetSummary(AgentResponseUpdate update)
+    {
+#pragma warning disable OPENAI001
+        return update.AsChatResponseUpdate().RawRepresentation is StreamingResponseReasoningSummaryTextDeltaUpdate delta
+            ? (delta.ItemId, delta.SummaryIndex)
+            : null;
+#pragma warning restore OPENAI001
+    }
+
     public static async IAsyncEnumerable<AgentResponseUpdate> FormatAsync(
         IAsyncEnumerable<AgentResponseUpdate> updates,
         [EnumeratorCancellation] CancellationToken cancellationToken = default)

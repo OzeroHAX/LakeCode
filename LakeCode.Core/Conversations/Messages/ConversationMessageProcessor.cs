@@ -22,7 +22,7 @@ internal sealed class ConversationMessageProcessor(SessionTurn turn, ModelInfo m
     }
 
     // Called under the conversation lock so transcript mutation and publication retain their order.
-    public AppliedContent Apply(AIContent content)
+    public AppliedContent Apply(AIContent content, bool startsNewReasoningBlock = false)
     {
         if (content is UsageContent usage)
         {
@@ -34,8 +34,8 @@ internal sealed class ConversationMessageProcessor(SessionTurn turn, ModelInfo m
         }
         if (reasoningEffort != "none" && content is TextReasoningContent reasoning && !string.IsNullOrEmpty(reasoning.Text))
         {
-            turn.AppendText("thinking", reasoning.Text);
-            return new AppliedContent(new ReasoningDelta(reasoning.Text), null);
+            turn.AppendText("thinking", reasoning.Text, startsNewReasoningBlock);
+            return new AppliedContent(new ReasoningDelta(reasoning.Text, startsNewReasoningBlock), null);
         }
         if (content is TextContent answer && !string.IsNullOrEmpty(answer.Text))
         {

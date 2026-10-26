@@ -52,12 +52,12 @@ internal sealed class SessionTurn
     public SavedUsage? Usage { get; set; }
     public double? TokensPerSecond { get; set; }
 
-    public void AppendText(string kind, string text)
+    public void AppendText(string kind, string text, bool startsNewBlock = false)
     {
-        if (Events.LastOrDefault() is { } previous && previous.Kind == kind)
+        if (!startsNewBlock && Events.LastOrDefault() is { } previous && previous.Kind == kind)
             previous.Text += text;
         else
-            Events.Add(new ResponseEvent { Kind = kind, Text = text });
+            Events.Add(new ResponseEvent { Kind = kind, Text = text, StartsNewBlock = startsNewBlock });
     }
 }
 
@@ -75,6 +75,7 @@ internal sealed class ResponseEvent
 {
     public string Kind { get; set; } = "";
     public string? Text { get; set; }
+    public bool StartsNewBlock { get; set; }
     public ToolCallUpdate? ToolCall { get; set; }
 }
 

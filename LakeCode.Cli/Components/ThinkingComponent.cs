@@ -18,6 +18,8 @@ internal sealed class ThinkingComponent : CollapsiblePanel
     private readonly SpinnerTextAnimator _dots;
     private bool _completed;
 
+    public bool IsCompleted => _completed;
+
     public ThinkingComponent(ConsoleWindowSystem windowSystem)
     {
         Title = "Thinking";

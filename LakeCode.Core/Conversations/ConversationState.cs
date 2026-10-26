@@ -30,7 +30,7 @@ public sealed record ConversationState(long Revision, string? SessionId, string?
     public ImmutableArray<Agent.Delegation.DelegationSnapshot> Delegations { get; init; } = [];
 }
 
-public sealed record TranscriptItem(string Kind, string? Text, ToolCallUpdate? ToolCall);
+public sealed record TranscriptItem(string Kind, string? Text, ToolCallUpdate? ToolCall, bool StartsNewBlock = false);
 public sealed record TurnView(string Text, ImmutableArray<ImageData> Images,
     ImmutableArray<TranscriptItem> Items, string Status, string? Error, ImmutableArray<FileAttachment> Files, ImmutableArray<FileMention> Mentions, bool IsBackgroundContinuation = false, AgentMode AgentMode = AgentMode.Build);
 public sealed record ConversationView(string? SessionId, string? ModelId, string? ReasoningEffort,

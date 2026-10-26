@@ -363,7 +363,7 @@ internal sealed class ChatController : IDisposable
                     _content.AddControl(_response);
                     break;
                 case ReasoningDelta reasoning when IsActive(envelope):
-                    _response!.AppendReasoning(reasoning.Text);
+                    _response!.AppendReasoning(reasoning.Text, reasoning.StartsNewBlock);
                     break;
                 case TextDelta text when IsActive(envelope):
                     _response!.AppendResponse(text.Text);
@@ -503,7 +503,7 @@ internal sealed class ChatController : IDisposable
             var owners = new Dictionary<string, AssistantMessageComponent>(StringComparer.Ordinal);
             foreach (var item in turn.Items)
             {
-                if (item.Kind == "thinking") response.AppendReasoning(item.Text!);
+                if (item.Kind == "thinking") response.AppendReasoning(item.Text!, item.StartsNewBlock);
                 else if (item.Kind == "text") response.AppendResponse(item.Text!);
                 else if (item.ToolCall?.Delegation is { } task)
                 {

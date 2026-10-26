@@ -10,7 +10,7 @@ namespace LakeCode.Cli.Components;
 internal sealed class AssistantMessageComponent : CollapsiblePanel
 {
     private readonly StringBuilder _response = new();
-    private readonly ThinkingComponent _thinking;
+    private ThinkingComponent _thinking;
     private readonly ConsoleWindowSystem _windowSystem;
     private readonly Dictionary<string, BashToolCallComponent> _bashCalls = new(StringComparer.Ordinal);
     private MarkupControl? _body;
@@ -45,9 +45,14 @@ internal sealed class AssistantMessageComponent : CollapsiblePanel
         if (!_hasResponse && _body is not null) _body.Visible = false;
     }
 
-    public void AppendReasoning(string text)
+    public void AppendReasoning(string text, bool startsNewBlock = false)
     {
         Visible = true;
+        if (startsNewBlock || _thinking.IsCompleted)
+        {
+            _thinking = new ThinkingComponent(_windowSystem);
+            AddControl(_thinking);
+        }
         _thinking.AppendReasoning(text);
         if (!_hasResponse && _body is not null)
             _body.Visible = false;

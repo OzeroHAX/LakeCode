@@ -22,7 +22,7 @@ internal static class ConversationSnapshotMapper
 
     public static ConversationView ToView(SessionSnapshot? snapshot) => new(snapshot?.Id, snapshot?.ModelId, snapshot?.ReasoningEffort,
         snapshot?.Turns.Select(turn => new TurnView(turn.Text, turn.Images.Select(image => image.Decode()).ToImmutableArray(),
-            turn.Events.Select(item => new TranscriptItem(item.Kind, item.Text, item.ToolCall)).ToImmutableArray(),
+            turn.Events.Select(item => new TranscriptItem(item.Kind, item.Text, item.ToolCall, item.StartsNewBlock)).ToImmutableArray(),
             turn.Status, turn.Error, turn.Files.ToImmutableArray(), turn.Mentions.ToImmutableArray(), turn.IsBackgroundContinuation, turn.AgentMode)).ToImmutableArray() ?? [],
         snapshot?.DraftText ?? "", snapshot?.DraftImages.Select(image => image.Decode()).ToImmutableArray() ?? [], snapshot?.ProviderId,
         snapshot?.DraftFiles.ToImmutableArray() ?? [], snapshot?.DraftMentions.ToImmutableArray() ?? []);
