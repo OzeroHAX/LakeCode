@@ -27,6 +27,13 @@ internal sealed class AgentTools
 
     public IList<AITool> Functions => _registered.Values.Select(item => (AITool)item.Function).ToList();
 
+    // Includes tools selected by a discovery layer. The snapshot is rebuilt for each model request,
+    // but dynamic registrations remain session-owned until that layer refreshes them.
+    public IList<AITool> AdvertisedFunctions => _registered.Values
+        .Concat(Volatile.Read(ref _dynamic).Values)
+        .Select(item => (AITool)item.Function)
+        .ToList();
+
     public void ResetEffective() => Volatile.Write(ref _effective, new(_registered, StringComparer.Ordinal));
 
     public void SetEffective(IEnumerable<AITool>? tools)

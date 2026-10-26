@@ -114,8 +114,12 @@ internal sealed class McpSession(string workspaceRoot) : IAsyncDisposable
     }
     private void ApplyCore(ChatOptions options, AgentConfiguration role)
     {
-        // Respect FICC's final iteration, which deliberately removes function tools.
-        var functions = _enabled && options.Tools?.Any(t => t.Name == "search_mcp_tools") == true ? _servers.Values
+        // Respect FICC's final iteration, which deliberately removes function tools. A normal
+        // request may contain either discovery or already-disclosed MCP tools; both mean that
+        // the MCP tool set is part of this request and must be rebuilt from session state.
+        var hasMcpToolSlot = options.Tools?.Any(t => t.Name == "search_mcp_tools" ||
+            t.Name.StartsWith("mcp_", StringComparison.Ordinal)) == true;
+        var functions = _enabled && hasMcpToolSlot ? _servers.Values
             .Where(s => s.CatalogVersion == Volatile.Read(ref s.Version)).SelectMany(s => s.Catalog.Values)
             .Where(f => _disclosed.Contains(f.Name)).ToArray() : [];
         role.Tools.SetDynamic(functions.Select(f => new ToolRegistration(f)

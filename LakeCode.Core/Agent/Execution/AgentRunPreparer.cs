@@ -70,7 +70,9 @@ internal sealed class AgentRunPreparer(
         session.HistoryOrigin = origin;
         var options = ProviderClientFactory.Options(provider, model, reasoningEffort, cacheSessionId);
         options.Instructions = Configuration.Instructions;
-        options.Tools = Configuration.Tools.Functions;
+        // Preserve tools selected by MCP discovery across user turns. The discovery layer refreshes
+        // this dynamic snapshot when a catalog changes or a server is removed.
+        options.Tools = Configuration.Tools.AdvertisedFunctions;
         if (Configuration.AllowMultipleToolCalls is { } multiple) options.AllowMultipleToolCalls = multiple;
         delegation?.Configure(subagentConfiguration?.Model ?? model,
             subagentConfiguration?.ReasoningEffort ?? reasoningEffort, subagentConfiguration?.Provider ?? provider);

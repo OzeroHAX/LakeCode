@@ -6,10 +6,10 @@
     </PropertyGroup>
     <ItemGroup>
         <ProjectReference Include="../LakeCode.Eval.Contracts/LakeCode.Eval.Contracts.csproj" />
-        <PackageReference Include="Microsoft.Agents.AI" Version="1.24.0" />
-        <PackageReference Include="Microsoft.Agents.AI.OpenAI" Version="1.24.0" />
-        <PackageReference Include="Microsoft.Agents.AI.Anthropic" Version="1.24.0" />
+        <PackageReference Include="Microsoft.Agents.AI" Version="1.26.0" />
+        <PackageReference Include="Microsoft.Agents.AI.OpenAI" Version="1.26.0" />
+        <PackageReference Include="Microsoft.Agents.AI.Anthropic" Version="1.26.0" />
         <PackageReference Include="StbImageSharp" Version="2.30.16" />
-        <PackageReference Include="ModelContextProtocol" Version="2.2.0" />
+        <PackageReference Include="ModelContextProtocol" Version="2.3.0" />
     </ItemGroup>
 </Project>
