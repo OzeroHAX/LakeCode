@@ -10,15 +10,17 @@ internal sealed class ProviderChatClient : IChatClient
     private IChatClient? _client;
     private ProviderProfile? _profile;
     private string? _modelId;
+    private string? _sessionId;
 
     public bool Configure(ProviderProfile profile, ModelInfo model, string sessionId)
     {
-        if (ReferenceEquals(profile, _profile) && model.Id == _modelId) return false;
+        if (ReferenceEquals(profile, _profile) && model.Id == _modelId && sessionId == _sessionId) return false;
         var next = ProviderClientFactory.Create(profile, model, sessionId);
         _client?.Dispose();
         _client = next;
         _profile = profile;
         _modelId = model.Id;
+        _sessionId = sessionId;
         return true;
     }
 
@@ -51,5 +53,5 @@ internal sealed class ProviderChatClient : IChatClient
 
     public object? GetService(Type serviceType, object? serviceKey = null) =>
         serviceKey is null && serviceType == typeof(IChatClient) ? this : _client?.GetService(serviceType, serviceKey);
-    public void Dispose() { _client?.Dispose(); _client = null; _profile = null; }
+    public void Dispose() { _client?.Dispose(); _client = null; _profile = null; _sessionId = null; }
 }

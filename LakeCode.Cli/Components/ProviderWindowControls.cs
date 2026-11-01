@@ -11,7 +11,26 @@ internal static class ProviderWindowControls
 {
     internal static string DiscoveryText(ProviderProfile profile) => profile.Discovery is { } discovery
         ? $"Последний список: {discovery.UpdatedAt.ToLocalTime():g} · ID: {discovery.Ids.Length}. Это не проверка доступности и возможностей API."
-        : "Список ещё не получен. Загрузите его или явно разрешите ручной ID.";
+        : profile.CatalogProviderId is not null
+            ? "Список ещё не получен. Характеристики берутся из каталога models.dev; discovery добавит ID шлюза."
+            : "Список ещё не получен. Загрузите его или явно разрешите ручной ID.";
+
+    internal static string ProtocolLabel(ProviderKind kind, OpenAIApiMode mode) => kind switch
+    {
+        ProviderKind.TypeSafe => "TypeSafe · System One",
+        ProviderKind.Anthropic => "Anthropic · Messages",
+        _ => $"OpenAI · {mode}"
+    };
+
+    internal static string ModelsLabel(int count)
+    {
+        var mod100 = count % 100;
+        var mod10 = count % 10;
+        return mod100 is >= 11 and <= 14 ? $"{count} моделей"
+            : mod10 == 1 ? $"{count} модель"
+            : mod10 is >= 2 and <= 4 ? $"{count} модели"
+            : $"{count} моделей";
+    }
 
     internal static readonly Color Surface = new(30, 36, 39);
     internal static readonly Color Highlight = new(35, 65, 75);

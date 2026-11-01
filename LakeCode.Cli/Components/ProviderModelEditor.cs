@@ -62,7 +62,7 @@ internal sealed class ProviderModelEditor
 
     public PanelControl Control { get; } = new()
     { HorizontalAlignment = HorizontalAlignment.Stretch, BackgroundColor = Surface };
-    private readonly DropdownControl _mode = Dropdown("Описание: ", "Автоматически", "Из нашего каталога", "Полное описание");
+    private readonly DropdownControl _mode = Dropdown("Описание: ", "Автоматически", "Из каталога models.dev", "Полное описание");
     private readonly DropdownControl _catalog = Dropdown("Модель каталога: ");
     private readonly CheckboxControl _manual = new("Разрешить без discovery (ручной API ID)", false)
     { BackgroundColor = Surface, ForegroundColor = SharpConsoleUI.Color.White, FocusedBackgroundColor = Highlight, Margin = new Margin(2, 1, 2, 0) };
@@ -74,11 +74,12 @@ internal sealed class ProviderModelEditor
     private readonly DropdownControl _outputModalities = Dropdown("Выход: ", "Из каталога", "Text", "Image", "Text, Image");
     private readonly PromptControl _reasoning = Field("Reasoning: ");
     private readonly MarkupControl _hint = Label("");
+    private IReadOnlyDictionary<string, ModelInfo> _basis = new Dictionary<string, ModelInfo>();
     private bool _loading;
 
-    public ProviderModelEditor()
+    public ProviderModelEditor(IReadOnlyDictionary<string, ModelInfo>? basis = null)
     {
-        foreach (var model in ModelCatalog.Models.Values.OrderBy(model => model.Id, StringComparer.Ordinal)) _catalog.AddItem(model.Id);
+        SetCatalog(basis ?? new Dictionary<string, ModelInfo>());
         Control.AddControl(_mode);
         Control.AddControl(_catalog);
         Control.AddControl(_manual);
@@ -96,6 +97,26 @@ internal sealed class ProviderModelEditor
     }
 
     public bool DropdownOpen => _mode.IsDropdownOpen || _catalog.IsDropdownOpen || _inputModalities.IsDropdownOpen || _outputModalities.IsDropdownOpen;
+
+    public void SetCatalog(IReadOnlyDictionary<string, ModelInfo> basis)
+    {
+        var wasLoading = _loading;
+        _loading = true;
+        try
+        {
+            _basis = basis;
+            var selected = _catalog.SelectedValue;
+            _catalog.ClearItems();
+            foreach (var id in basis.Keys.OrderBy(id => id, StringComparer.Ordinal)) _catalog.AddItem(id);
+            var index = selected is null ? -1 : _catalog.StringItems.IndexOf(selected);
+            if (index >= 0) _catalog.SelectedIndex = index;
+        }
+        finally
+        {
+            _loading = wasLoading;
+        }
+        if (!_loading) UpdateHints();
+    }
 
     public Draft Capture() => new(_mode.SelectedIndex, _catalog.SelectedValue ?? "", _manual.Checked,
         _name.Input, _context.Input, _input.Input, _output.Input, _inputModalities.SelectedIndex,
@@ -127,7 +148,7 @@ internal sealed class ProviderModelEditor
     private void UpdateHints()
     {
         _catalog.Visible = _mode.SelectedIndex == 1;
-        ModelCatalog.Models.TryGetValue(_mode.SelectedIndex == 1 ? _catalog.SelectedValue ?? "" : _apiId, out var basis);
+        _basis.TryGetValue(_mode.SelectedIndex == 1 ? _catalog.SelectedValue ?? "" : _apiId, out var basis);
         if (_mode.SelectedIndex == 2) basis = null;
         _name.Placeholder = basis?.Name ?? "Обязательно для полного описания";
         _context.Placeholder = basis?.ContextWindowTokens.ToString(CultureInfo.InvariantCulture) ?? "Обязательно для полного описания";
@@ -136,6 +157,6 @@ internal sealed class ProviderModelEditor
         _reasoning.Placeholder = basis is null ? "Через запятую: none,low,… или none,budget:N" : string.Join(',', basis.ReasoningEfforts);
         _hint.Text = _mode.SelectedIndex == 2
             ? "[grey70]Заполните все характеристики. Вход/выход нельзя оставлять «Из каталога».[/]"
-            : "[grey70]Пустые поля наследуются из каталога. Заданные значения заменяют исходные.\nReasoning — через запятую; массивы заменяются целиком.[/]";
+            : "[grey70]Пустые поля наследуются из каталога models.dev. Заданные значения заменяют исходные.\nReasoning — через запятую; массивы заменяются целиком.[/]";
     }
 }

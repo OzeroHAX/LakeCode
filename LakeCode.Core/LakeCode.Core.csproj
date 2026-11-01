@@ -3,13 +3,45 @@
         <TargetFramework>net10.0</TargetFramework>
         <ImplicitUsings>enable</ImplicitUsings>
         <Nullable>enable</Nullable>
+        <ModelsDevCatalogUrl>https://models.dev/api.json</ModelsDevCatalogUrl>
+        <ModelsDevCatalogRefresh Condition="'$(ModelsDevCatalogRefresh)' == ''">true</ModelsDevCatalogRefresh>
+        <ModelsDevGeneratorProject>$(MSBuildThisFileDirectory)../LakeCode.Catalog.Generator/LakeCode.Catalog.Generator.csproj</ModelsDevGeneratorProject>
+        <ModelsDevDotnetHost Condition="'$(DOTNET_HOST_PATH)' != ''">$(DOTNET_HOST_PATH)</ModelsDevDotnetHost>
+        <ModelsDevDotnetHost Condition="'$(ModelsDevDotnetHost)' == ''">dotnet</ModelsDevDotnetHost>
     </PropertyGroup>
     <ItemGroup>
         <ProjectReference Include="../LakeCode.Eval.Contracts/LakeCode.Eval.Contracts.csproj" />
+        <ProjectReference Include="../LakeCode.Catalog.Generator/LakeCode.Catalog.Generator.csproj" ReferenceOutputAssembly="false" />
         <PackageReference Include="Microsoft.Agents.AI" Version="1.26.0" />
         <PackageReference Include="Microsoft.Agents.AI.OpenAI" Version="1.26.0" />
         <PackageReference Include="Microsoft.Agents.AI.Anthropic" Version="1.26.0" />
         <PackageReference Include="StbImageSharp" Version="2.30.16" />
         <PackageReference Include="ModelContextProtocol" Version="2.3.0" />
     </ItemGroup>
+    <Target Name="PrepareModelsDevCatalogProperties">
+        <PropertyGroup>
+            <ModelsDevCatalogJson>$(IntermediateOutputPath)models.dev.json</ModelsDevCatalogJson>
+            <ModelsDevCatalogGenerated>$(IntermediateOutputPath)ModelsDevCatalog.g.cs</ModelsDevCatalogGenerated>
+        </PropertyGroup>
+    </Target>
+    <Target Name="ResolveModelsDevGenerator">
+        <MSBuild Projects="$(ModelsDevGeneratorProject)" Targets="GetTargetPath" Properties="Configuration=$(Configuration)">
+            <Output TaskParameter="TargetOutputs" ItemName="ModelsDevGeneratorAssembly" />
+        </MSBuild>
+        <Error Condition="'@(ModelsDevGeneratorAssembly)' == ''" Text="The models.dev catalog generator was not built." />
+    </Target>
+    <Target Name="RefreshModelsDevCatalog" BeforeTargets="CoreCompile" DependsOnTargets="PrepareModelsDevCatalogProperties;ResolveModelsDevGenerator"
+            Condition="'$(DesignTimeBuild)' != 'true' and '$(ModelsDevCatalogRefresh)' == 'true'">
+        <Exec Command="&quot;$(ModelsDevDotnetHost)&quot; &quot;@(ModelsDevGeneratorAssembly)&quot; --url &quot;$(ModelsDevCatalogUrl)&quot; --json &quot;$(ModelsDevCatalogJson)&quot; --output &quot;$(ModelsDevCatalogGenerated)&quot;" />
+    </Target>
+    <Target Name="GenerateModelsDevCatalogFromCache" BeforeTargets="CoreCompile" DependsOnTargets="PrepareModelsDevCatalogProperties;ResolveModelsDevGenerator"
+            Condition="'$(DesignTimeBuild)' != 'true' and '$(ModelsDevCatalogRefresh)' != 'true'">
+        <Exec Command="&quot;$(ModelsDevDotnetHost)&quot; &quot;@(ModelsDevGeneratorAssembly)&quot; --json &quot;$(ModelsDevCatalogJson)&quot; --output &quot;$(ModelsDevCatalogGenerated)&quot; --offline" />
+    </Target>
+    <Target Name="PrepareModelsDevCatalog" BeforeTargets="CoreCompile"
+            DependsOnTargets="PrepareModelsDevCatalogProperties;RefreshModelsDevCatalog;GenerateModelsDevCatalogFromCache">
+        <ItemGroup Condition="Exists('$(ModelsDevCatalogGenerated)')">
+            <Compile Include="$(ModelsDevCatalogGenerated)" />
+        </ItemGroup>
+    </Target>
 </Project>

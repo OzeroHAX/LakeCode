@@ -1,11 +1,8 @@
 using System.Collections.Frozen;
+using LakeCode.Core.Providers;
 
 namespace LakeCode.Core.Agent;
 
-/// <summary>
-/// Documented model specifications; sources are listed next to each model family.
-/// Third-party gateways may impose different limits or restrict capabilities.
-/// </summary>
 public enum ModelType { Unknown, Chat, ImageGeneration }
 
 public sealed record ImageModelInfo(string Id, string Name)
@@ -13,151 +10,30 @@ public sealed record ImageModelInfo(string Id, string Name)
     public ModelType Type => ModelType.ImageGeneration;
 }
 
+/// <summary>
+/// Image-generation aliases. Chat capabilities come from <see cref="ModelsDevCatalog"/>;
+/// image IDs are kept explicit because hosted image generation accepts gateway-specific IDs
+/// that are not part of the chat catalog.
+/// </summary>
 public static class ModelCatalog
 {
-    // Image models do not have chat context/reasoning specifications.
-    // https://developers.openai.com/api/docs/guides/tools-image-generation
-    // Gateway aliases below are exact IDs observed in WikiVibe /models or Responses replies.
-    public static FrozenDictionary<string, ImageModelInfo> ImageModels { get; } = new[]
-    {
-        new ImageModelInfo("gpt-image-1", "GPT Image 1"),
-        new ImageModelInfo("gpt-image-1-mini", "GPT Image 1 Mini"),
-        new ImageModelInfo("gpt-image-1.5", "GPT Image 1.5"),
-        new ImageModelInfo("gpt-image-2", "GPT Image 2"),
-        new ImageModelInfo("gpt-image-2.5", "GPT Image 2.5 (gateway alias)"),
-        new ImageModelInfo("gpt-image-2.5-sunburst", "GPT Image 2.5 Sunburst"),
-        new ImageModelInfo("gpt-image-2.5-flare", "GPT Image 2.5 Flare"),
-        new ImageModelInfo("gpt-image-2-codex", "GPT Image 2 Codex (backend ID)")
-    }.ToFrozenDictionary(model => model.Id, StringComparer.Ordinal);
+    private static readonly ImageModelInfo[] ImageAliases =
+    [
+        new("gpt-image-1", "GPT Image 1"),
+        new("gpt-image-1-mini", "GPT Image 1 Mini"),
+        new("gpt-image-1.5", "GPT Image 1.5"),
+        new("gpt-image-2", "GPT Image 2"),
+        new("gpt-image-2.5", "GPT Image 2.5 (gateway alias)"),
+        new("gpt-image-2.5-sunburst", "GPT Image 2.5 Sunburst"),
+        new("gpt-image-2.5-flare", "GPT Image 2.5 Flare"),
+        new("gpt-image-2-codex", "GPT Image 2 Codex (backend ID)")
+    ];
 
-    public static ModelType GetModelType(string id) => ImageModels.ContainsKey(id) ? ModelType.ImageGeneration
-        : Models.ContainsKey(id) ? ModelType.Chat : ModelType.Unknown;
+    public static FrozenDictionary<string, ImageModelInfo> ImageModels { get; } =
+        ImageAliases.ToFrozenDictionary(model => model.Id, StringComparer.Ordinal);
 
-    // Sources: https://developers.openai.com/api/docs/models/{model-id}
-    // Image generation through a tool is not a native output modality.
-    public static FrozenDictionary<string, ModelInfo> Models { get; } =
-        new Dictionary<string, ModelInfo>(StringComparer.Ordinal)
-        {
-            // https://api-docs.deepseek.com/quick_start/pricing
-            // https://api-docs.deepseek.com/guides/thinking_mode
-            // Exact gateway ID; limits follow the official DeepSeek API, not every hosting provider.
-            // No "none": Chat Completions currently omits effort rather than disabling thinking.
-            ["deepseek/deepseek-v4.1-flash"] = new(
-                Id: "deepseek/deepseek-v4.1-flash",
-                Name: "DeepSeek V4.1 Flash",
-                ContextWindowTokens: 1_048_576,
-                MaxInputTokens: 1_048_576,
-                MaxOutputTokens: 393_216,
-                InputModalities: [ModelModality.Text, ModelModality.Image],
-                OutputModalities: [ModelModality.Text],
-                ReasoningEfforts: ["low", "high", "max"]),
-            // https://ai.google.dev/gemini-api/docs/models/gemini-3.1-flash-lite-preview
-            // https://docs.litellm.ai/blog/gemini_3_1_flash_lite_preview
-            // Retired by Google; keep the exact ID for gateways that still advertise it.
-            ["gemini-3.1-flash-lite-preview"] = new(
-                Id: "gemini-3.1-flash-lite-preview",
-                Name: "Gemini 3.1 Flash-Lite Preview",
-                ContextWindowTokens: 1_048_576,
-                MaxInputTokens: 1_048_576,
-                MaxOutputTokens: 65_536,
-                InputModalities: [ModelModality.Text, ModelModality.Image],
-                OutputModalities: [ModelModality.Text],
-                ReasoningEfforts: ["minimal", "low", "medium", "high"]),
-            // https://ai.google.dev/gemini-api/docs/models/gemini-3.8-flash
-            ["gemini-3.8-flash"] = new(
-                Id: "gemini-3.8-flash",
-                Name: "Gemini 3.8 Flash",
-                ContextWindowTokens: 1_048_576,
-                MaxInputTokens: 1_048_576,
-                MaxOutputTokens: 65_536,
-                InputModalities: [ModelModality.Text, ModelModality.Image],
-                OutputModalities: [ModelModality.Text],
-                ReasoningEfforts: ["low", "medium", "high"]),
-            // https://docs.z.ai/guides/llm/glm-5.3
-            ["glm-5.3"] = new(
-                Id: "glm-5.3",
-                Name: "GLM-5.3",
-                ContextWindowTokens: 1_048_576,
-                MaxInputTokens: 1_048_576,
-                MaxOutputTokens: 131_072,
-                InputModalities: [ModelModality.Text],
-                OutputModalities: [ModelModality.Text],
-                ReasoningEfforts: ["low", "high", "max"]),
-            // https://docs.z.ai/guides/llm/glm-5.3-flash
-            ["glm-5.3-flash"] = new(
-                Id: "glm-5.3-flash",
-                Name: "GLM-5.3 Flash",
-                ContextWindowTokens: 1_048_576,
-                MaxInputTokens: 1_048_576,
-                MaxOutputTokens: 131_072,
-                InputModalities: [ModelModality.Text, ModelModality.Image],
-                OutputModalities: [ModelModality.Text],
-                ReasoningEfforts: ["low", "high", "max"]),
-            // https://developers.openai.com/api/docs/models/gpt-5.6-luna
-            // https://developers.openai.com/api/docs/models/gpt-5.6-sol
-            // https://developers.openai.com/api/docs/models/gpt-5.6-terra
-            ["gpt-5.6-luna"] = new(
-                Id: "gpt-5.6-luna",
-                Name: "GPT-5.6 Luna",
-                ContextWindowTokens: 1_050_000,
-                MaxInputTokens: 922_000,
-                MaxOutputTokens: 128_000,
-                InputModalities: [ModelModality.Text, ModelModality.Image],
-                OutputModalities: [ModelModality.Text],
-                ReasoningEfforts: ["none", "low", "medium", "high", "xhigh", "max"]),
-            ["gpt-5.6-sol"] = new(
-                Id: "gpt-5.6-sol",
-                Name: "GPT-5.6 Sol",
-                ContextWindowTokens: 1_050_000,
-                MaxInputTokens: 922_000,
-                MaxOutputTokens: 128_000,
-                InputModalities: [ModelModality.Text, ModelModality.Image],
-                OutputModalities: [ModelModality.Text],
-                ReasoningEfforts: ["none", "low", "medium", "high", "xhigh", "max"]),
-            ["gpt-5.6-terra"] = new(
-                Id: "gpt-5.6-terra",
-                Name: "GPT-5.6 Terra",
-                ContextWindowTokens: 1_050_000,
-                MaxInputTokens: 922_000,
-                MaxOutputTokens: 128_000,
-                InputModalities: [ModelModality.Text, ModelModality.Image],
-                OutputModalities: [ModelModality.Text],
-                ReasoningEfforts: ["none", "low", "medium", "high", "xhigh", "max"]),
-            ["gpt-6-luna"] = new(
-                Id: "gpt-6-luna",
-                Name: "GPT-6 Luna",
-                ContextWindowTokens: 1_050_000,
-                MaxInputTokens: 922_000,
-                MaxOutputTokens: 128_000,
-                InputModalities: [ModelModality.Text, ModelModality.Image],
-                OutputModalities: [ModelModality.Text],
-                ReasoningEfforts: ["none", "low", "medium", "high", "xhigh", "max"]),
-            ["gpt-6-sol"] = new(
-                Id: "gpt-6-sol",
-                Name: "GPT-6 Sol",
-                ContextWindowTokens: 1_050_000,
-                MaxInputTokens: 922_000,
-                MaxOutputTokens: 128_000,
-                InputModalities: [ModelModality.Text, ModelModality.Image],
-                OutputModalities: [ModelModality.Text],
-                ReasoningEfforts: ["none", "low", "medium", "high", "xhigh", "max"]),
-            ["gpt-6-astra"] = new(
-                Id: "gpt-6-astra",
-                Name: "GPT-6 Astra",
-                ContextWindowTokens: 1_050_000,
-                MaxInputTokens: 922_000,
-                MaxOutputTokens: 128_000,
-                InputModalities: [ModelModality.Text, ModelModality.Image],
-                OutputModalities: [ModelModality.Text],
-                ReasoningEfforts: ["low", "medium", "high", "xhigh", "max"]),
-            ["gpt-6.1-sol"] = new(
-                Id: "gpt-6.1-sol",
-                Name: "GPT-6.1 Sol",
-                ContextWindowTokens: 1_050_000,
-                MaxInputTokens: 922_000,
-                MaxOutputTokens: 128_000,
-                InputModalities: [ModelModality.Text, ModelModality.Image],
-                OutputModalities: [ModelModality.Text],
-                ReasoningEfforts: ["low", "medium", "high", "xhigh", "max"])
-        }.ToFrozenDictionary(StringComparer.Ordinal);
+    public static ModelType GetModelType(string id) =>
+        ImageModels.ContainsKey(id) ? ModelType.ImageGeneration : ModelType.Unknown;
+
+    public static ModelInfo DefaultModel => ModelsDevCatalog.DefaultModel;
 }

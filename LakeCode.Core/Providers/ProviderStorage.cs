@@ -53,8 +53,18 @@ public sealed class ProviderStorage
         catch (Exception error) when (error is JsonException or InvalidOperationException or ArgumentException or NullReferenceException)
         { throw new InvalidDataException("Повреждён providers.json. Исправьте файл; настройки не были сброшены."); }
         if (settings.SchemaVersion != 2) throw new InvalidDataException("Неподдерживаемая версия providers.json.");
-        Validate(settings.Providers);
-        return settings.Providers.Select(profile => profile with { Discovery = LoadDiscovery(profile) }).ToImmutableArray();
+        var profiles = settings.Providers
+            .Select(profile => profile with
+            {
+                CatalogProviderId = profile.Kind == ProviderKind.TypeSafe
+                    ? null
+                    : profile.CatalogProviderId is { } catalogProviderId && ModelsDevCatalog.Providers.ContainsKey(catalogProviderId)
+                        ? catalogProviderId
+                        : ModelsDevCatalog.InferProviderId(profile.BaseUrl)
+            })
+            .ToImmutableArray();
+        Validate(profiles);
+        return profiles.Select(profile => profile with { Discovery = LoadDiscovery(profile) }).ToImmutableArray();
     }
 
     public async Task SaveAsync(ImmutableArray<ProviderProfile> profiles, CancellationToken cancellationToken = default)
@@ -92,7 +102,7 @@ public sealed class ProviderStorage
     private sealed record ModelCache(string ConnectionFingerprint, DiscoveredModels Discovery);
 
     private static string Fingerprint(ProviderProfile profile) => Convert.ToHexString(SHA256.HashData(
-        JsonSerializer.SerializeToUtf8Bytes(new { profile.Kind, BaseUrl = profile.BaseUrl.TrimEnd('/'), profile.ApiKey })));
+        JsonSerializer.SerializeToUtf8Bytes(new { profile.Kind, BaseUrl = profile.BaseUrl.TrimEnd('/'), profile.DiscoveryUrl, profile.ApiKey })));
 
     private string CachePath(ProviderProfile profile) => Path.Combine(Path.GetDirectoryName(FilePath)!,
         "model-cache", profile.Id, profile.Revision + ".json");

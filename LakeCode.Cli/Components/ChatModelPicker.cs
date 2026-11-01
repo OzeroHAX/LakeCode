@@ -129,19 +129,22 @@ internal sealed class ChatModelPicker
                          .Where(profile => filter is null || profile.Id == filter)
                          .OrderBy(profile => profile.Name, StringComparer.Ordinal))
             {
-                var ids = (profile.Discovery?.Ids ?? ImmutableArray<string>.Empty)
-                    .Concat(profile.ModelOverrides.Keys)
-                    .Concat(profile.Id == _providerId && _modelId is not null ? new[] { _modelId } : [])
-                    .Distinct(StringComparer.Ordinal).OrderBy(id => id, StringComparer.Ordinal);
-                foreach (var id in ids)
+                var entries = profile.ModelEntries
+                    .Concat(profile.Id == _providerId && _modelId is not null
+                        ? [ModelResolver.Resolve(profile, _modelId)]
+                        : [])
+                    .GroupBy(entry => entry.ApiId, StringComparer.Ordinal)
+                    .Select(group => group.First())
+                    .OrderBy(entry => entry.ApiId, StringComparer.Ordinal);
+                foreach (var entry in entries)
                 {
+                    var id = entry.ApiId;
                     var draftRow = profile.Id == _providerId && id == _modelId;
                     if (!draftRow && !Matches(profile.Name, id)) continue;
-                    var entry = ModelResolver.Resolve(profile, id);
                     if (entry.Type == ModelType.ImageGeneration) continue;
                     var selectable = entry.Available && entry.Error is null && entry.Model is not null;
                     var glyph = selectable ? "[green]●[/]" : entry.Error is not null ? "[red]✕[/]" : "[yellow]?[/]";
-                    var hint = entry.Error is not null ? "[grey70]нет характеристик · /providers[/]"
+                    var hint = entry.Error is not null ? "[grey70]ошибка каталога · /providers[/]"
                         : selectable ? "" : "[grey70]вне списка · F2[/]";
                     var label = filter is null ? $"{profile.Name} · {id}" : id;
                     AddRow(new Row(profile.Id, id, entry.Model?.ReasoningEfforts ?? [], hint, selectable),

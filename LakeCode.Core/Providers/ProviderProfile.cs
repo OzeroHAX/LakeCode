@@ -17,6 +17,10 @@ public sealed record ProviderProfile
     [JsonRequired] public OpenAIApiMode ApiMode { get; init; }
     [JsonRequired] public string BaseUrl { get; init; } = "";
     [JsonRequired] public string ApiKey { get; init; } = "";
+    /// <summary>Optional models.dev provider ID used as the capability catalog.</summary>
+    public string? CatalogProviderId { get; init; }
+    /// <summary>Optional models endpoint when it differs from the inference base URL.</summary>
+    public string? DiscoveryUrl { get; init; }
     public const int MaxModels = 10000;
     [JsonRequired] public ImmutableDictionary<string, ModelOverride> ModelOverrides { get; init; } = ImmutableDictionary<string, ModelOverride>.Empty;
     [JsonIgnore] public DiscoveredModels? Discovery { get; init; }
@@ -39,8 +43,17 @@ public sealed record ProviderProfile
             uri.Scheme is not ("http" or "https") || string.IsNullOrWhiteSpace(uri.Host) ||
             uri.UserInfo.Length != 0 || uri.Query.Length != 0 || uri.Fragment.Length != 0)
             throw new InvalidDataException("URL должен быть абсолютным HTTP(S) адресом без ключа, query и fragment.");
+        if (DiscoveryUrl is { } discoveryUrl &&
+            (!Uri.TryCreate(discoveryUrl, UriKind.Absolute, out var discoveryUri) ||
+             discoveryUri.Scheme is not ("http" or "https") || string.IsNullOrWhiteSpace(discoveryUri.Host) ||
+             discoveryUri.UserInfo.Length != 0 || discoveryUri.Query.Length != 0 || discoveryUri.Fragment.Length != 0))
+            throw new InvalidDataException("URL списка моделей должен быть абсолютным HTTP(S) адресом без ключа, query и fragment.");
         if (ApiKey is null || ApiKey.Length > 8192 || ApiKey.Any(char.IsControl))
             throw new InvalidDataException("Некорректный API-ключ.");
+        if (CatalogProviderId is { } catalogProviderId &&
+            (catalogProviderId.Length > 100 || catalogProviderId.Any(char.IsControl) ||
+             !ModelsDevCatalog.Providers.ContainsKey(catalogProviderId) || Kind == ProviderKind.TypeSafe))
+            throw new InvalidDataException("Некорректный каталог models.dev для подключения.");
         if (ModelOverrides is null || ModelOverrides.Count > MaxModels ||
             ModelOverrides.Any(item => !ValidModelId(item.Key) || item.Value is null))
             throw new InvalidDataException("Некорректные overrides моделей.");

@@ -21,13 +21,15 @@ public static class ProviderModelDiscovery
         var ids = ImmutableArray.CreateBuilder<string>();
         var seen = new HashSet<string>(StringComparer.Ordinal);
         var cursors = new HashSet<string>(StringComparer.Ordinal);
+        var discoveryBaseUrl = profile.DiscoveryUrl ?? ProviderPresets.DiscoveryUrlFor(profile.CatalogProviderId) ??
+            profile.BaseUrl.TrimEnd('/') + (profile.Kind == ProviderKind.Anthropic ? "/v1/models?limit=1000" : "/models");
         string? cursor = null;
         try
         {
             do
             {
-                var url = profile.BaseUrl.TrimEnd('/') + (profile.Kind == ProviderKind.Anthropic ? "/v1/models?limit=1000" : "/models");
-                if (cursor is not null) url += "&after_id=" + Uri.EscapeDataString(cursor);
+                var url = discoveryBaseUrl;
+                if (cursor is not null) url += (url.Contains('?') ? "&" : "?") + "after_id=" + Uri.EscapeDataString(cursor);
                 using var request = new HttpRequestMessage(HttpMethod.Get, url);
                 request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
                 if (profile.Kind == ProviderKind.Anthropic)

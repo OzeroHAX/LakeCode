@@ -46,7 +46,7 @@ internal sealed class ModelStore : INotifyPropertyChanged
         var profile = providers.Profiles.FirstOrDefault(profile => !profile.Models.IsEmpty);
         SelectedProviderId = profile?.Id ?? "";
         SelectedModel = profile?.Models.FirstOrDefault(model => model.Id == "gpt-6.1-sol")
-            ?? profile?.Models.FirstOrDefault() ?? ModelCatalog.Models["gpt-6.1-sol"];
+            ?? profile?.Models.FirstOrDefault() ?? ModelCatalog.DefaultModel;
         SelectedReasoningEffort = SelectedModel.ReasoningEfforts.Contains("medium") ? "medium" : SelectedModel.ReasoningEfforts[0];
     }
 

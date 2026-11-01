@@ -14,6 +14,9 @@ namespace LakeCode.Core.Providers;
 #pragma warning disable OPENAI001, SCME0001
 internal static class ProviderClientFactory
 {
+    private static readonly string UserAgentApplicationId =
+        $"LakeCode/{typeof(ProviderClientFactory).Assembly.GetName().Version?.ToString(3) ?? "1.0"}";
+
     public static IChatClient Create(ProviderProfile profile, ModelInfo model, string sessionId)
     {
         profile.Validate();
@@ -21,17 +24,32 @@ internal static class ProviderClientFactory
             throw new InvalidOperationException("System One поддерживает классификацию, не чат. Выберите чат-модель в /models.");
         if (string.IsNullOrWhiteSpace(profile.ApiKey))
             throw new InvalidOperationException("Не задан API-ключ. Настройте подключение через /providers.");
+        var openCodeSession = UsesOpenCodeSession(profile);
         if (profile.Kind == ProviderKind.Anthropic)
-            return new AnthropicClient(new ClientOptions { ApiKey = profile.ApiKey, BaseUrl = profile.BaseUrl.TrimEnd('/') })
-                .AsIChatClient(model.Id, model.MaxOutputTokens);
-        var options = new OpenAIClientOptions { Endpoint = new Uri(profile.BaseUrl.TrimEnd('/')) };
+        {
+            var anthropicOptions = new ClientOptions { ApiKey = profile.ApiKey, BaseUrl = profile.BaseUrl.TrimEnd('/') };
+            if (openCodeSession)
+                anthropicOptions.ExtraHeaders = new Dictionary<string, string> { ["x-opencode-session"] = sessionId };
+            return new AnthropicClient(anthropicOptions).AsIChatClient(model.Id, model.MaxOutputTokens);
+        }
+        var options = new OpenAIClientOptions
+        {
+            Endpoint = new Uri(profile.BaseUrl.TrimEnd('/')), UserAgentApplicationId = UserAgentApplicationId
+        };
         if (profile.ApiMode == OpenAIApiMode.Responses)
             options.AddPolicy(new CodexSessionHeadersPolicy(sessionId), PipelinePosition.PerCall);
+        if (openCodeSession)
+            options.AddPolicy(new OpenCodeSessionHeadersPolicy(sessionId), PipelinePosition.PerCall);
         var client = new OpenAIClient(new ApiKeyCredential(profile.ApiKey), options);
         return profile.ApiMode == OpenAIApiMode.Responses
             ? client.GetResponsesClient().AsIChatClient()
             : client.GetChatClient(model.Id).AsIChatClient();
     }
+
+    private static bool UsesOpenCodeSession(ProviderProfile profile) =>
+        profile.CatalogProviderId is "opencode" or "opencode-go" ||
+        Uri.TryCreate(profile.BaseUrl, UriKind.Absolute, out var uri) &&
+        uri.Host.Equals("opencode.ai", StringComparison.OrdinalIgnoreCase);
 
     public static ChatOptions Options(ProviderProfile profile, ModelInfo model, string effort, string sessionId, bool title = false)
     {

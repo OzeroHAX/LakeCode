@@ -26,7 +26,15 @@ public sealed class ProviderRegistry
 
     public async Task SaveAsync(ProviderProfile profile, CancellationToken cancellationToken = default)
     {
-        profile = profile with { Revision = Guid.NewGuid().ToString("D") };
+        profile = profile with
+        {
+            Revision = Guid.NewGuid().ToString("D"),
+            CatalogProviderId = profile.Kind == ProviderKind.TypeSafe
+                ? null
+                : profile.CatalogProviderId is { } catalogProviderId && ModelsDevCatalog.Providers.ContainsKey(catalogProviderId)
+                    ? catalogProviderId
+                    : ModelsDevCatalog.InferProviderId(profile.BaseUrl)
+        };
         profile.Validate();
         await _writes.WaitAsync(cancellationToken);
         try
