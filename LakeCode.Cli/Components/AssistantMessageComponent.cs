@@ -50,6 +50,7 @@ internal sealed class AssistantMessageComponent : CollapsiblePanel
         Visible = true;
         if (startsNewBlock || _thinking.IsCompleted)
         {
+            _thinking.Complete();
             _thinking = new ThinkingComponent(_windowSystem);
             AddControl(_thinking);
         }
