@@ -3,6 +3,7 @@ using System.Text.Json;
 using LakeCode.Core.Agent.Delegation;
 using LakeCode.Core.Agent.Execution;
 using LakeCode.Core.Agent.Tools.Eval;
+using LakeCode.Core.Agent.Tools.Bash;
 using LakeCode.Core.Agent.Tools.Registration;
 using Microsoft.Agents.AI;
 using Microsoft.Extensions.AI;
@@ -114,6 +115,12 @@ internal sealed class ToolInvocationRunner(
         {
             var accessError = !registered ? $"Error: Tool '{name}' is unavailable in the current configuration."
                 : configuration.IsComplete() ? configuration.CompletionError : "";
+            if (accessError.Length == 0 && name == "bash")
+            {
+                using var arguments = JsonDocument.Parse(argumentsJson);
+                if (arguments.RootElement.TryGetProperty("command", out var command) && command.ValueKind == JsonValueKind.String)
+                    accessError = BashCommandPolicy.Check(command.GetString()!) ?? "";
+            }
             if (accessError.Length == 0 && (requiresApproval || name is "bash" or "eval"))
                 accessError = await approval.CheckAsync(call, requiresApproval, getEval(),
                     update => call = update, Publish, cancellationToken, manualApproval ? registration.ApprovalDescription : null);
@@ -126,7 +133,7 @@ internal sealed class ToolInvocationRunner(
                     return Task.FromResult("");
                 });
             }
-            if (accessError.Length == 0 && call.Name is "read_file" or "list_directory" or "grep")
+            if (accessError.Length == 0 && call.Name is "read_file" or "list_directory" or "search_text" or "find_files" or "outline_file" or "trace_code")
             {
                 using var arguments = JsonDocument.Parse(call.Arguments);
                 var path = arguments.RootElement.TryGetProperty("path", out var value)

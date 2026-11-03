@@ -17,7 +17,8 @@ internal static class Delegation
         Parallelism alone is not a reason to delegate. If in doubt, work alone. Respect an explicit
         user prohibition on subagents; otherwise no routine user confirmation is needed.
         At most four unfinished jobs are allowed as a safety ceiling, not a target.
-        Children are read-only: read_file, list_directory, grep and ask_parent;
+        Children are read-only: read_file, list_directory, search_text, find_files,
+        outline_file, trace_code and ask_parent;
         no writes, commands or nested delegation. Supply self-contained tasks and relevant context,
         scope, constraints and decisions; children do not inherit your conversation.
         delegate starts or resumes work in the background and immediately returns Running and taskId.

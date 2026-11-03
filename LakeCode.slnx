@@ -1,6 +1,7 @@
 <Solution>
   <Project Path="LakeCode.Catalog.Generator/LakeCode.Catalog.Generator.csproj" />
   <Project Path="LakeCode.Core/LakeCode.Core.csproj" />
+  <Project Path="LakeCode.Search/LakeCode.Search.csproj" />
   <Project Path="LakeCode.Cli/LakeCode.Cli.csproj" />
   <Project Path="LakeCode.Eval.Contracts/LakeCode.Eval.Contracts.csproj" />
   <Project Path="LakeCode.Eval.Worker/LakeCode.Eval.Worker.csproj" />

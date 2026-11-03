@@ -6,7 +6,7 @@ using LakeCode.Core.Agent.Tools.Bash;
 using LakeCode.Core.Agent.Tools.EditFile;
 using LakeCode.Core.Agent.Tools.Eval;
 using LakeCode.Core.Agent.Tools.Execution;
-using LakeCode.Core.Agent.Tools.Grep;
+using LakeCode.Core.Agent.Tools.Search;
 using LakeCode.Core.Agent.Tools.History;
 using LakeCode.Core.Agent.Tools.ImageGeneration;
 using LakeCode.Core.Agent.Tools.ListDirectory;
@@ -32,7 +32,7 @@ internal sealed class AgentToolServices
     public ToolInvocationRunner Invocations { get; }
     public ReadFileTool ReadFile { get; }
     public ListDirectoryTool ListDirectory { get; }
-    public GrepTool Grep { get; }
+    public SearchTools Search { get; }
     public WriteFileTool WriteFile { get; }
     public EditFileTool EditFile { get; }
     public BashTool Bash { get; }
@@ -68,7 +68,7 @@ internal sealed class AgentToolServices
         _web = web;
         ReadFile = new ReadFileTool(files);
         ListDirectory = new ListDirectoryTool(files);
-        Grep = new GrepTool(files);
+        Search = new SearchTools(files);
         WriteFile = new WriteFileTool(files, invocations.ReportFileChange);
         EditFile = new EditFileTool(files, invocations.ReportFileChange);
         Bash = new BashTool(files, invocations.ReportBashOutput);

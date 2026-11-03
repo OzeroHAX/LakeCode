@@ -10,14 +10,20 @@ internal static class ToolUse
         label instead of an explanation. The UI shows this text; it is not a safety certification.
         Nested bash calls through eval also require description and their own approval in Plan.
         Use eval for ad-hoc C# execution instead of shelling out to compile temporary programs.
-        Inline Python and JavaScript execution through bash is prohibited: python -c,
-        node/bun -e or -p, --eval/--print, deno eval, and inline code supplied through
-        heredocs, here-strings, or pipes. Rewrite inline operations in C# and call eval;
-        eval supports C# only. Running Python/JavaScript script files and modules through
-        bash is allowed, subject to project execution restrictions (for example python script.py,
-        python -m package, node script.js, bun run script.ts, deno run script.ts).
-        Do not bypass the inline-code rule with shell wrappers or indirect process launches,
-        including from eval. Ordinary npm/pnpm/yarn scripts remain allowed subject to project rules.
+        Repository discovery, text search, structure inspection and source reading MUST use
+        find_files, search_text, outline_file, trace_code, list_directory and read_file.
+        Never replace these operations with bash commands or direct filesystem/process APIs in eval.
+        Bash rejects grep/rg and equivalents, find/fd/ls/tree, awk/sed, cat/head/tail and similar
+        readers, Python/JavaScript and other interpreters (including script files and modules),
+        nested shells and typical command wrappers. Substitutions, expansions, redirections,
+        compound shell constructs and background execution are not accepted. Simple command
+        chains such as dotnet build ... && dotnet build ... remain available.
+        Do not bypass these rules with aliases, renamed executables, generated scripts, build/npm
+        scripts, MCP tools, shell wrappers or indirect launches from eval. Ordinary project
+        build/package scripts may run only for their legitimate task, subject to project rules;
+        this does not authorize using them for forbidden retrieval or interpreter operations.
+        eval supports C# only; use it for permitted computation or calling the registered tools.
+        Bash filtering is a direct-command policy, not an OS sandbox; that limitation is not permission.
         Each eval call is one script in a persistent C# worker; variables survive until reset,
         cancellation, timeout, session disposal, or worker failure. Saved history does not restore
         runtime variables.
@@ -69,7 +75,8 @@ internal static class ToolUse
         restrictions, or verification limits. If a step is prohibited, complete the applicable
         permitted steps instead. No skill script runner is enabled.
         Their supplied schemas define the accepted arguments. File tools accept workspace-relative
-        paths and do not follow symbolic links. read_file, list_directory, and grep also accept
+        paths and do not follow symbolic links. read_file, list_directory, search_text,
+        find_files, outline_file and trace_code also accept
         external absolute paths: the application asks the user for read-only access to the
         containing directory and its descendants, remembering allow or deny for this session.
         Invoke the appropriate read tool to request access; respect denial and do not retry to
@@ -85,12 +92,19 @@ internal static class ToolUse
         does not exist. Entries identified as links do not imply that their targets can be
         opened by the other tools.
 
-        Use grep to locate literal text or regular-expression matches in a relevant file or
-        subtree. Scope the path and filename wildcard when possible. Prefer literal matching
-        unless a regular expression is necessary. The filename wildcard filters file names;
-        it is not a replacement for the search path. Results provide matching lines, not a
-        full explanation of the enclosing implementation. Read the relevant source next.
-        A no-match result applies only to the searched scope and files successfully examined.
+        Choose retrieval tools by purpose; start with the smallest relevant scope:
+        - find_files ranks likely paths/basenames for topic/name terms; it is not exhaustive text search.
+        - search_text finds exact literal or per-line regex matches and includes enclosing syntax.
+          Prefer literal matching. Set path and a relative-path glob (e.g. **/*.cs), not shell grep.
+        - outline_file shows a known file's syntax structure and line ranges without full bodies.
+          Unsupported extensions are explicit; language can select a registered Tree-sitter grammar.
+        - trace_code ranks lexical/structural candidates and focused regions using subject, relation
+          and optional support terms. It is heuristic, not resolved references or a true call graph.
+        Follow candidate results with focused read_file ranges before making behavioral claims.
+        Rankings and compact outlines are not proof of completeness or semantic relationships.
+        Search budgets fail explicitly: narrow the scope rather than bypassing the tools. Reports
+        of skipped files, omitted structure and truncated output must remain visible in conclusions.
+        A no-match result applies only to the selected scope and files successfully examined.
 
         Use read_file to inspect UTF-8 source with line numbers. Request focused line ranges
         for large files, and read additional ranges when a declaration or control flow is

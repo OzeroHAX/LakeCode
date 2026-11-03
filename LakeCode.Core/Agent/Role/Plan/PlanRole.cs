@@ -29,7 +29,7 @@ internal sealed class PlanRole : AgentRole
         var agent = Configuration.Tools;
         agent.AddTool(services.ReadFile.AgentTool());
         agent.AddTool(services.ListDirectory.AgentTool());
-        agent.AddTool(services.Grep.AgentTool());
+        foreach (var tool in services.Search.AgentTools()) agent.AddTool(tool);
         agent.AddTool(services.Bash.AgentTool())
             .Policy(ToolExecutionPolicy.RequireApproval);
         agent.AddTool(services.Eval.AgentTool())
