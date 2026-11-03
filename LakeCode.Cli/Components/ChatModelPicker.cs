@@ -73,7 +73,7 @@ internal sealed class ChatModelPicker
         _providers = Dropdown("");
         _providers.Margin = new Margin(2, 0, 2, 0);
         _providers.AddItem("Все подключения");
-        foreach (var profile in registry.Profiles.Where(profile => profile.Kind != ProviderKind.TypeSafe)
+        foreach (var profile in registry.Profiles.Where(profile => profile.Definition.SupportsChat)
                      .OrderBy(profile => profile.Name, StringComparer.Ordinal))
         {
             _providers.AddItem(profile.Name);
@@ -125,7 +125,7 @@ internal sealed class ChatModelPicker
             if (_emptyLabel is not null)
                 AddRow(new Row(null, null, [], "", true), $"[grey70]{Markup.Escape(_emptyLabel)}[/]");
             var filter = FilterProviderId;
-            foreach (var profile in _registry.Profiles.Where(profile => profile.Kind != ProviderKind.TypeSafe)
+            foreach (var profile in _registry.Profiles.Where(profile => profile.Definition.SupportsChat)
                          .Where(profile => filter is null || profile.Id == filter)
                          .OrderBy(profile => profile.Name, StringComparer.Ordinal))
             {

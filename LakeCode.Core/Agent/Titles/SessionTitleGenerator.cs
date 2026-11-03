@@ -27,7 +27,7 @@ internal static class SessionTitleGenerator
             }
         });
         var session = await titleAgent.CreateSessionAsync(cancellationToken: cancellationToken);
-        var options = new ChatClientAgentRunOptions(ProviderClientFactory.Options(
+        var options = new ChatClientAgentRunOptions(provider.Definition.Options(
             provider, model, model.ReasoningEfforts[0], cacheSessionId, title: true));
         var text = new System.Text.StringBuilder();
         await foreach (var update in titleAgent.RunStreamingAsync(

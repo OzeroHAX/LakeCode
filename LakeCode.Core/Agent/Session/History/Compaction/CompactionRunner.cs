@@ -127,7 +127,7 @@ internal static class CompactionRunner
         using var client = new ProviderChatClient();
         var affinity = Guid.NewGuid().ToString("D");
         client.Configure(configuration.Provider, model, affinity);
-        var options = ProviderClientFactory.Options(configuration.Provider, model, configuration.ReasoningEffort, affinity);
+        var options = configuration.Provider.Definition.Options(configuration.Provider, model, configuration.ReasoningEffort, affinity);
         options.Instructions = Prompt;
         var answer = new StringBuilder();
         UsageDetails? usage = null;

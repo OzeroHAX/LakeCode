@@ -267,9 +267,9 @@ public sealed class ConversationService
         {
             ConfirmExecution = ConfirmExecutionAsync,
             IsExecutionClassifierEnabled = () => _activeClassifier.Settings.Enabled,
-            AssessExecution = (request, token) => ExecutionApproval.JevExecutionClassifier.AssessAsync(
-                request, _activeClassifier, _providers.Profiles.Select(p => p.ApiKey)
-                    .Concat(_lastRequest is { } last ? new[] { last.Provider.ApiKey } : []), token)
+            AssessExecution = (request, token) => ExecutionApproval.ExecutionClassifier.AssessAsync(
+                request, _activeClassifier, _providers.Profiles.SelectMany(p => p.Secrets)
+                    .Concat(_lastRequest is { } last ? last.Provider.Secrets : []), token)
         };
         var agent = AgentFactory.CreateMain(_workspaceRoot, ConfirmExternalReadAsync, sessionId, AskUserAsync,
             _sessions.EnsureWorkspace(sessionId), approval, SavePlan);
@@ -654,7 +654,7 @@ public sealed class ConversationService
             if (!Enum.IsDefined(pending.AgentMode) || !model.ReasoningEfforts.Contains(pending.ReasoningEffort) ||
                 (pending.Images.Length > 0 && !model.InputModalities.Contains(ModelModality.Image)))
                 throw new InvalidDataException("Настройки ожидающего сообщения больше не поддерживаются.");
-            if (string.IsNullOrWhiteSpace(provider.ApiKey)) throw new InvalidDataException("Укажите API-ключ через /providers.");
+            if (!provider.HasCredentials) throw new InvalidDataException("Настройте авторизацию через /providers.");
             if (!model.InputModalities.Contains(ModelModality.Image) && _snapshot?.Turns.Any(turn => turn.Images.Count > 0) == true)
                 throw new InvalidDataException("История содержит изображения; ожидающему сообщению нужна модель с image input.");
             FileAttachments.Validate(pending.Files, model.ContextWindowTokens);

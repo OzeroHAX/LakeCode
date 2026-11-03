@@ -47,6 +47,7 @@ internal static class CatalogEmitter
         AppendHeader(builder, sourceUrl, root.EnumerateObject().Count(), providers.Count, modelCount);
         AppendTypes(builder);
         AppendCatalog(builder, providers);
+        AppendProviders(builder, providers);
         return new EmittedCatalog(builder.ToString(), providers.Count, modelCount);
     }
 
@@ -64,6 +65,7 @@ internal static class CatalogEmitter
         Line(builder);
         Line(builder, "using System.Collections.Frozen;");
         Line(builder, "using System.Collections.Immutable;");
+        Line(builder, "using LakeCode.Core.Providers.Custom;");
         Line(builder);
         Line(builder, "namespace LakeCode.Core.Providers;");
         Line(builder);
@@ -138,7 +140,26 @@ internal static class CatalogEmitter
         Line(builder, "        Providers.TryGetValue(providerId, out var provider) && provider.Models.TryGetValue(modelId, out var model)");
         Line(builder, "            ? model");
         Line(builder, "            : null;");
+        Line(builder);
+        Line(builder, "    internal static Provider CreateProvider(ModelsDevProvider provider, string baseUrl, string? discoveryUrl) => provider.Id switch");
+        Line(builder, "    {");
+        for (var i = 0; i < providers.Count; i++)
+            Line(builder, $"        {Quote(providers[i].Id)} => new GeneratedProvider{i}(provider, baseUrl, discoveryUrl),");
+        Line(builder, "        _ => throw new InvalidOperationException(\"Unknown generated provider.\")");
+        Line(builder, "    };");
         Line(builder, "}");
+    }
+
+    private static void AppendProviders(StringBuilder builder, List<Provider> providers)
+    {
+        for (var i = 0; i < providers.Count; i++)
+        {
+            Line(builder, $"internal sealed record GeneratedProvider{i}(ModelsDevProvider Catalog, string Endpoint, string? ModelsEndpoint)");
+            var baseType = GetString(providers[i].Value, "npm") == "@ai-sdk/anthropic"
+                ? "AnthropicCompatibleProvider" : "OpenAICompatibleProvider";
+            var mode = baseType == "OpenAICompatibleProvider" ? "OpenAIApiMode.ChatCompletions, " : "";
+            Line(builder, $"    : {baseType}(Catalog.Id, Catalog.Name, {mode}Endpoint, ModelsEndpoint, Catalog.Id, Catalog.EnvironmentVariables, Catalog.DocumentationUrl, Catalog.Models.Count);");
+        }
     }
 
     private static string RenderModel(string modelId, JsonElement model)

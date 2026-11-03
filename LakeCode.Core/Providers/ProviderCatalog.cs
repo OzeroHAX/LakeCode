@@ -1,38 +1,23 @@
 using System.Collections.Immutable;
+using LakeCode.Core.Providers.Custom;
 
 namespace LakeCode.Core.Providers;
-
-/// <summary>Ready connection derived from models.dev; the user supplies only a key.</summary>
-public sealed record ProviderPreset(
-    string Id,
-    string Name,
-    ProviderKind Kind,
-    OpenAIApiMode ApiMode,
-    string BaseUrl,
-    string? DiscoveryUrl,
-    string CatalogProviderId,
-    ImmutableArray<string> EnvironmentVariables,
-    string? DocumentationUrl,
-    int ModelCount)
-{
-    public ProviderProfile CreateProfile(string name, string apiKey) => new()
-    {
-        Name = name,
-        Kind = Kind,
-        ApiMode = ApiMode,
-        BaseUrl = BaseUrl,
-        DiscoveryUrl = DiscoveryUrl,
-        ApiKey = apiKey,
-        CatalogProviderId = CatalogProviderId
-    };
-}
 
 /// <summary>
 /// Connections that the bundled OpenAI/Anthropic transports can use directly.
 /// Provider names, endpoints and model capabilities stay in the generated models.dev catalog.
 /// </summary>
-public static class ProviderPresets
+public static class ProviderCatalog
 {
+    private static readonly Dictionary<string, Func<ModelsDevProvider, string, string?, Provider>> Overrides =
+        new(StringComparer.Ordinal)
+        {
+            ["openai"] = static (catalog, endpoint, modelsEndpoint) => new OpenAIProvider(catalog, endpoint, modelsEndpoint),
+            ["opencode"] = static (catalog, endpoint, modelsEndpoint) => new OpenCodeProvider(catalog, endpoint, modelsEndpoint),
+            ["opencode-go"] = static (catalog, endpoint, modelsEndpoint) => new OpenCodeProvider(catalog, endpoint, modelsEndpoint),
+            ["openrouter"] = static (catalog, endpoint, modelsEndpoint) => new OpenRouterProvider(catalog, endpoint, modelsEndpoint)
+        };
+
     private static readonly ImmutableDictionary<string, string> FallbackBaseUrls =
         new Dictionary<string, string>(StringComparer.Ordinal)
         {
@@ -50,20 +35,24 @@ public static class ProviderPresets
     private static readonly ImmutableArray<string> Preferred =
         ["openai", "anthropic", "google", "deepseek", "openrouter", "opencode-go", "opencode", "groq", "mistral", "xai"];
 
-    public static ImmutableArray<ProviderPreset> All { get; } = Build();
+    public static ImmutableArray<Provider> All { get; } = Build();
 
-    public static string? DiscoveryUrlFor(string? catalogProviderId) => catalogProviderId is not null
-        ? All.FirstOrDefault(preset => preset.CatalogProviderId == catalogProviderId)?.DiscoveryUrl
-        : null;
+    public static Provider Get(string id) => All.FirstOrDefault(provider => provider.Id == id)
+        ?? throw new InvalidDataException("Провайдер недоступен. Проверьте настройки подключения.");
 
-    private static ImmutableArray<ProviderPreset> Build()
+    private static ImmutableArray<Provider> Build()
     {
-        var presets = ImmutableArray.CreateBuilder<ProviderPreset>();
+        var presets = ImmutableArray.CreateBuilder<Provider>();
+        presets.Add(new TypeSafeProvider());
+        presets.Add(new NeuralDeepProvider());
+        presets.Add(new WikiVibeProvider());
         foreach (var provider in ModelsDevCatalog.Providers.Values)
         {
-            if (provider.Models.Count == 0 || !TryMap(provider, out var kind, out var mode, out var baseUrl, out var discoveryUrl)) continue;
-            presets.Add(new ProviderPreset(provider.Id, provider.Name, kind, mode, baseUrl, discoveryUrl, provider.Id,
-                provider.EnvironmentVariables, provider.DocumentationUrl, provider.Models.Count));
+            if (provider.Id is "neuraldeep" or "wikivibe") continue;
+            if (provider.Models.Count == 0 || !TryMap(provider, out var baseUrl)) continue;
+            presets.Add(Overrides.TryGetValue(provider.Id, out var create)
+                ? create(provider, baseUrl, null)
+                : ModelsDevCatalog.CreateProvider(provider, baseUrl, null));
         }
         return presets
             .OrderBy(preset => Rank(preset.Id))
@@ -78,21 +67,17 @@ public static class ProviderPresets
         return index < 0 ? int.MaxValue : index;
     }
 
-    private static bool TryMap(ModelsDevProvider provider, out ProviderKind kind, out OpenAIApiMode mode,
-        out string baseUrl, out string? discoveryUrl)
+    private static bool TryMap(ModelsDevProvider provider, out string baseUrl)
     {
-        kind = ProviderKind.OpenAI;
-        mode = OpenAIApiMode.ChatCompletions;
-        discoveryUrl = null;
+        var anthropic = false;
         switch (provider.Package)
         {
             case "@ai-sdk/openai-compatible":
                 break;
             case "@ai-sdk/openai":
-                if (provider.Id == "openai") mode = OpenAIApiMode.Responses;
                 break;
             case "@ai-sdk/anthropic":
-                kind = ProviderKind.Anthropic;
+                anthropic = true;
                 break;
             case "@openrouter/ai-sdk-provider":
             case "@ai-sdk/google":
@@ -111,17 +96,11 @@ public static class ProviderPresets
         var raw = string.IsNullOrWhiteSpace(provider.BaseUrl)
             ? FallbackBaseUrls.GetValueOrDefault(provider.Id)
             : provider.BaseUrl;
-        if (!TryNormalize(raw, kind, out baseUrl)) return false;
-        discoveryUrl = provider.Id switch
-        {
-            "opencode-go" => "https://opencode.ai/inference/go/v1/models",
-            "opencode" => "https://opencode.ai/inference/v1/models",
-            _ => null
-        };
+        if (!TryNormalize(raw, anthropic, out baseUrl)) return false;
         return true;
     }
 
-    private static bool TryNormalize(string? value, ProviderKind kind, out string baseUrl)
+    private static bool TryNormalize(string? value, bool anthropic, out string baseUrl)
     {
         baseUrl = "";
         if (string.IsNullOrWhiteSpace(value) || value.Contains('{') || value.Contains('}') || value.Contains('$') ||
@@ -130,7 +109,7 @@ public static class ProviderPresets
             return false;
         var normalized = value.Trim().TrimEnd('/');
         // The Anthropic SDK and discovery append /v1 themselves.
-        if (kind == ProviderKind.Anthropic && normalized.EndsWith("/v1", StringComparison.OrdinalIgnoreCase))
+        if (anthropic && normalized.EndsWith("/v1", StringComparison.OrdinalIgnoreCase))
             normalized = normalized[..^3].TrimEnd('/');
         if (normalized.Length == 0) return false;
         baseUrl = normalized;

@@ -7,8 +7,8 @@ public sealed record ImageGenerationSelection(string ProviderId, string CarrierM
 {
     public void Validate()
     {
-        if (!Guid.TryParseExact(ProviderId, "D", out _) || !ProviderProfile.ValidModelId(CarrierModelId) ||
-            !ProviderProfile.ValidModelId(ImageModelId))
+        if (!Guid.TryParseExact(ProviderId, "D", out _) || !ProviderModel.ValidId(CarrierModelId) ||
+            !ProviderModel.ValidId(ImageModelId))
             throw new InvalidDataException("Некорректное назначение генерации изображений.");
     }
 
@@ -17,11 +17,11 @@ public sealed record ImageGenerationSelection(string ProviderId, string CarrierM
         Validate();
         var provider = providers.Profiles.FirstOrDefault(p => p.Id == ProviderId)
             ?? throw new InvalidDataException("Подключение изображений недоступно. Измените назначение в /models.");
-        if (provider.Kind != ProviderKind.OpenAI || provider.ApiMode != OpenAIApiMode.Responses)
+        if (!provider.Definition.SupportsImages(provider))
             throw new InvalidDataException("Генерация изображений требует подключения OpenAI Responses.");
         if (ModelResolver.SelectionError(provider, CarrierModelId) is { } error)
             throw new InvalidDataException("Модель-посредник изображений: " + error);
-        if (string.IsNullOrWhiteSpace(provider.ApiKey))
+        if (!provider.HasCredentials)
             throw new InvalidDataException("Укажите ключ подключения изображений через /providers.");
         return new(this, provider, null);
     }

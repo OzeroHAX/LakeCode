@@ -4,6 +4,7 @@ using System.Text.Json.Serialization;
 using System.Text.Json.Nodes;
 using LakeCode.Core.Agent;
 using System.Security.Cryptography;
+using LakeCode.Core.Providers.Custom;
 
 namespace LakeCode.Core.Providers;
 
@@ -48,21 +49,44 @@ public sealed class ProviderStorage
                 }
                 root["SchemaVersion"] = 2;
             }
+            if (version is 1 or 2)
+            {
+                foreach (var node in root["Providers"]?.AsArray() ?? throw new JsonException())
+                {
+                    var profile = node?.AsObject() ?? throw new JsonException();
+                    var kind = profile["Kind"]?.ToString() ?? throw new JsonException();
+                    var mode = profile["ApiMode"]?.ToString() ?? throw new JsonException();
+                    var oldUrl = profile["BaseUrl"]?.GetValue<string>() ?? throw new JsonException();
+                    var id = profile["DefinitionId"]?.GetValue<string>() ?? profile["CatalogProviderId"]?.GetValue<string>() ??
+                        (kind is "TypeSafe" or "2" ? "typesafe" : ModelsDevCatalog.InferProviderId(oldUrl)) ??
+                        ProviderCatalog.All.FirstOrDefault(item => SameLegacyProtocol(item, kind, mode) &&
+                            string.Equals(item.BaseUrl.TrimEnd('/'), oldUrl.TrimEnd('/'), StringComparison.Ordinal))?.Id;
+                    var definition = ProviderCatalog.All.FirstOrDefault(item => item.Id == id);
+                    if (definition is null || !SameLegacyProtocol(definition, kind, mode) ||
+                        !string.Equals(definition.BaseUrl.TrimEnd('/'), oldUrl.TrimEnd('/'), StringComparison.Ordinal) ||
+                        (profile["DiscoveryUrl"]?.GetValue<string>() is { } oldDiscovery &&
+                         !string.Equals(oldDiscovery.TrimEnd('/'), definition.DiscoveryUrl?.TrimEnd('/'), StringComparison.Ordinal)))
+                        throw new InvalidDataException("Старое подключение не соответствует встроенному провайдеру. Добавьте провайдер в коде или перенесите настройки вручную; файл не изменён.");
+                    profile["DefinitionId"] = definition.Id;
+                    profile["Credentials"] = new JsonObject { ["api_key"] = profile["ApiKey"]?.GetValue<string>() ?? "" };
+                    if ((kind is "TypeSafe" or "2") && profile["ManualClassificationModels"] is JsonArray classificationModels)
+                    {
+                        var rules = profile["ModelOverrides"]?.AsObject() ?? new JsonObject();
+                        foreach (var model in classificationModels)
+                            rules[model?.GetValue<string>() ?? throw new JsonException()] = JsonSerializer.SerializeToNode(new ModelOverride { Manual = true }, Options);
+                        profile["ModelOverrides"] = rules.DeepClone();
+                    }
+                    foreach (var field in new[] { "Kind", "ApiMode", "BaseUrl", "DiscoveryUrl", "CatalogProviderId", "ApiKey", "ManualClassificationModels" })
+                        profile.Remove(field);
+                }
+                root["SchemaVersion"] = 3;
+            }
             settings = root.Deserialize<Settings>(Options) ?? throw new JsonException();
         }
         catch (Exception error) when (error is JsonException or InvalidOperationException or ArgumentException or NullReferenceException)
         { throw new InvalidDataException("Повреждён providers.json. Исправьте файл; настройки не были сброшены."); }
-        if (settings.SchemaVersion != 2) throw new InvalidDataException("Неподдерживаемая версия providers.json.");
-        var profiles = settings.Providers
-            .Select(profile => profile with
-            {
-                CatalogProviderId = profile.Kind == ProviderKind.TypeSafe
-                    ? null
-                    : profile.CatalogProviderId is { } catalogProviderId && ModelsDevCatalog.Providers.ContainsKey(catalogProviderId)
-                        ? catalogProviderId
-                        : ModelsDevCatalog.InferProviderId(profile.BaseUrl)
-            })
-            .ToImmutableArray();
+        if (settings.SchemaVersion != 3) throw new InvalidDataException("Неподдерживаемая версия providers.json.");
+        var profiles = settings.Providers;
         Validate(profiles);
         return profiles.Select(profile => profile with { Discovery = LoadDiscovery(profile) }).ToImmutableArray();
     }
@@ -101,8 +125,25 @@ public sealed class ProviderStorage
 
     private sealed record ModelCache(string ConnectionFingerprint, DiscoveredModels Discovery);
 
+    private static bool SameLegacyProtocol(Provider provider, string kind, string mode) => kind switch
+    {
+        "OpenAI" or "0" => provider is OpenAICompatibleProvider openAi && (mode switch
+        {
+            "Responses" or "0" => openAi.ApiMode == OpenAIApiMode.Responses,
+            "ChatCompletions" or "1" => openAi.ApiMode == OpenAIApiMode.ChatCompletions,
+            _ => false
+        }),
+        "Anthropic" or "1" => provider is AnthropicCompatibleProvider,
+        "TypeSafe" or "2" => provider is TypeSafeProvider,
+        _ => false
+    };
+
     private static string Fingerprint(ProviderProfile profile) => Convert.ToHexString(SHA256.HashData(
-        JsonSerializer.SerializeToUtf8Bytes(new { profile.Kind, BaseUrl = profile.BaseUrl.TrimEnd('/'), profile.DiscoveryUrl, profile.ApiKey })));
+        JsonSerializer.SerializeToUtf8Bytes(new
+        {
+            profile.DefinitionId, profile.Definition.BaseUrl, profile.Definition.DiscoveryUrl,
+            Credentials = profile.Credentials.OrderBy(item => item.Key, StringComparer.Ordinal).ToArray()
+        })));
 
     private string CachePath(ProviderProfile profile) => Path.Combine(Path.GetDirectoryName(FilePath)!,
         "model-cache", profile.Id, profile.Revision + ".json");
@@ -160,7 +201,7 @@ public sealed class ProviderStorage
 
     private sealed class Settings
     {
-        [JsonRequired] public int SchemaVersion { get; init; } = 2;
+        [JsonRequired] public int SchemaVersion { get; init; } = 3;
         [JsonRequired] public ImmutableArray<ProviderProfile> Providers { get; init; } = [];
     }
 }

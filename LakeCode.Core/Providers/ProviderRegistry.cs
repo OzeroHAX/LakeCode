@@ -11,7 +11,28 @@ public sealed class ProviderRegistry
     private readonly SemaphoreSlim _writes = new(1, 1);
     private ImmutableArray<ProviderProfile> _profiles;
     public ImmutableArray<ProviderProfile> Profiles { get { lock (_gate) return _profiles; } }
-    public ProviderRegistry() => _profiles = _storage.Load();
+    public ProviderRegistry() => _profiles = _storage.Load().Select(Bind).ToImmutableArray();
+
+    private ProviderProfile Bind(ProviderProfile profile) => profile with
+    {
+        CredentialState = profile.Definition.BindCredentials(profile,
+            (state, credentials) => PersistCredentialsAsync(profile.Id, state, credentials))
+    };
+
+    private async Task PersistCredentialsAsync(string id, IProviderCredentialState state, ImmutableDictionary<string, string> credentials)
+    {
+        await _writes.WaitAsync(CancellationToken.None).ConfigureAwait(false);
+        try
+        {
+            var current = Profiles;
+            var index = Array.FindIndex(current.ToArray(), item => item.Id == id);
+            if (index < 0 || !ReferenceEquals(current[index].CredentialState, state)) return;
+            var next = current.SetItem(index, current[index] with { Credentials = credentials });
+            await _storage.SaveAsync(next, CancellationToken.None).ConfigureAwait(false);
+            lock (_gate) _profiles = next;
+        }
+        finally { _writes.Release(); }
+    }
 
     public ProviderProfile Get(string id) => Profiles.FirstOrDefault(profile => profile.Id == id)
         ?? throw new InvalidOperationException("Провайдер недоступен. Выберите подключение через /providers.");
@@ -26,21 +47,22 @@ public sealed class ProviderRegistry
 
     public async Task SaveAsync(ProviderProfile profile, CancellationToken cancellationToken = default)
     {
-        profile = profile with
-        {
-            Revision = Guid.NewGuid().ToString("D"),
-            CatalogProviderId = profile.Kind == ProviderKind.TypeSafe
-                ? null
-                : profile.CatalogProviderId is { } catalogProviderId && ModelsDevCatalog.Providers.ContainsKey(catalogProviderId)
-                    ? catalogProviderId
-                    : ModelsDevCatalog.InferProviderId(profile.BaseUrl)
-        };
+        profile = profile with { Revision = Guid.NewGuid().ToString("D") };
         profile.Validate();
         await _writes.WaitAsync(cancellationToken);
         try
         {
             var current = Profiles;
             var index = Array.FindIndex(current.ToArray(), item => item.Id == profile.Id);
+            if (profile.DefinitionId is { } definitionId &&
+                (index < 0 || current[index].DefinitionId != definitionId) &&
+                current.Any(item => item.Id != profile.Id && item.DefinitionId == definitionId))
+                throw new InvalidDataException("Для этого провайдера уже создано подключение.");
+            profile = index >= 0 && current[index].CredentialState is not null &&
+                (ReferenceEquals(profile.CredentialState, current[index].CredentialState) ||
+                 (profile.DefinitionId == current[index].DefinitionId && profile.Definition.SharesCredentials(current[index], profile)))
+                ? profile with { Credentials = current[index].Credentials, CredentialState = current[index].CredentialState }
+                : Bind(profile);
             var next = index < 0 ? current.Add(profile) : current.SetItem(index, profile);
             await _storage.SaveAsync(next, cancellationToken);
             lock (_gate) _profiles = next;
@@ -50,13 +72,15 @@ public sealed class ProviderRegistry
 
     public async Task RefreshDiscoveryAsync(string id, CancellationToken cancellationToken = default)
     {
-        // Serialize refresh and profile writes, but never hold the publication lock across I/O.
+        var profile = Get(id);
+        var discovery = await profile.DiscoverAsync(cancellationToken).ConfigureAwait(false);
         await _writes.WaitAsync(cancellationToken);
         try
         {
-            var profile = Get(id);
-            var discovery = await ProviderModelDiscovery.DiscoverAsync(profile, cancellationToken);
-            var updated = profile with { Discovery = discovery };
+            var current = Get(id);
+            if (current.Revision != profile.Revision || !ReferenceEquals(current.CredentialState, profile.CredentialState))
+                throw new InvalidOperationException("Настройки подключения изменились; обновите список моделей ещё раз.");
+            var updated = current with { Discovery = discovery };
             await _storage.SaveDiscoveryAsync(updated, cancellationToken);
             lock (_gate)
             {
@@ -69,11 +93,13 @@ public sealed class ProviderRegistry
 
     public async Task AllowManualModelAsync(string providerId, string modelId, CancellationToken cancellationToken = default)
     {
-        if (!ProviderProfile.ValidModelId(modelId)) throw new InvalidDataException("Введите корректный API ID модели.");
+        if (!ProviderModel.ValidId(modelId)) throw new InvalidDataException("Введите корректный API ID модели.");
         await _writes.WaitAsync(cancellationToken);
         try
         {
             var profile = Get(providerId);
+            if (!profile.Definition.IsModelAllowed(profile, modelId))
+                throw new InvalidDataException("Модель отсутствует в списке выбранного способа входа. Обновите список моделей.");
             var entry = ModelResolver.Resolve(profile, modelId);
             if (entry.Model is null || entry.Error is not null)
                 throw new InvalidDataException($"{entry.Error} Настройте характеристики чат-модели через /providers.");

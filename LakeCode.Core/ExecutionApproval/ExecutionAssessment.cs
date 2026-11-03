@@ -41,6 +41,6 @@ internal static class ExecutionApprovalPolicy
         return new ExecutionAssessment(denied.Length > 0 ? ExecutionDecision.Deny : review.Length > 0 ? ExecutionDecision.AskUser : ExecutionDecision.Allow,
             reasons.Length == 0 ? "Все критерии прошли порог авторазрешения." : string.Join("; ", reasons.Select(a =>
                 Criteria.Single(c => c.Id == a.Id).Label + " — есть риск")))
-        { PolicyVersion = "jev-plan-v2-binary", Model = model, Criteria = answers, AllowThreshold = settings.AllowThreshold, DenyThreshold = settings.DenyThreshold };
+        { PolicyVersion = "decision-v2-binary", Model = model, Criteria = answers, AllowThreshold = settings.AllowThreshold, DenyThreshold = settings.DenyThreshold };
     }
 }

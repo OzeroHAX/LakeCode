@@ -17,10 +17,12 @@ internal sealed class MessageSubmissionPreparer(
     public Selection Resolve(SubmitMessage command)
     {
         var provider = providers.Get(command.ProviderId);
-        var model = providers.GetModel(command.ProviderId, command.ModelId);
+        if (ModelResolver.SelectionError(provider, command.ModelId) is { } error)
+            throw new InvalidOperationException(error);
+        var model = ModelResolver.Resolve(provider, command.ModelId).Model!;
         var subagent = command.SubagentModel?.Resolve(providers);
-        if (string.IsNullOrWhiteSpace(provider.ApiKey))
-            throw new InvalidOperationException("Укажите API-ключ через /providers; черновик сохранён.");
+        if (!provider.HasCredentials)
+            throw new InvalidOperationException("Настройте авторизацию через /providers; черновик сохранён.");
         if (!model.ReasoningEfforts.Contains(command.ReasoningEffort) || !Enum.IsDefined(command.Mode) || !Enum.IsDefined(command.AgentMode))
             throw new InvalidOperationException("Настройки сообщения больше не поддерживаются.");
         if (!command.Images.IsDefaultOrEmpty && !model.InputModalities.Contains(ModelModality.Image))

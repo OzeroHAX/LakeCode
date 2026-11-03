@@ -4,94 +4,51 @@ using LakeCode.Core.Agent;
 
 namespace LakeCode.Core.Providers;
 
-public enum ProviderKind { OpenAI, Anthropic, TypeSafe }
-public enum OpenAIApiMode { Responses, ChatCompletions }
-
-/// <summary>Immutable connection snapshot. Never include credentials in conversation state or diagnostics.</summary>
+/// <summary>Immutable user settings captured when a request is accepted.</summary>
 public sealed record ProviderProfile
 {
     [JsonRequired] public string Id { get; init; } = Guid.NewGuid().ToString("D");
     [JsonRequired] public string Revision { get; init; } = Guid.NewGuid().ToString("D");
     [JsonRequired] public string Name { get; init; } = "";
-    [JsonRequired] public ProviderKind Kind { get; init; }
-    [JsonRequired] public OpenAIApiMode ApiMode { get; init; }
-    [JsonRequired] public string BaseUrl { get; init; } = "";
-    [JsonRequired] public string ApiKey { get; init; } = "";
-    /// <summary>Optional models.dev provider ID used as the capability catalog.</summary>
-    public string? CatalogProviderId { get; init; }
-    /// <summary>Optional models endpoint when it differs from the inference base URL.</summary>
-    public string? DiscoveryUrl { get; init; }
-    public const int MaxModels = 10000;
+    [JsonRequired] public string DefinitionId { get; init; } = "";
+    [JsonRequired] public ImmutableDictionary<string, string> Credentials { get; init; } = ImmutableDictionary<string, string>.Empty;
     [JsonRequired] public ImmutableDictionary<string, ModelOverride> ModelOverrides { get; init; } = ImmutableDictionary<string, ModelOverride>.Empty;
     [JsonIgnore] public DiscoveredModels? Discovery { get; init; }
-    public ImmutableArray<string> ManualClassificationModels { get; init; } = [];
-    [JsonIgnore] public ImmutableArray<ClassificationModel> ClassificationModels => Kind == ProviderKind.TypeSafe
-        ? (Discovery?.Ids ?? []).Concat(ManualClassificationModels).Distinct(StringComparer.Ordinal)
-            .OrderBy(id => id, StringComparer.Ordinal).Select(id => new ClassificationModel(id)).ToImmutableArray() : [];
-    [JsonIgnore] public ImmutableArray<ResolvedProviderModel> ModelEntries => Kind == ProviderKind.TypeSafe ? [] : ModelResolver.ResolveAll(this);
+    [JsonIgnore] internal IProviderCredentialState? CredentialState { get; init; }
+    [JsonIgnore] public Provider Definition => ProviderCatalog.Get(DefinitionId);
+    [JsonIgnore] public bool HasCredentials => Definition.HasCredentials(this);
+    [JsonIgnore] public ImmutableArray<ResolvedProviderModel> ModelEntries => Definition.ModelEntries(this);
     [JsonIgnore] public ImmutableArray<ModelInfo> Models => ModelEntries
         .Where(item => item.Available && item.Model is not null).Select(item => item.Model!).ToImmutableArray();
 
     public override string ToString() => Name;
+    public Task<DiscoveredModels> DiscoverAsync(CancellationToken cancellationToken = default) => Definition.DiscoverAsync(this, cancellationToken);
+    internal void Authorize(HttpRequestMessage request) => Definition.Authorize(this, request);
+    internal IEnumerable<string> Secrets => Definition.Secrets(this);
+    internal string Redact(string text) => Definition.Redact(this, text);
 
     public void Validate()
     {
-        if (!Guid.TryParseExact(Id, "D", out _) || !Guid.TryParseExact(Revision, "D", out _) || string.IsNullOrWhiteSpace(Name) || Name.Length > 100 ||
-            Name.Any(char.IsControl) || !Enum.IsDefined(Kind) || !Enum.IsDefined(ApiMode))
+        if (!Guid.TryParseExact(Id, "D", out _) || !Guid.TryParseExact(Revision, "D", out _) ||
+            string.IsNullOrWhiteSpace(Name) || Name.Length > 100 || Name.Any(char.IsControl) ||
+            string.IsNullOrWhiteSpace(DefinitionId) || DefinitionId.Length > 100 || DefinitionId.Any(char.IsControl))
             throw new InvalidDataException("Некорректный профиль провайдера.");
-        if (!Uri.TryCreate(BaseUrl, UriKind.Absolute, out var uri) ||
-            uri.Scheme is not ("http" or "https") || string.IsNullOrWhiteSpace(uri.Host) ||
-            uri.UserInfo.Length != 0 || uri.Query.Length != 0 || uri.Fragment.Length != 0)
-            throw new InvalidDataException("URL должен быть абсолютным HTTP(S) адресом без ключа, query и fragment.");
-        if (DiscoveryUrl is { } discoveryUrl &&
-            (!Uri.TryCreate(discoveryUrl, UriKind.Absolute, out var discoveryUri) ||
-             discoveryUri.Scheme is not ("http" or "https") || string.IsNullOrWhiteSpace(discoveryUri.Host) ||
-             discoveryUri.UserInfo.Length != 0 || discoveryUri.Query.Length != 0 || discoveryUri.Fragment.Length != 0))
-            throw new InvalidDataException("URL списка моделей должен быть абсолютным HTTP(S) адресом без ключа, query и fragment.");
-        if (ApiKey is null || ApiKey.Length > 8192 || ApiKey.Any(char.IsControl))
-            throw new InvalidDataException("Некорректный API-ключ.");
-        if (CatalogProviderId is { } catalogProviderId &&
-            (catalogProviderId.Length > 100 || catalogProviderId.Any(char.IsControl) ||
-             !ModelsDevCatalog.Providers.ContainsKey(catalogProviderId) || Kind == ProviderKind.TypeSafe))
-            throw new InvalidDataException("Некорректный каталог models.dev для подключения.");
-        if (ModelOverrides is null || ModelOverrides.Count > MaxModels ||
-            ModelOverrides.Any(item => !ValidModelId(item.Key) || item.Value is null))
-            throw new InvalidDataException("Некорректные overrides моделей.");
-        if (Discovery is { } discovery && (discovery.Ids.IsDefault || discovery.Ids.Length > MaxModels ||
-            discovery.Ids.Any(id => !ValidModelId(id)) || discovery.Ids.Distinct(StringComparer.Ordinal).Count() != discovery.Ids.Length))
+        var provider = Definition;
+        if (Credentials is null || Credentials.Count > 16 || Credentials.Any(item =>
+                string.IsNullOrWhiteSpace(item.Key) || item.Key.Length > 100 || item.Key.Any(char.IsControl) ||
+                item.Value is null || item.Value.Length > 16384 || item.Value.Any(char.IsControl)))
+            throw new InvalidDataException("Некорректные учётные данные провайдера.");
+        if (ModelOverrides is null || ModelOverrides.Count > ProviderModel.MaxModels ||
+            ModelOverrides.Any(item => !ProviderModel.ValidId(item.Key) || item.Value is null))
+            throw new InvalidDataException("Некорректные настройки моделей.");
+        if (Discovery is { } discovery && (discovery.Ids.IsDefault || discovery.Ids.Length > ProviderModel.MaxModels ||
+            discovery.Ids.Any(id => !ProviderModel.ValidId(id)) || discovery.Ids.Distinct(StringComparer.Ordinal).Count() != discovery.Ids.Length ||
+            discovery.DecisionIds.IsDefault || discovery.DecisionIds.Length > ProviderModel.MaxModels ||
+            discovery.DecisionIds.Any(id => !ProviderModel.ValidId(id)) || discovery.DecisionIds.Distinct(StringComparer.Ordinal).Count() != discovery.DecisionIds.Length ||
+            discovery.Capabilities is null || discovery.Capabilities.Count > ProviderModel.MaxModels ||
+            discovery.Capabilities.Any(item => !discovery.Ids.Contains(item.Key, StringComparer.Ordinal) || item.Value is null)))
             throw new InvalidDataException("Некорректный список обнаруженных моделей.");
-        if (ManualClassificationModels.IsDefault || ManualClassificationModels.Length > MaxModels ||
-            ManualClassificationModels.Any(id => !ClassificationModel.IsVersionedId(id)) ||
-            ManualClassificationModels.Distinct(StringComparer.Ordinal).Count() != ManualClassificationModels.Length ||
-            (Kind != ProviderKind.TypeSafe && !ManualClassificationModels.IsEmpty) ||
-            (Kind == ProviderKind.TypeSafe && ModelOverrides.Count != 0))
-            throw new InvalidDataException("Модели System One должны иметь фиксированный ID jev-X.Y.Z и не содержать чат-настроек.");
-        foreach (var (id, rule) in ModelOverrides)
-        {
-            var entry = ModelResolver.Resolve(this, id);
-            if (entry.Error is not null) throw new InvalidDataException($"Модель {id}: {entry.Error}");
-        }
+        provider.ValidateProfile(this);
     }
-
-    public static bool ValidModelId(string? id) => !string.IsNullOrWhiteSpace(id) && id.Length <= 512 && !id.Any(char.IsControl);
-
-    public void ValidateModel(ModelInfo model)
-    {
-        if (Kind == ProviderKind.TypeSafe || !ValidModelId(model.Id) || string.IsNullOrWhiteSpace(model.Name) || model.Name.Any(char.IsControl) ||
-            model.ContextWindowTokens <= 0 || model.MaxInputTokens <= 0 || model.MaxOutputTokens <= 0 ||
-            model.MaxInputTokens > model.ContextWindowTokens || model.MaxOutputTokens > model.ContextWindowTokens ||
-            model.InputModalities.IsDefaultOrEmpty || !model.InputModalities.Contains(ModelModality.Text) ||
-            model.InputModalities.Any(value => !Enum.IsDefined(value)) ||
-            model.OutputModalities.IsDefaultOrEmpty || model.OutputModalities.Any(value => !Enum.IsDefined(value)) ||
-            model.ReasoningEfforts.IsDefaultOrEmpty || model.ReasoningEfforts.Any(value => !ValidEffort(value, model.MaxOutputTokens)))
-            throw new InvalidDataException("Некорректные возможности модели. Anthropic: none или budget:N (1024 ≤ N < max output); OpenAI: none, minimal, low, medium, high, xhigh, max.");
-    }
-
-    private bool ValidEffort(string value, int maxOutput) => Kind == ProviderKind.OpenAI
-        ? SupportedEfforts.Contains(value)
-        : value == "none" || (value is not null && value.StartsWith("budget:", StringComparison.Ordinal) &&
-            int.TryParse(value[7..], out var budget) && budget >= 1024 && budget < maxOutput);
-
-    public static readonly ImmutableArray<string> SupportedEfforts = ["none", "minimal", "low", "medium", "high", "xhigh", "max"];
 
 }

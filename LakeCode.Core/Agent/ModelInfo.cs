@@ -2,6 +2,8 @@ using System.Collections.Immutable;
 
 namespace LakeCode.Core.Agent;
 
+public enum ModelReasoningFormat { None, Effort, Budget }
+
 public enum ModelModality
 {
     Text,
