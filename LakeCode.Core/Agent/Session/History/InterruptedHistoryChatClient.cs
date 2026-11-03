@@ -89,13 +89,14 @@ internal sealed class InterruptedHistoryChatClient(IChatClient inner) : Delegati
             yield return update;
         }
         cancellationToken.ThrowIfCancellationRequested();
-        if (ResponseCompleted is { } completed) completed(_updates.ToChatResponse());
+        ChatResponse? response = null;
+        if (ResponseCompleted is { } completed) completed(response = _updates.ToChatResponse());
         // A completed final answer is appended, never substituted for the cached request prefix.
         // Tool-call responses remain excluded until MAF supplies their results in the next request.
         if (requestContext is not null)
             PublishSideContext(() =>
             {
-                var response = _updates.ToChatResponse();
+                response ??= _updates.ToChatResponse();
                 return response.Messages.SelectMany(message => message.Contents).OfType<FunctionCallContent>().Any()
                     ? requestContext : requestContext.WithResponse(response);
             });

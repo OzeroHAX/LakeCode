@@ -39,7 +39,7 @@ internal static class ConversationSnapshotMapper
             HistoryStart = turn.HistoryStart, AgentMode = turn.AgentMode, Plan = turn.Plan, ExecutingPlanId = turn.ExecutingPlanId, IsBackgroundContinuation = turn.IsBackgroundContinuation, Text = turn.Text, Images = turn.Images.ToList(), Files = turn.Files.ToList(), Mentions = turn.Mentions.ToList(), ModelMetadata = turn.ModelMetadata, ProviderId = turn.ProviderId, ModelId = turn.ModelId,
             ReasoningEffort = turn.ReasoningEffort, Status = turn.Status, Error = turn.Error, Usage = turn.Usage,
             TokensPerSecond = turn.TokensPerSecond,
-            Events = turn.Events.Select(item => new ResponseEvent { Kind = item.Kind, Text = item.Text, ToolCall = item.ToolCall }).ToList()
+            Events = turn.Events.Select(item => new ResponseEvent { Kind = item.Kind, Text = item.Text, ToolCall = item.ToolCall, StartsNewBlock = item.StartsNewBlock }).ToList()
         }).ToList()
     };
 }

@@ -291,6 +291,7 @@ internal sealed class DelegationCoordinator(
                     // retain completed call/results before starting the next sequential run.
                     job.Child!.PreserveInterruptedHistory();
                 }
+                job.Child!.ReleaseCapturedResponse();
                 job.Cancellation.Token.ThrowIfCancellationRequested();
                 if (job.Questions.Failure is { } failure) throw new InvalidOperationException(failure);
                 lock (_gate)

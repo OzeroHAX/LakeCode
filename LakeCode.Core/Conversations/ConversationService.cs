@@ -1110,6 +1110,7 @@ public sealed class ConversationService
                 _agent.Invocations.BashOutputUpdated -= OnBashOutput;
                 _agent.History.Capture.BeforeRequest -= OnBeforeModelRequest;
             }
+            var captureConsumed = completed;
             if (!completed)
             {
                 try
@@ -1119,6 +1120,7 @@ public sealed class ConversationService
                         _agent.History.PreserveInterruptedHistory(_agent.Invocations);
                         var state = await _agent.Session.SerializeAsync().ConfigureAwait(false);
                         lock (_gate) snapshot.AgentState = state;
+                        captureConsumed = true;
                     }
                 }
                 catch (Exception error)
@@ -1130,6 +1132,7 @@ public sealed class ConversationService
                     }
                 }
             }
+            if (captureConsumed) _agent?.History.Capture.Reset();
             lock (_gate)
             {
                 var pending = turn.Events.Where(item => item.ToolCall is not null).GroupBy(item => item.ToolCall!.CallId)

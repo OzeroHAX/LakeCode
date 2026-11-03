@@ -17,6 +17,7 @@ internal sealed class ThinkingComponent : CollapsiblePanel
     private bool _userChangedExpansion;
     private readonly SpinnerTextAnimator _dots;
     private bool _completed;
+    private bool _bodyDirty;
 
     public bool IsCompleted => _completed;
 
@@ -46,21 +47,34 @@ internal sealed class ThinkingComponent : CollapsiblePanel
         _viewport.AutoScroll = true;
         _viewport.AddControl(_body);
         AddControl(_viewport);
-        ExpandedChanged += (_, _) =>
+        ExpandedChanged += (_, expanded) =>
         {
             if (!_automaticChange)
                 _userChangedExpansion = true;
+            if (expanded && _bodyDirty)
+            {
+                _body.SetMarkdown(_text.ToString());
+                _bodyDirty = false;
+                _viewport.ScrollToBottom();
+            }
         };
     }
 
     public void AppendReasoning(string text)
     {
         _text.Append(text);
-        _body.SetMarkdown(_text.ToString());
+        if (IsExpanded)
+        {
+            _body.SetMarkdown(_text.ToString());
+            _bodyDirty = false;
+        }
+        else
+            _bodyDirty = true;
         Visible = true;
         if (!_completed)
             _dots.Start();
-        _viewport.ScrollToBottom();
+        if (IsExpanded)
+            _viewport.ScrollToBottom();
     }
 
     public void CollapseAutomatically()

@@ -1,4 +1,5 @@
 using System.Collections.Immutable;
+using System.Text;
 using LakeCode.Core.Agent;
 using LakeCode.Core.Conversations;
 using LakeCode.Cli.Components;
@@ -42,8 +43,16 @@ internal sealed class ChatController : IDisposable
     private Guid? _questionId;
     private readonly Dictionary<Guid, (AssistantMessageComponent Response, string CallId)> _permissions = [];
     private bool _disposed;
-    private readonly object _bashOutputGate = new();
-    private readonly Dictionary<string, ConversationEventEnvelope> _pendingBashOutput = new(StringComparer.Ordinal);
+    private readonly object _eventGate = new();
+    private readonly List<PendingEvent> _pendingEvents = [];
+    private bool _eventDrainScheduled;
+
+    private sealed class PendingEvent(ConversationEventEnvelope? envelope, StringBuilder? text = null, ConversationState? state = null)
+    {
+        public ConversationEventEnvelope? Envelope { get; set; } = envelope;
+        public StringBuilder? Text { get; } = text;
+        public ConversationState? State { get; } = state;
+    }
 
     public bool CanRewind => _state.CanRewind && !_input.IsImporting &&
         string.IsNullOrWhiteSpace(_input.Editor.Input) && !_input.HasAttachments && !_btw.IsOpen;
@@ -244,30 +253,80 @@ internal sealed class ChatController : IDisposable
         }
     }
 
-    private void OnStateChanged(ConversationState state) => Enqueue(() => ApplyState(state));
+    private void OnStateChanged(ConversationState state)
+    {
+        lock (_eventGate)
+        {
+            if (_disposed) return;
+            _pendingEvents.Add(new PendingEvent(null, state: state));
+            if (_eventDrainScheduled) return;
+            _eventDrainScheduled = true;
+        }
+        _ = ScheduleEventDrainAsync();
+    }
     private void OnEvent(ConversationEventEnvelope envelope)
     {
-        if (envelope.Event is not BashOutputChanged bash)
+        lock (_eventGate)
         {
-            Enqueue(() => ApplyEvent(envelope));
-            return;
-        }
-        lock (_bashOutputGate)
-        {
-            var queued = _pendingBashOutput.ContainsKey(bash.Update.CallId);
-            _pendingBashOutput[bash.Update.CallId] = envelope;
-            if (queued) return;
-        }
-        // One pending UI notification per command, even if rendering temporarily falls behind.
-        Enqueue(() =>
-        {
-            ConversationEventEnvelope latest;
-            lock (_bashOutputGate)
+            if (_disposed) return;
+            var last = _pendingEvents.LastOrDefault();
+            if (last?.Envelope is not null && last.Envelope.SessionId == envelope.SessionId &&
+                last.Envelope.RequestId == envelope.RequestId && last.Text is not null &&
+                ((last.Envelope.Event is TextDelta && envelope.Event is TextDelta) ||
+                 (last.Envelope.Event is ReasoningDelta && envelope.Event is ReasoningDelta { StartsNewBlock: false })))
             {
-                if (!_pendingBashOutput.Remove(bash.Update.CallId, out latest!)) return;
+                last.Text.Append(envelope.Event is TextDelta text ? text.Text : ((ReasoningDelta)envelope.Event).Text);
             }
-            ApplyEvent(latest);
-        });
+            else if (last?.Envelope?.Event is BashOutputChanged oldBash && envelope.Event is BashOutputChanged newBash &&
+                     last.Envelope.SessionId == envelope.SessionId && last.Envelope.RequestId == envelope.RequestId &&
+                     oldBash.Update.CallId == newBash.Update.CallId)
+                last.Envelope = envelope;
+            else
+                _pendingEvents.Add(new PendingEvent(envelope, envelope.Event switch
+                {
+                    TextDelta text => new StringBuilder(text.Text),
+                    ReasoningDelta reasoning => new StringBuilder(reasoning.Text),
+                    _ => null
+                }));
+            if (_eventDrainScheduled) return;
+            _eventDrainScheduled = true;
+        }
+        _ = ScheduleEventDrainAsync();
+    }
+
+    private async Task ScheduleEventDrainAsync()
+    {
+        await Task.Delay(33).ConfigureAwait(false);
+        Enqueue(DrainEvents);
+    }
+
+    private void DrainEvents()
+    {
+        List<PendingEvent> events;
+        lock (_eventGate)
+        {
+            events = [.. _pendingEvents];
+            _pendingEvents.Clear();
+            _eventDrainScheduled = false;
+        }
+        foreach (var pending in events)
+        {
+            if (pending.State is { } state)
+            {
+                try { ApplyState(state); }
+                catch (Exception error) { _input.ShowError($"Не удалось обновить состояние: {error.Message}"); }
+                continue;
+            }
+            var envelope = pending.Envelope!;
+            if (pending.Text is { } text)
+                envelope = envelope with { Event = envelope.Event switch
+                {
+                    TextDelta => new TextDelta(text.ToString()),
+                    ReasoningDelta reasoning => new ReasoningDelta(text.ToString(), reasoning.StartsNewBlock),
+                    _ => envelope.Event
+                } };
+            ApplyEvent(envelope);
+        }
     }
     private void Enqueue(Action action) => _windowSystem.EnqueueOnUIThread(() =>
     {
@@ -628,7 +687,11 @@ internal sealed class ChatController : IDisposable
 
     public void Dispose()
     {
-        _disposed = true;
+        lock (_eventGate)
+        {
+            _disposed = true;
+            _pendingEvents.Clear();
+        }
         _input.Submitted -= SendMessage;
         _conversation.StateChanged -= OnStateChanged;
         _conversation.EventOccurred -= OnEvent;
