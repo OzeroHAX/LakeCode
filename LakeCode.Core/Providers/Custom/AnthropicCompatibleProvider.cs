@@ -40,12 +40,22 @@ public abstract record AnthropicCompatibleProvider(
         return new AnthropicClient(options).AsIChatClient(model.Id, model.MaxOutputTokens);
     }
 
+    /// <summary>
+    /// Automatic prompt caching is sent only to the first-party endpoint: the top-level
+    /// cache_control field is Anthropic-specific and compatible endpoints may reject it.
+    /// </summary>
+    private bool SupportsAutomaticCaching => Id == "anthropic";
+
     internal override ChatOptions Options(ProviderProfile profile, ModelInfo model, string effort, string sessionId, bool title = false)
     {
         var options = new ChatOptions { ModelId = model.Id, MaxOutputTokens = title ? 1024 : model.MaxOutputTokens };
+        // One-shot title requests reuse no prefix, so caching them would only pay the write premium.
+        var cache = SupportsAutomaticCaching && !title ? new CacheControlEphemeral() : null;
         options.RawRepresentationFactory = _ => new MessageCreateParams
         {
             Model = model.Id, MaxTokens = options.MaxOutputTokens!.Value, Messages = [],
+            // The SDK keeps this in raw body data, so the MAF adapter's with-expressions preserve it.
+            CacheControl = cache,
             Thinking = !title && effort.StartsWith("budget:", StringComparison.Ordinal)
                 ? new ThinkingConfigParam(new ThinkingConfigEnabled(budgetTokens: int.Parse(effort[7..]))) : null
         };
