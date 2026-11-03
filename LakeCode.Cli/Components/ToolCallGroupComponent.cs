@@ -230,7 +230,10 @@ internal sealed class ToolCallGroupComponent : CollapsiblePanel
             "wait_subagents" => $"Wait {count} {(count == 1 ? "time" : "times")}",
             "read_file" => $"Read {count} {(count == 1 ? "file" : "files")}",
             "list_directory" => $"List {count} {(count == 1 ? "directory" : "directories")}",
-            "grep" => $"Grep {count} {(count == 1 ? "search" : "searches")}",
+            "search_text" => $"Text search {count} {(count == 1 ? "query" : "queries")}",
+            "find_files" => $"Find {count} {(count == 1 ? "query" : "queries")}",
+            "outline_file" => $"Outline {count} {(count == 1 ? "file" : "files")}",
+            "trace_code" => $"Trace {count} {(count == 1 ? "query" : "queries")}",
             "web_search" => $"Search {count} {(count == 1 ? "query" : "queries")}",
             "read_web" => $"Read {count} {(count == 1 ? "page" : "pages")}",
             "bash" => $"Run {count} {(count == 1 ? "command" : "commands")}",
@@ -341,7 +344,14 @@ internal sealed class ToolCallGroupComponent : CollapsiblePanel
         if (update.Name == "bash" && root.TryGetProperty("command", out var command))
             return command.ToString();
         var path = root.TryGetProperty("path", out var value) ? value.ToString() : ".";
-        return update.Name == "grep" && root.TryGetProperty("pattern", out var pattern)
-            ? $"{path}: {pattern}" : path;
+        var queryParameter = update.Name switch
+        {
+            "search_text" => "pattern",
+            "find_files" => "query",
+            "trace_code" => "subject",
+            _ => null
+        };
+        return queryParameter is not null && root.TryGetProperty(queryParameter, out var queryValue)
+            ? $"{path}: {queryValue}" : path;
     }
 }

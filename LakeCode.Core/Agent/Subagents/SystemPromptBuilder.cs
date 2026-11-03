@@ -9,13 +9,12 @@ internal static class SystemPromptBuilder
         SystemPromptComposer.Compose(
             Sections.Scope.Text,
             Sections.ProjectInvestigation.Text,
-            Sections.ToolUse.Text,
             Sections.CapabilityLimits.Text,
             Sections.Safety.Text,
             Sections.Answers.Text,
-            Sections.Delegation.Text,
+            Prompts.Instructions.Text,
+            Sections.ToolUse.ForSubagent,
             instructions.Global,
             instructions.Project,
-            Sections.ExecutionContext.ForWorkspace(context),
-            Prompts.Instructions.Text);
+            Sections.ExecutionContext.ForWorkspace(context));
 }

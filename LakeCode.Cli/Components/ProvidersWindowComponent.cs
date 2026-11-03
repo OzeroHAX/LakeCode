@@ -50,22 +50,23 @@ internal sealed class ProvidersWindowComponent(ProviderRegistry providers, Model
             list.ClearItems();
             foreach (var profile in providers.Profiles.OrderBy(item => item.Name, StringComparer.Ordinal))
             {
-                var protocol = ProtocolLabel(profile.Kind, profile.ApiMode);
-                var total = profile.Kind == ProviderKind.TypeSafe ? profile.ClassificationModels.Length : profile.ModelEntries.Length;
-                var ready = profile.Kind == ProviderKind.TypeSafe ? profile.ClassificationModels.Count(m => m.IsVersioned) : profile.Models.Length;
+                var protocol = profile.Definition.ProtocolLabel;
+                var total = profile.ModelEntries.Length + profile.Definition.DecisionModels(profile).Length;
+                var ready = profile.Models.Length + profile.Definition.DecisionModels(profile).Count(m => m.IsSelectable);
                 list.AddItem(new ListItem(Markup.Escape($"{profile.Name} · {protocol} · готово {ready}, всего {total}")) { Tag = profile.Id });
                 if (profile.Id == selected) list.SelectedIndex = list.Items.Count - 1;
             }
             if (list.Items.Count == 0) list.AddItem(new ListItem("Нет подключений. Нажмите «Добавить»."));
             if (list.SelectedIndex < 0 && providers.Profiles.Length > 0) list.SelectedIndex = 0;
             edit.IsEnabled = delete.IsEnabled = Selected() is not null;
-            status.Text = "[grey70]«Добавить» — только готовые провайдеры. Кастомные подключения задаются в ~/.lakecode/providers.json. Ключи хранятся без шифрования.[/]";
+            status.Text = "[grey70]«Добавить» — провайдеры из каталога. Учётные данные хранятся локально без шифрования.[/]";
         }
     }
 
     private void ChoosePreset(ConsoleWindowSystem system, Action changed)
     {
-        var presets = ProviderPresets.All;
+        var connected = providers.Profiles.Select(profile => profile.DefinitionId).ToHashSet(StringComparer.Ordinal);
+        var presets = ProviderCatalog.All.Where(preset => !connected.Contains(preset.Id)).ToImmutableArray();
         var search = Field("Поиск: ");
         search.Placeholder = "имя, ID или URL";
         var list = Choices(14);
@@ -80,7 +81,7 @@ internal sealed class ProvidersWindowComponent(ProviderRegistry providers, Model
         var updating = false;
         var closed = false;
 
-        ProviderPreset? Selected() => list.SelectedItem?.Tag as ProviderPreset;
+        Provider? Selected() => list.SelectedItem?.Tag as Provider;
         void Pick()
         {
             if (closed || Selected() is not { } preset) return;
@@ -112,7 +113,7 @@ internal sealed class ProvidersWindowComponent(ProviderRegistry providers, Model
             var selected = Selected();
             status.Text = selected is null
                 ? "[grey70]Начните вводить название или выберите строку.[/]"
-                : Markup.Escape($"{selected.BaseUrl} · {ProtocolLabel(selected.Kind, selected.ApiMode)} · {ModelsLabel(selected.ModelCount)}");
+                : Markup.Escape($"{selected.BaseUrl} · {selected.ProtocolLabel} · {ModelsLabel(selected.ModelCount)}");
         }
 
         search.InputChanged += (_, _) => { if (!updating) Refresh(); };
@@ -139,13 +140,13 @@ internal sealed class ProvidersWindowComponent(ProviderRegistry providers, Model
         system.AddWindow(window);
         window.FocusControl(search);
 
-        static bool Matches(ProviderPreset preset, string query) => query.Length == 0 ||
+        static bool Matches(Provider preset, string query) => query.Length == 0 ||
             preset.Name.Contains(query, StringComparison.OrdinalIgnoreCase) ||
             preset.Id.Contains(query, StringComparison.OrdinalIgnoreCase) ||
             preset.BaseUrl.Contains(query, StringComparison.OrdinalIgnoreCase);
     }
 
-    private void CreatePreset(ConsoleWindowSystem system, ProviderPreset preset, Action changed)
+    private void CreatePreset(ConsoleWindowSystem system, Provider preset, Action changed)
     {
         var name = Field("Название: ", preset.Name);
         var key = Field("API key: ");
@@ -154,16 +155,27 @@ internal sealed class ProvidersWindowComponent(ProviderRegistry providers, Model
         key.Placeholder = preset.EnvironmentVariables.FirstOrDefault() is { } variable
             ? $"Введите ключ ({variable})"
             : "Введите ключ";
+        var methods = preset.AuthenticationMethods;
+        var auth = Dropdown("Вход: ", methods.Select(method => method.Name).ToArray());
+        auth.SelectedIndex = 0;
+        auth.Visible = methods.Length > 1;
+        var import = Button("Импортировать");
+        import.Visible = false;
+        var authHint = Label("");
+        var endpointLabel = Label(Markup.Escape(preset.BaseUrl));
+        ProviderProfile? imported = null;
         var status = Label("");
         var save = Button("Сохранить");
         var cancel = Button("Отмена");
-        var window = Base(system, "Новый провайдер", 78, 17)
-            .AddControl(Label(Markup.Escape($"{preset.Name} · {ProtocolLabel(preset.Kind, preset.ApiMode)}")))
-            .AddControl(Label(Markup.Escape(preset.BaseUrl)))
-            .AddControl(name).AddControl(key)
-            .AddControl(Label($"[grey70]Модели: {ModelsLabel(preset.ModelCount)} из каталога models.dev. Выбрать модель — /models.[/]"))
+        var window = Base(system, "Новый провайдер", 78, 22)
+            .AddControl(Label(Markup.Escape($"{preset.Name} · {preset.ProtocolLabel}")))
+            .AddControl(endpointLabel)
+            .AddControl(name).AddControl(auth).AddControl(key).AddControl(import).AddControl(authHint)
+            .AddControl(Label(!preset.SupportsChat
+                ? "[grey70]Модели добавляются или загружаются после сохранения. Выбрать модель — /models.[/]"
+                : $"[grey70]Модели: {ModelsLabel(preset.ModelCount)} из каталога models.dev. Выбрать модель — /models.[/]"))
             .AddControl(status).AddControl(Buttons(cancel, save))
-            .AddControl(Label("[grey70]Ключ хранится локально без шифрования. Tab — поля · Esc — отмена.[/]"))
+            .AddControl(Label("[grey70]Учётные данные хранятся локально без шифрования. Tab — поля · Esc — отмена.[/]"))
             .Build();
         var busy = false;
         var closed = false;
@@ -184,34 +196,101 @@ internal sealed class ProvidersWindowComponent(ProviderRegistry providers, Model
         };
         cancel.Click += (_, _) => { if (!busy) system.CloseWindow(window); };
         save.Click += (_, _) => _ = SaveAsync();
+        auth.SelectedIndexChanged += (_, _) => UpdateAuth();
+        import.Click += (_, _) => _ = ImportAsync();
+        UpdateAuth();
+
+        ProviderAuthMethod SelectedMethod() => methods[Math.Clamp(auth.SelectedIndex, 0, methods.Length - 1)];
+        void UpdateAuth()
+        {
+            var method = SelectedMethod();
+            key.Visible = !method.RequiresImport;
+            import.Visible = method.RequiresImport;
+            authHint.Visible = method.Hint is not null;
+            endpointLabel.Text = Markup.Escape(preset.EndpointFor(method.Id));
+            authHint.Text = method.Hint is null ? "" : $"[grey70]{Markup.Escape(method.Hint)}[/]";
+        }
+        async Task ImportAsync()
+        {
+            if (busy) return;
+            var method = SelectedMethod();
+            busy = true;
+            save.IsEnabled = cancel.IsEnabled = auth.IsEnabled = import.IsEnabled = false;
+            status.Text = "[grey70]Импорт авторизации…[/]";
+            try
+            {
+                var draft = preset.CreateProfile(name.Input.Trim(), "");
+                var result = await Task.Run(() => preset.ImportCredentialsAsync(draft, method.Id, lifetime.Token), lifetime.Token).ConfigureAwait(false);
+                system.EnqueueOnUIThread(() =>
+                {
+                    if (closed) return;
+                    imported = result;
+                    busy = false;
+                    save.IsEnabled = cancel.IsEnabled = auth.IsEnabled = import.IsEnabled = true;
+                    status.Text = "[green]Данные импортированы. Сохраните подключение.[/]";
+                });
+            }
+            catch (Exception error)
+            {
+                system.EnqueueOnUIThread(() =>
+                {
+                    if (closed) return;
+                    busy = false;
+                    save.IsEnabled = cancel.IsEnabled = auth.IsEnabled = import.IsEnabled = true;
+                    status.Text = $"[yellow]{Markup.Escape(error is InvalidDataException ? error.Message : "Не удалось импортировать авторизацию.")}[/]";
+                });
+            }
+        }
 
         async Task SaveAsync()
         {
             if (busy) return;
-            var profile = preset.CreateProfile(name.Input.Trim(), key.Input);
+            var method = SelectedMethod();
+            var profile = method.RequiresImport ? imported : preset.CreateProfile(name.Input.Trim(), key.Input);
+            if (profile is null || preset.AuthenticationMethod(profile) != method.Id)
+            {
+                status.Text = "[yellow]Сначала импортируйте авторизацию.[/]";
+                window.FocusControl(import);
+                return;
+            }
+            profile = profile with { Name = name.Input.Trim() };
             try
             {
-                if (string.IsNullOrWhiteSpace(profile.ApiKey)) throw new InvalidDataException("Введите API-ключ.");
+                if (!profile.HasCredentials) throw new InvalidDataException("Настройте авторизацию.");
                 profile.Validate();
             }
             catch (Exception error)
             {
                 status.Text = $"[yellow]{Markup.Escape(error.Message)}[/]";
-                window.FocusControl(string.IsNullOrWhiteSpace(profile.ApiKey) ? key : name);
+                window.FocusControl(!profile.HasCredentials ? (method.RequiresImport ? import : key) : name);
                 return;
             }
             busy = true;
-            save.IsEnabled = cancel.IsEnabled = name.IsEnabled = key.IsEnabled = false;
+            save.IsEnabled = cancel.IsEnabled = name.IsEnabled = key.IsEnabled = auth.IsEnabled = import.IsEnabled = false;
             status.Text = "[grey70]Сохранение…[/]";
             try
             {
                 await Task.Run(() => providers.SaveAsync(profile, lifetime.Token), lifetime.Token).ConfigureAwait(false);
+                string? discoveryError = null;
+                if (method.RequiresImport)
+                {
+                    try { await providers.RefreshDiscoveryAsync(profile.Id, lifetime.Token).ConfigureAwait(false); }
+                    catch (Exception error) when (error is not OperationCanceledException)
+                    { discoveryError = error is InvalidDataException ? error.Message : "Не удалось получить список моделей."; }
+                }
                 system.EnqueueOnUIThread(() =>
                 {
                     if (closed) return;
                     models.Refresh();
                     changed();
-                    system.CloseWindow(window);
+                    if (discoveryError is null) system.CloseWindow(window);
+                    else
+                    {
+                        busy = false;
+                        cancel.Text = "Закрыть";
+                        cancel.IsEnabled = true;
+                        status.Text = $"[yellow]Подключение сохранено. {Markup.Escape(discoveryError)}[/]";
+                    }
                 });
             }
             catch (Exception)
@@ -220,7 +299,7 @@ internal sealed class ProvidersWindowComponent(ProviderRegistry providers, Model
                 {
                     if (closed) return;
                     busy = false;
-                    save.IsEnabled = cancel.IsEnabled = name.IsEnabled = key.IsEnabled = true;
+                    save.IsEnabled = cancel.IsEnabled = name.IsEnabled = key.IsEnabled = auth.IsEnabled = import.IsEnabled = true;
                     status.Text = "[yellow]Не удалось сохранить провайдера. Проверьте доступ к ~/.lakecode/providers.json.[/]";
                 });
             }
@@ -237,21 +316,34 @@ internal sealed class ProvidersWindowComponent(ProviderRegistry providers, Model
         key.MaskCharacter = '*';
         key.MaxHistoryEntries = 0;
         key.Placeholder = "Пустое поле — сохранить текущий ключ";
+        var methods = original.Definition.AuthenticationMethods;
+        var auth = Dropdown("Вход: ", methods.Select(method => method.Name).ToArray());
+        var originalMethod = original.Definition.AuthenticationMethod(original);
+        auth.SelectedIndex = Math.Max(0, Array.FindIndex(methods.ToArray(), method => method.Id == originalMethod));
+        auth.Visible = methods.Length > 1;
+        var import = Button("Импортировать");
+        var authHint = Label("");
+        var endpointLabel = Label(Markup.Escape($"{original.Definition.ProtocolLabel} · {original.Definition.EndpointFor(originalMethod)}"));
+        ProviderProfile? imported = methods[auth.SelectedIndex].RequiresImport ? original : null;
         var connectionForm = Form();
         connectionForm.AddControl(name);
-        connectionForm.AddControl(Label(Markup.Escape($"{ProtocolLabel(original.Kind, original.ApiMode)} · {original.BaseUrl}")));
-        connectionForm.AddControl(Label(original.CatalogProviderId is { } catalog
+        connectionForm.AddControl(endpointLabel);
+        connectionForm.AddControl(Label(original.Definition.CatalogProviderId is { Length: > 0 } catalog
             ? $"[grey70]Пресет models.dev: {Markup.Escape(catalog)}. Подключение не редактируется здесь.[/]"
-            : "[grey70]Кастомное подключение: URL и протокол задаются в ~/.lakecode/providers.json.[/]"));
+            : "[grey70]Настройки подключения определяются провайдером.[/]"));
+        connectionForm.AddControl(auth);
         connectionForm.AddControl(key);
-        connectionForm.AddControl(Label("[grey70]Ключ хранится локально без шифрования. HTTP не шифрует ключ и сообщения.[/]"));
+        connectionForm.AddControl(import);
+        connectionForm.AddControl(authHint);
+        connectionForm.AddControl(Label("[grey70]Учётные данные хранятся локально без шифрования.[/]"));
 
         var discovery = original.Discovery;
         ProviderProfile? discoveryConnection = original;
-        var drafts = original.ModelOverrides
+        var editingClassifier = original.Definition.SupportsClassification && !original.Definition.SupportsChat;
+        var drafts = original.ModelOverrides.Where(item => !item.Value.Decision)
             .ToDictionary(item => item.Key, item => ProviderModelEditor.Draft.FromRule(item.Value), StringComparer.Ordinal);
-        var classificationIds = original.ManualClassificationModels.ToHashSet(StringComparer.Ordinal);
-        var editingClassifier = original.Kind == ProviderKind.TypeSafe;
+        var classificationIds = original.ModelOverrides.Where(item => item.Value.Manual && (editingClassifier || item.Value.Decision))
+            .Select(item => item.Key).ToHashSet(StringComparer.Ordinal);
         var modelList = Choices(5);
         var modelEditor = new ProviderModelEditor(CatalogBasis());
         var selectedLabel = Label("");
@@ -259,6 +351,8 @@ internal sealed class ProvidersWindowComponent(ProviderRegistry providers, Model
         var refresh = Button("Обновить список");
         var manualId = Field("Ручной API ID: ");
         var addManual = Button("Добавить ID");
+        var addDecision = Button("Добавить ID решения");
+        addDecision.Visible = original.Definition.SupportsClassification && original.Definition.SupportsChat;
         var removeManual = Button("Удалить ручной ID");
         var reset = Button("Сбросить override");
         var modelsForm = Form();
@@ -266,7 +360,7 @@ internal sealed class ProvidersWindowComponent(ProviderRegistry providers, Model
         modelsForm.AddControl(discoveryStatus);
         modelsForm.AddControl(modelList);
         modelsForm.AddControl(manualId);
-        modelsForm.AddControl(Buttons(addManual, removeManual, reset));
+        modelsForm.AddControl(Buttons(addManual, addDecision, removeManual, reset));
         modelsForm.AddControl(selectedLabel);
         modelsForm.AddControl(modelEditor.Control);
         var tabs = new TabControl
@@ -310,6 +404,9 @@ internal sealed class ProvidersWindowComponent(ProviderRegistry providers, Model
         cancel.Click += (_, _) => { if (!saving) system.CloseWindow(window); };
         save.Click += (_, _) => _ = SaveAsync();
         refresh.Click += (_, _) => _ = DiscoverAsync();
+        auth.SelectedIndexChanged += (_, _) => UpdateAuth();
+        import.Click += (_, _) => _ = ImportAsync();
+        UpdateAuth();
         modelList.SelectedIndexChanged += (_, _) =>
         {
             if (rebuilding) return;
@@ -319,32 +416,44 @@ internal sealed class ProvidersWindowComponent(ProviderRegistry providers, Model
         addManual.Click += (_, _) =>
         {
             var apiId = manualId.Input.Trim();
-            if (!ProviderProfile.ValidModelId(apiId)) { Error("Введите корректный API ID модели."); return; }
+            if (!ProviderModel.ValidId(apiId)) { Error("Введите корректный API ID модели."); return; }
             Capture();
             if (editingClassifier)
             {
-                if (!ClassificationModel.IsVersionedId(apiId)) { Error("Укажите фиксированный ID jev-X.Y.Z, а не алиас."); return; }
-                classificationIds.Add(apiId);
-                manualId.Input = "";
-                RefreshModels(apiId);
+                AddDecision(apiId);
                 return;
             }
+            var modelConnection = Connection() with { Discovery = CurrentDiscovery() };
+            if (!modelConnection.Definition.IsModelAllowed(modelConnection, apiId))
+            { Error("Модель отсутствует в списке выбранного способа входа. Обновите список моделей."); return; }
+            if (IsDecision(apiId)) { Error("Этот ID уже используется моделью решений."); return; }
             var draft = drafts.GetValueOrDefault(apiId) ?? ProviderModelEditor.Draft.FromRule(null);
             drafts[apiId] = draft with { Manual = true };
             manualId.Input = "";
             RefreshModels(apiId);
         };
+        addDecision.Click += (_, _) => AddDecision(manualId.Input.Trim());
+        void AddDecision(string apiId)
+        {
+            if (!ProviderModel.ValidId(apiId) || !Connection().Definition.CanSelectDecisionModel(apiId))
+            { Error("Укажите поддерживаемый ID модели решений."); return; }
+            Capture();
+            if (drafts.ContainsKey(apiId)) { Error("Этот ID уже используется чат-моделью."); return; }
+            classificationIds.Add(apiId);
+            manualId.Input = "";
+            RefreshModels(apiId);
+        }
         removeManual.Click += (_, _) =>
         {
             if (currentId is null) return;
             Capture();
-            if (editingClassifier) classificationIds.Remove(currentId);
+            if (classificationIds.Contains(currentId)) classificationIds.Remove(currentId);
             else drafts.Remove(currentId);
             RefreshModels();
         };
         reset.Click += (_, _) =>
         {
-            if (currentId is null) return;
+            if (currentId is null || !drafts.ContainsKey(currentId)) return;
             Capture();
             var manual = drafts[currentId].Manual;
             drafts[currentId] = ProviderModelEditor.Draft.FromRule(null) with { Manual = manual };
@@ -360,39 +469,81 @@ internal sealed class ProvidersWindowComponent(ProviderRegistry providers, Model
         system.AddWindow(window);
         window.FocusControl(name);
 
-        ProviderProfile Connection() => original with
+        ProviderAuthMethod SelectedMethod() => methods[Math.Clamp(auth.SelectedIndex, 0, methods.Length - 1)];
+        void UpdateAuth()
         {
-            Name = name.Input.Trim(),
-            ApiKey = key.Input.Length == 0 ? original.ApiKey : key.Input
-        };
+            var method = SelectedMethod();
+            key.Visible = !method.RequiresImport;
+            import.Visible = method.RequiresImport;
+            authHint.Visible = method.Hint is not null;
+            endpointLabel.Text = Markup.Escape($"{original.Definition.ProtocolLabel} · {original.Definition.EndpointFor(method.Id)}");
+            authHint.Text = method.Hint is null ? "" : $"[grey70]{Markup.Escape(method.Hint)}[/]";
+        }
+        async Task ImportAsync()
+        {
+            if (busy) return;
+            var method = SelectedMethod();
+            Busy(true);
+            status.Text = "[grey70]Импорт авторизации…[/]";
+            try
+            {
+                var result = await Task.Run(() => original.Definition.ImportCredentialsAsync(original, method.Id, lifetime.Token), lifetime.Token).ConfigureAwait(false);
+                system.EnqueueOnUIThread(() =>
+                {
+                    if (closed) return;
+                    imported = result;
+                    Busy(false);
+                    status.Text = "[green]Данные импортированы. Сохраните подключение.[/]";
+                });
+            }
+            catch (Exception error)
+            {
+                system.EnqueueOnUIThread(() =>
+                {
+                    if (closed) return;
+                    Busy(false);
+                    Error(error is InvalidDataException ? error.Message : "Не удалось импортировать авторизацию.");
+                });
+            }
+        }
+        ProviderProfile Connection()
+        {
+            var profile = original with { Name = name.Input.Trim() };
+            var method = SelectedMethod();
+            if (method.RequiresImport)
+                return imported is not null && original.Definition.AuthenticationMethod(imported) == method.Id
+                    ? imported with { Name = profile.Name } : profile with { Credentials = ImmutableDictionary<string, string>.Empty };
+            return key.Input.Length == 0 && originalMethod == method.Id
+                ? profile : profile.Definition.UpdateCredential(profile, key.Input);
+        }
 
         IReadOnlyDictionary<string, ModelInfo> CatalogBasis()
         {
-            var connection = Connection();
-            var providerId = connection.CatalogProviderId;
-            if (providerId is null || !ModelsDevCatalog.Providers.TryGetValue(providerId, out var provider))
-                return new Dictionary<string, ModelInfo>();
-            return provider.Models.Values.ToDictionary(
-                model => model.Id,
-                model => ModelsDevCatalog.ToModelInfo(model, connection.Kind),
-                StringComparer.Ordinal);
+            var connection = Connection() with { Discovery = CurrentDiscovery(), ModelOverrides = ImmutableDictionary<string, ModelOverride>.Empty };
+            return connection.Definition.Models.Where(model => connection.Definition.IsModelAllowed(connection, model.Id))
+                .Select(model => ModelResolver.Resolve(connection, model.Id).Model ?? model)
+                .ToDictionary(model => model.Id, StringComparer.Ordinal);
         }
-        bool SameConnection(ProviderProfile profile) => discoveryConnection is not null && profile.Kind == discoveryConnection.Kind &&
-            profile.BaseUrl.TrimEnd('/') == discoveryConnection.BaseUrl.TrimEnd('/') && profile.ApiKey == discoveryConnection.ApiKey &&
-            profile.DiscoveryUrl == discoveryConnection.DiscoveryUrl;
+        bool SameConnection(ProviderProfile profile) => discoveryConnection is not null &&
+            profile.DefinitionId == discoveryConnection.DefinitionId &&
+            profile.Credentials.Count == discoveryConnection.Credentials.Count &&
+            profile.Credentials.All(item => discoveryConnection.Credentials.TryGetValue(item.Key, out var value) && value == item.Value);
         DiscoveredModels? CurrentDiscovery() => SameConnection(Connection()) ? discovery : null;
+        bool IsDecision(string apiId) => editingClassifier || classificationIds.Contains(apiId) ||
+            Connection().Definition.BuiltInDecisionModels.Any(model => model.Id == apiId) ||
+            CurrentDiscovery()?.DecisionIds.Contains(apiId, StringComparer.Ordinal) == true;
         void Capture()
         {
-            if (currentId is null || editingClassifier || LakeCode.Core.Agent.ModelCatalog.GetModelType(currentId) == LakeCode.Core.Agent.ModelType.ImageGeneration) return;
+            if (currentId is null || IsDecision(currentId) || LakeCode.Core.Agent.ModelCatalog.GetModelType(currentId) == LakeCode.Core.Agent.ModelType.ImageGeneration) return;
             drafts[currentId] = modelEditor.Capture();
             var row = modelList.Items.FirstOrDefault(item => item.Tag as string == currentId);
             if (row is not null) row.Text = ModelCaption(currentId);
         }
         string ModelCaption(string apiId)
         {
-            if (editingClassifier)
+            if (IsDecision(apiId))
                 return Markup.Escape($"{apiId} · Классификация" +
-                    (ClassificationModel.IsVersionedId(apiId) ? " · фиксированная версия" : " · алиас, для назначения нужен ID версии") +
+                    (Connection().Definition.CanSelectDecisionModel(apiId) ? " · доступна для выбора" : " · недоступна для выбора") +
                     (classificationIds.Contains(apiId) ? " · вручную" : ""));
             string text;
             try
@@ -415,18 +566,19 @@ internal sealed class ProvidersWindowComponent(ProviderRegistry providers, Model
         {
             currentId = modelList.SelectedItem?.Tag as string;
             var imageModel = currentId is not null && LakeCode.Core.Agent.ModelCatalog.GetModelType(currentId) == LakeCode.Core.Agent.ModelType.ImageGeneration;
-            modelEditor.Control.Visible = currentId is not null && !editingClassifier && !imageModel;
-            removeManual.IsEnabled = currentId is not null && (editingClassifier
+            var decisionModel = currentId is not null && IsDecision(currentId);
+            modelEditor.Control.Visible = currentId is not null && !decisionModel && !imageModel;
+            removeManual.IsEnabled = currentId is not null && (decisionModel
                 ? classificationIds.Contains(currentId) : CurrentDiscovery()?.Ids.Contains(currentId, StringComparer.Ordinal) != true);
             reset.Visible = !editingClassifier;
-            reset.IsEnabled = currentId is not null && !editingClassifier;
+            reset.IsEnabled = currentId is not null && !decisionModel && !imageModel;
             selectedLabel.Text = currentId is null ? "" : Markup.Escape("API ID: " + currentId);
             if (imageModel)
             {
                 selectedLabel.Text = Markup.Escape($"API ID: {currentId} · Генерация изображений. Назначение: /models → Изображения. Чат-характеристики не требуются.");
                 return;
             }
-            if (currentId is null || editingClassifier) return;
+            if (currentId is null || decisionModel) return;
             if (!drafts.ContainsKey(currentId)) drafts[currentId] = ProviderModelEditor.Draft.FromRule(null);
             modelEditor.Load(currentId, drafts[currentId]);
         }
@@ -437,11 +589,12 @@ internal sealed class ProvidersWindowComponent(ProviderRegistry providers, Model
             currentId = null;
             modelList.ClearItems();
             var visibleDiscovery = CurrentDiscovery();
-            IEnumerable<string> catalogIds = !editingClassifier && Connection().CatalogProviderId is { } catalogProviderId
-                ? ModelsDevCatalog.ModelIdsForProvider(catalogProviderId)
-                : [];
-            IEnumerable<string> manualIds = editingClassifier ? classificationIds : drafts.Keys;
-            foreach (var apiId in catalogIds.Concat(visibleDiscovery?.Ids ?? []).Concat(manualIds)
+            var connection = Connection() with { Discovery = visibleDiscovery };
+            IEnumerable<string> catalogIds = connection.Definition.ModelIds(connection)
+                .Concat(connection.Definition.BuiltInDecisionModels.Select(model => model.Id));
+            IEnumerable<string> manualIds = editingClassifier ? classificationIds : drafts.Keys.Concat(classificationIds)
+                .Where(id => connection.Definition.IsModelAllowed(connection, id) || IsDecision(id));
+            foreach (var apiId in catalogIds.Concat(visibleDiscovery?.Ids ?? []).Concat(visibleDiscovery?.DecisionIds ?? []).Concat(manualIds)
                          .Distinct(StringComparer.Ordinal).OrderBy(value => value, StringComparer.Ordinal))
             {
                 modelList.AddItem(new ListItem(ModelCaption(apiId)) { Tag = apiId });
@@ -450,7 +603,7 @@ internal sealed class ProvidersWindowComponent(ProviderRegistry providers, Model
             if (modelList.Items.Count > 0 && modelList.SelectedIndex < 0) modelList.SelectedIndex = 0;
             if (modelList.Items.Count == 0) modelList.AddItem(new ListItem("Обновите список или добавьте API ID вручную."));
             discoveryStatus.Text = editingClassifier
-                ? "[grey70]System One: discovery может вернуть только алиасы. Для классификатора добавьте фиксированный ID, например jev-1.13.0. Reasoning и чат-параметры не нужны.[/]"
+                ? Markup.Escape(original.Definition.DecisionModelsHint ?? "Добавьте или обновите список моделей решений.")
                 : Markup.Escape(DiscoveryText(Connection() with { Discovery = visibleDiscovery }));
             rebuilding = false;
             LoadSelected();
@@ -475,7 +628,7 @@ internal sealed class ProvidersWindowComponent(ProviderRegistry providers, Model
             status.Text = "[grey70]Получение моделей…[/]";
             try
             {
-                var result = await ProviderModelDiscovery.DiscoverAsync(connection, lifetime.Token).ConfigureAwait(false);
+                var result = await connection.DiscoverAsync(lifetime.Token).ConfigureAwait(false);
                 system.EnqueueOnUIThread(() =>
                 {
                     if (closed) return;
@@ -506,7 +659,7 @@ internal sealed class ProvidersWindowComponent(ProviderRegistry providers, Model
             {
                 connection = Connection();
                 connection.Validate();
-                if (string.IsNullOrWhiteSpace(connection.ApiKey)) throw new InvalidDataException("Введите API-ключ.");
+                if (!connection.HasCredentials) throw new InvalidDataException("Настройте авторизацию.");
             }
             catch (Exception error) { tabs.ActiveTabIndex = 0; Error(error.Message); return; }
             var rules = ImmutableDictionary.CreateBuilder<string, ModelOverride>(StringComparer.Ordinal);
@@ -515,6 +668,11 @@ internal sealed class ProvidersWindowComponent(ProviderRegistry providers, Model
                 try
                 {
                     if (draft.ToRule() is not { } rule) continue;
+                    if (!connection.Definition.IsModelAllowed(connection, apiId))
+                    {
+                        rules[apiId] = rule;
+                        continue;
+                    }
                     var entry = ModelResolver.Resolve(connection with { ModelOverrides = ImmutableDictionary<string, ModelOverride>.Empty.Add(apiId, rule) }, apiId);
                     if (entry.Error is not null) throw new InvalidDataException(entry.Error);
                     rules[apiId] = rule;
@@ -527,22 +685,38 @@ internal sealed class ProvidersWindowComponent(ProviderRegistry providers, Model
                     return;
                 }
             }
+            foreach (var id in classificationIds) rules[id] = new ModelOverride { Manual = true, Decision = true };
             var profile = connection with
             {
-                ModelOverrides = rules.ToImmutable(), Discovery = SameConnection(connection) ? discovery : null,
-                ManualClassificationModels = editingClassifier ? classificationIds.OrderBy(id => id, StringComparer.Ordinal).ToImmutableArray() : []
+                ModelOverrides = rules.ToImmutable(), Discovery = SameConnection(connection) ? discovery : null
             };
             Busy(true, writing: true);
             status.Text = "[grey70]Сохранение…[/]";
+            var refreshImported = SelectedMethod().RequiresImport &&
+                (originalMethod != SelectedMethod().Id || !ReferenceEquals(imported, original));
             try
             {
                 await Task.Run(() => providers.SaveAsync(profile, lifetime.Token), lifetime.Token).ConfigureAwait(false);
+                string? discoveryError = null;
+                if (refreshImported)
+                {
+                    try { await providers.RefreshDiscoveryAsync(profile.Id, lifetime.Token).ConfigureAwait(false); }
+                    catch (Exception error) when (error is not OperationCanceledException)
+                    { discoveryError = error is InvalidDataException ? error.Message : "Не удалось получить список моделей."; }
+                }
                 system.EnqueueOnUIThread(() =>
                 {
                     if (closed) return;
                     models.Refresh();
                     changed();
-                    system.CloseWindow(window);
+                    if (discoveryError is null) system.CloseWindow(window);
+                    else
+                    {
+                        Busy(false);
+                        tabs.IsEnabled = save.IsEnabled = false;
+                        cancel.Text = "Закрыть";
+                        status.Text = $"[yellow]Подключение сохранено. {Markup.Escape(discoveryError)}[/]";
+                    }
                 });
             }
             catch (Exception)

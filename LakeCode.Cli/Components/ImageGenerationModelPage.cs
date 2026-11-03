@@ -95,7 +95,7 @@ internal sealed class ImageGenerationModelPage
             _images.ClearItems();
             _images.AddItem(new ListItem("Не настроено"));
             foreach (var provider in _providers.Profiles
-                         .Where(profile => profile.Kind == ProviderKind.OpenAI && profile.ApiMode == OpenAIApiMode.Responses)
+                         .Where(profile => profile.Definition.SupportsImages(profile))
                          .OrderBy(profile => profile.Name, StringComparer.Ordinal))
             foreach (var id in (provider.Discovery?.Ids ?? []).Concat(provider.ModelOverrides.Keys)
                          .Distinct(StringComparer.Ordinal).Where(id => ModelCatalog.GetModelType(id) == ModelType.ImageGeneration)

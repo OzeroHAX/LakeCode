@@ -65,10 +65,10 @@ internal sealed class AgentRunPreparer(
             throw new ArgumentException("История содержит изображения. Выберите модель с image input или начните новую сессию.");
         client.Configure(provider, model, cacheSessionId);
         history.Capture.ConfigureSideContext(provider, model, reasoningEffort, cacheSessionId);
-        var origin = $"{provider.Id}|{provider.Revision}|{provider.Kind}|{provider.ApiMode}|{provider.BaseUrl.TrimEnd('/')}|{model.Id}";
+        var origin = $"{provider.Id}|{provider.Revision}|{provider.DefinitionId}|{provider.Definition.BaseUrl.TrimEnd('/')}|{model.Id}";
         if (session.HistoryOrigin != origin) history.NormalizeForConnection();
         session.HistoryOrigin = origin;
-        var options = ProviderClientFactory.Options(provider, model, reasoningEffort, cacheSessionId);
+        var options = provider.Definition.Options(provider, model, reasoningEffort, cacheSessionId);
         options.Instructions = Configuration.Instructions;
         // Preserve tools selected by MCP discovery across user turns. The discovery layer refreshes
         // this dynamic snapshot when a catalog changes or a server is removed.

@@ -7,8 +7,10 @@ internal static class ProjectInvestigation
         Ground project-specific claims in source you have actually inspected, including complete
         file snapshots under the rules below. Start with paths
         supplied by the user and the smallest relevant part of the workspace. If the location
-        is unknown, inspect the appropriate directory or search for domain terms, error text,
-        or a known symbol. Avoid reading the entire repository when a focused investigation
+        is unknown, use list_directory or find_files for likely paths, search_text for exact
+        domain/error/symbol matches, outline_file for structure, and trace_code for heuristic
+        investigation. Use read_file to verify the relevant source; do not use bash or eval
+        filesystem/process code as a retrieval substitute. Avoid reading the entire repository when a focused investigation
         can answer the question. Read surrounding code before interpreting an isolated match.
 
         User messages may contain inline <file_ref path="..."/> references and an

@@ -7,8 +7,8 @@ public sealed record ClassifierModelSelection(string ProviderId, string ModelId)
 {
     public void Validate()
     {
-        if (!Guid.TryParseExact(ProviderId, "D", out _) || !ClassificationModel.IsVersionedId(ModelId))
-            throw new InvalidDataException("Выберите подключение и фиксированный ID jev-X.Y.Z для классификатора в /models.");
+        if (!Guid.TryParseExact(ProviderId, "D", out _) || !ProviderModel.ValidId(ModelId))
+            throw new InvalidDataException("Выберите подключение и ID модели решений в /models.");
     }
 
     public ProviderProfile Resolve(ProviderRegistry providers)
@@ -16,9 +16,9 @@ public sealed record ClassifierModelSelection(string ProviderId, string ModelId)
         Validate();
         var provider = providers.Profiles.FirstOrDefault(p => p.Id == ProviderId)
             ?? throw new InvalidDataException("Подключение классификатора недоступно. Настройте /providers и /models.");
-        if (provider.Kind != ProviderKind.TypeSafe || !provider.ClassificationModels.Any(m => m.Id == ModelId && m.IsVersioned))
+        if (!provider.Definition.SupportsClassification || !provider.Definition.DecisionModels(provider).Any(m => m.Id == ModelId && m.IsSelectable))
             throw new InvalidDataException("Модель классификатора недоступна или несовместима. Настройте /providers и /models.");
-        if (string.IsNullOrWhiteSpace(provider.ApiKey))
+        if (!provider.HasCredentials)
             throw new InvalidDataException("Укажите ключ классификатора через /providers.");
         provider.Validate();
         return provider;

@@ -30,9 +30,9 @@ internal sealed class ClassifierModelPage
     {
         _mode.SelectedIndex = settings.Enabled ? 1 : 0;
         _model.AddItem("Не назначена");
-        foreach (var provider in providers.Profiles.Where(profile => profile.Kind == ProviderKind.TypeSafe)
+        foreach (var provider in providers.Profiles.Where(profile => profile.Definition.SupportsClassification)
                      .OrderBy(profile => profile.Name, StringComparer.Ordinal))
-        foreach (var model in provider.ClassificationModels.Where(model => model.IsVersioned))
+        foreach (var model in provider.Definition.DecisionModels(provider).Where(model => model.IsSelectable))
         {
             _model.AddItem(Markup.Escape($"{provider.Name} · {model.Id}"));
             _models.Add(new ClassifierModelSelection(provider.Id, model.Id));

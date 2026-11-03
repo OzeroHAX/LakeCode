@@ -23,8 +23,8 @@ public sealed record ModelSelection(string ProviderId, string ModelId, string Re
         if (ModelResolver.SelectionError(provider, ModelId) is { } selectionError)
             throw new InvalidDataException($"Модель {role}: {selectionError}");
         var model = ModelResolver.Resolve(provider, ModelId).Model!;
-        if (string.IsNullOrWhiteSpace(provider.ApiKey))
-            throw new InvalidDataException($"Укажите API-ключ подключения {role} через /providers.");
+        if (!provider.HasCredentials)
+            throw new InvalidDataException($"Настройте авторизацию подключения {role} через /providers.");
         if (!model.ReasoningEfforts.Contains(ReasoningEffort))
             throw new InvalidDataException($"Reasoning назначенной модели {role} больше не поддерживается. Измените назначение в /models.");
         return new ModelConfiguration(model, ReasoningEffort, provider);

@@ -5,7 +5,7 @@ using LakeCode.Core.Agent.Prompt;
 using LakeCode.Core.Agent.Tools;
 using LakeCode.Core.Agent.Tools.ReadFile;
 using LakeCode.Core.Agent.Tools.ListDirectory;
-using LakeCode.Core.Agent.Tools.Grep;
+using LakeCode.Core.Agent.Tools.Search;
 using LakeCode.Core.Providers;
 using Microsoft.Agents.AI;
 using Microsoft.Extensions.AI;
@@ -29,11 +29,11 @@ internal sealed class SubagentRunner : IDisposable
         };
         var readFile = new ReadFileTool(files);
         var listDirectory = new ListDirectoryTool(files);
-        var grep = new GrepTool(files);
+        var search = new SearchTools(files);
         var agent = configuration.Tools;
         agent.AddTool(readFile.AgentTool());
         agent.AddTool(listDirectory.AgentTool());
-        agent.AddTool(grep.AgentTool());
+        foreach (var tool in search.AgentTools()) agent.AddTool(tool);
         agent.AddTool(questions.AgentTool());
         _components = AgentFactory.CreateSubagent(files, configuration);
     }

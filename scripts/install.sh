@@ -32,6 +32,10 @@ if [[ -e "$command_path" || -L "$command_path" ]]; then
 fi
 
 printf 'Публикация LakeCode (Release, %s) в %s\n' "$runtime" "$install_dir"
+# Publishing directly over a previous installation can leave newer, incompatible
+# dependency files in place. Publish to an empty directory before copying them.
+stage_dir="$(mktemp -d "${TMPDIR:-/tmp}/lakecode-publish.XXXXXXXX")"
+trap 'rm -rf -- "$stage_dir"' EXIT
 # publish also restores dependencies and builds the project and its references.
 # Keep separate files: no trimming or single-file packaging for this dependency graph.
 dotnet publish "$repo_root/LakeCode.Cli/LakeCode.Cli.csproj" \
@@ -41,7 +45,10 @@ dotnet publish "$repo_root/LakeCode.Cli/LakeCode.Cli.csproj" \
     -p:UseAppHost=true \
     -p:PublishTrimmed=false \
     -p:PublishSingleFile=false \
-    --output "$install_dir"
+    --output "$stage_dir"
+
+mkdir -p -- "$install_dir"
+cp -a -- "$stage_dir/." "$install_dir/"
 
 mkdir -p -- "$bin_dir"
 ln -sfnT -- "$install_dir/LakeCode.Cli" "$command_path"

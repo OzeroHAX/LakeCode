@@ -10,17 +10,10 @@ namespace LakeCode.Cli.Components;
 internal static class ProviderWindowControls
 {
     internal static string DiscoveryText(ProviderProfile profile) => profile.Discovery is { } discovery
-        ? $"Последний список: {discovery.UpdatedAt.ToLocalTime():g} · ID: {discovery.Ids.Length}. Это не проверка доступности и возможностей API."
-        : profile.CatalogProviderId is not null
+        ? $"Последний список: {discovery.UpdatedAt.ToLocalTime():g} · чат: {discovery.Ids.Length} · решения: {discovery.DecisionIds.Length}. Это не проверка доступности API."
+        : profile.Definition.CatalogProviderId.Length > 0
             ? "Список ещё не получен. Характеристики берутся из каталога models.dev; discovery добавит ID шлюза."
             : "Список ещё не получен. Загрузите его или явно разрешите ручной ID.";
-
-    internal static string ProtocolLabel(ProviderKind kind, OpenAIApiMode mode) => kind switch
-    {
-        ProviderKind.TypeSafe => "TypeSafe · System One",
-        ProviderKind.Anthropic => "Anthropic · Messages",
-        _ => $"OpenAI · {mode}"
-    };
 
     internal static string ModelsLabel(int count)
     {

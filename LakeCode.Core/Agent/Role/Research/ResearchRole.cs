@@ -12,7 +12,7 @@ internal sealed class ResearchRole : AgentRole
         var agent = Configuration.Tools;
         agent.AddTool(services.ReadFile.AgentTool());
         agent.AddTool(services.ListDirectory.AgentTool());
-        agent.AddTool(services.Grep.AgentTool());
+        foreach (var tool in services.Search.AgentTools()) agent.AddTool(tool);
         agent.AddTool(services.WriteFile.AgentTool());
         agent.AddTool(services.ImageGeneration.AgentTool());
         agent.AddTool(services.WebSearch.AgentTool());

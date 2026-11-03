@@ -1,6 +1,7 @@
 using System.Collections.Frozen;
 using System.Collections.Immutable;
 using LakeCode.Core.Agent;
+using LakeCode.Core.Providers.Custom;
 
 namespace LakeCode.Core.Providers;
 
@@ -28,19 +29,26 @@ public static partial class ModelsDevCatalog
 
     /// <summary>Resolves a chat model from the models.dev catalog, preferring the profile's provider.</summary>
     public static ModelInfo? ResolveModel(string? catalogProviderId, string? catalogModelId, string apiId,
-        ProviderKind kind, out string source)
+        ModelReasoningFormat kind, out string source)
     {
         if (catalogProviderId is not null && Providers.TryGetValue(catalogProviderId, out var provider))
         {
-            if (provider.Models.TryGetValue(apiId, out var providerModel))
-            {
-                source = "Из каталога models.dev";
-                return ToModelInfo(providerModel, kind);
-            }
             if (catalogModelId is not null && provider.Models.TryGetValue(catalogModelId, out var mappedProviderModel))
             {
                 source = "Сопоставлена с models.dev";
                 return ToModelInfo(mappedProviderModel, kind);
+            }
+            if (catalogModelId is null && provider.Models.TryGetValue(apiId, out var providerModel))
+            {
+                source = "Из каталога models.dev";
+                return ToModelInfo(providerModel, kind);
+            }
+            // A different provider may publish the same ID with different capabilities.
+            // Cross-provider lookup is allowed only when the user chose an explicit mapping.
+            if (catalogModelId is null)
+            {
+                source = "";
+                return null;
             }
         }
 
@@ -75,7 +83,7 @@ public static partial class ModelsDevCatalog
         apiId, apiId, 131_072, 131_072, 32_768,
         [ModelModality.Text], [ModelModality.Text], ["none"]);
 
-    public static ModelInfo ToModelInfo(ModelsDevModel model, ProviderKind kind) => new(
+    public static ModelInfo ToModelInfo(ModelsDevModel model, ModelReasoningFormat kind) => new(
         model.Id,
         string.IsNullOrWhiteSpace(model.Name) ? model.Id : model.Name,
         model.ContextWindowTokens,
@@ -88,13 +96,13 @@ public static partial class ModelsDevCatalog
     private static ModelInfo ResolveDefaultChatModel()
     {
         if (Providers.TryGetValue("openai", out var openai) && openai.Models.TryGetValue("gpt-6.1-sol", out var preferred))
-            return ToModelInfo(preferred, ProviderKind.OpenAI);
+            return ToModelInfo(preferred, ModelReasoningFormat.Effort);
         var first = Providers.Values.OrderBy(provider => provider.Id, StringComparer.Ordinal)
             .SelectMany(provider => provider.Models.Values.OrderBy(model => model.Id, StringComparer.Ordinal))
             .FirstOrDefault();
         return first is null
             ? CreateGenericModel("unknown")
-            : ToModelInfo(first, ProviderKind.OpenAI);
+            : ToModelInfo(first, ModelReasoningFormat.Effort);
     }
 
     private static ImmutableArray<ModelModality> ToInputModalities(ModelsDevModel model)
@@ -106,20 +114,20 @@ public static partial class ModelsDevCatalog
         return values.ToImmutable();
     }
 
-    private static ImmutableArray<string> ToReasoningEfforts(ModelsDevModel model, ProviderKind kind)
+    private static ImmutableArray<string> ToReasoningEfforts(ModelsDevModel model, ModelReasoningFormat kind)
     {
         if (!model.Reasoning) return ["none"];
-        if (kind == ProviderKind.OpenAI)
+        if (kind == ModelReasoningFormat.Effort)
         {
             var efforts = model.ReasoningOptions
                 .Where(option => option.Type == "effort")
                 .SelectMany(option => option.Values)
-                .Where(ProviderProfile.SupportedEfforts.Contains)
+                .Where(OpenAICompatibleProvider.SupportedEfforts.Contains)
                 .Distinct(StringComparer.Ordinal)
                 .ToImmutableArray();
             return efforts.IsEmpty ? ["none"] : efforts;
         }
-        if (kind == ProviderKind.Anthropic)
+        if (kind == ModelReasoningFormat.Budget)
         {
             var budgets = model.ReasoningOptions
                 .Where(option => option.Type == "budget_tokens")
@@ -135,7 +143,7 @@ public static partial class ModelsDevCatalog
         return ["none"];
     }
 
-    private static CatalogCandidate? FindMappedModel(string modelId, ProviderKind kind)
+    private static CatalogCandidate? FindMappedModel(string modelId, ModelReasoningFormat kind)
     {
         if (CandidatesByModelId.Value.TryGetValue(modelId, out var exact))
             return Select(exact, modelId, kind);
@@ -146,7 +154,7 @@ public static partial class ModelsDevCatalog
         return null;
     }
 
-    private static CatalogCandidate Select(ImmutableArray<CatalogCandidate> candidates, string modelId, ProviderKind kind)
+    private static CatalogCandidate Select(ImmutableArray<CatalogCandidate> candidates, string modelId, ModelReasoningFormat kind)
     {
         var priority = PreferredProviders;
         return candidates
@@ -157,12 +165,12 @@ public static partial class ModelsDevCatalog
             .First();
     }
 
-    private static int KindRank(string providerId, ProviderKind kind) => kind switch
+    private static int KindRank(string providerId, ModelReasoningFormat kind) => kind switch
     {
-        ProviderKind.OpenAI when providerId == "openai" => 0,
-        ProviderKind.OpenAI => 10,
-        ProviderKind.Anthropic when providerId == "anthropic" => 0,
-        ProviderKind.Anthropic => 10,
+        ModelReasoningFormat.Effort when providerId == "openai" => 0,
+        ModelReasoningFormat.Effort => 10,
+        ModelReasoningFormat.Budget when providerId == "anthropic" => 0,
+        ModelReasoningFormat.Budget => 10,
         _ => 0
     };
 

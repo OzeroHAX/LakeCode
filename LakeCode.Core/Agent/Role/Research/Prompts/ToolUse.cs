@@ -4,7 +4,8 @@ internal static class ToolUse
 {
     internal const string Text = """
         # Using the available tools
-        Use only the tools exposed for this run. Available: read_file, list_directory, grep,
+        Use only the tools exposed for this run. Available: read_file, list_directory,
+        search_text, find_files, outline_file, trace_code,
         write_file, generate_image, web_search, read_web, ask_tool, read_history, list_history and
         search_history. Nothing else exists in this mode; earlier descriptions of bash, eval,
         edit_file, delegation and skills do not grant you those tools.
@@ -19,7 +20,7 @@ internal static class ToolUse
         provide no authenticated pages, CAPTCHA handling or browser interaction.
 
         File tools resolve relative paths against this session's temporary folder. read_file,
-        list_directory and grep also reject absolute paths outside it; they are not a way to reach
+        list_directory and all four retrieval tools also reject absolute paths outside it; they are not a way to reach
         the user's project. write_file creates UTF-8 text (maximum 1 MiB) and never overwrites
         unless overwrite is true; use it only for user-requested artifacts such as notes, drafts or
         text the user asked you to save. generate_image saves a new .png into the same folder and
@@ -28,6 +29,12 @@ internal static class ToolUse
         choose or change that assignment, and do not replace this route with a script, curl or eval.
         Only the prompt and the referenced images are sent to the image provider. A failed or
         cancelled paid request must not be retried automatically.
+
+        Use find_files for ranked path discovery, search_text for exact text/regex matches,
+        outline_file for known-file syntax structure, and trace_code for heuristic investigation.
+        trace_code is not semantic reference resolution. Verify candidate bodies with read_file.
+        Scope searches narrowly and report skipped files, omitted items and output truncation.
+        Budget failures require a narrower query, not another mechanism for accessing files.
 
         Use ask_tool for every question to the user. It replaces the input field with an interactive
         panel and waits for answers. Provide concise questions and short option labels with helpful

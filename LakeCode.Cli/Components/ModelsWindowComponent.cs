@@ -183,7 +183,7 @@ internal sealed class ModelsWindowComponent(ModelStore store, AgentSettingsStora
 
         void ShowManual(ChatModelPicker picker)
         {
-            var profiles = store.Providers.Profiles.Where(profile => profile.Kind != ProviderKind.TypeSafe)
+            var profiles = store.Providers.Profiles.Where(profile => profile.Definition.SupportsChat)
                 .OrderBy(profile => profile.Name, StringComparer.Ordinal).ToList();
             if (profiles.Count == 0)
             {
@@ -264,7 +264,7 @@ internal sealed class ModelsWindowComponent(ModelStore store, AgentSettingsStora
             {
                 if (modalBusy) return;
                 var modelId = id.Input.Trim();
-                if (!ProviderProfile.ValidModelId(modelId))
+                if (!ProviderModel.ValidId(modelId))
                 {
                     error.Text = "[yellow]Введите корректный API ID.[/]";
                     return;
@@ -306,7 +306,7 @@ internal sealed class ModelsWindowComponent(ModelStore store, AgentSettingsStora
         void ShowManualImage()
         {
             var profiles = store.Providers.Profiles
-                .Where(profile => profile.Kind == ProviderKind.OpenAI && profile.ApiMode == OpenAIApiMode.Responses)
+                .Where(profile => profile.Definition.SupportsImages(profile))
                 .OrderBy(profile => profile.Name, StringComparer.Ordinal).ToList();
             if (profiles.Count == 0)
             {
@@ -334,7 +334,7 @@ internal sealed class ModelsWindowComponent(ModelStore store, AgentSettingsStora
             accept.Click += (_, _) =>
             {
                 var imageId = id.Input.Trim();
-                if (!ProviderProfile.ValidModelId(imageId))
+                if (!ProviderModel.ValidId(imageId))
                 {
                     error.Text = "[yellow]Введите корректный ID.[/]";
                     return;

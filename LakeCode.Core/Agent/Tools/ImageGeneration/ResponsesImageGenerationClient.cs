@@ -42,8 +42,8 @@ internal static class ResponsesImageGenerationClient
                     action = inputs.Count == 0 ? "generate" : "edit", output_format = "png" } },
                 tool_choice = new { type = "image_generation" }, store = false, stream = true
             };
-            using var request = new HttpRequestMessage(HttpMethod.Post, provider.BaseUrl.TrimEnd('/') + "/responses");
-            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", provider.ApiKey);
+            using var request = new HttpRequestMessage(HttpMethod.Post, provider.Definition.BaseUrl.TrimEnd('/') + "/responses");
+            provider.Authorize(request);
             request.Headers.Accept.ParseAdd("text/event-stream");
             request.Headers.Add("session-id", sessionId);
             request.Headers.Add("thread-id", sessionId);
@@ -129,8 +129,8 @@ internal static class ResponsesImageGenerationClient
                 reported = tools.EnumerateArray().Where(t => Text(t, "type") == "image_generation")
                     .Select(t => Text(t, "model")).FirstOrDefault();
             // Only a bounded public model identifier is exposed, never the raw response.
-            if (!ProviderProfile.ValidModelId(reported) ||
-                reported!.Contains(provider.ApiKey, StringComparison.Ordinal)) reported = null;
+            if (!ProviderModel.ValidId(reported) ||
+                provider.Secrets.Any(secret => !string.IsNullOrEmpty(secret) && reported!.Contains(secret, StringComparison.Ordinal))) reported = null;
             return new(imageData, reported);
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)

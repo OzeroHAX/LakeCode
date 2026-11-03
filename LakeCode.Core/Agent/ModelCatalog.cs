@@ -3,7 +3,7 @@ using LakeCode.Core.Providers;
 
 namespace LakeCode.Core.Agent;
 
-public enum ModelType { Unknown, Chat, ImageGeneration }
+public enum ModelType { Unknown, Chat, ImageGeneration, Decision }
 
 public sealed record ImageModelInfo(string Id, string Name)
 {

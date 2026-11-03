@@ -33,7 +33,7 @@ internal sealed class ExecutionAssessmentComponent : PanelControl
         _details.Visible = assessment.Criteria.Length > 0;
         if (!_details.Visible) return;
         // Old history keeps its original policy; never reinterpret a three-way answer as a binary one.
-        if (assessment.PolicyVersion != "jev-plan-v2-binary")
+        if (assessment.PolicyVersion is not ("jev-plan-v2-binary" or "decision-v2-binary"))
         {
             _values.Text = MarkupParser.Escape($"Историческая оценка · {assessment.PolicyVersion}\n{assessment.Reason}\nМодель: {assessment.Model}");
             return;

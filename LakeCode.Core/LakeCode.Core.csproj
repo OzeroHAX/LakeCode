@@ -11,6 +11,7 @@
     </PropertyGroup>
     <ItemGroup>
         <ProjectReference Include="../LakeCode.Eval.Contracts/LakeCode.Eval.Contracts.csproj" />
+        <ProjectReference Include="../LakeCode.Search/LakeCode.Search.csproj" />
         <ProjectReference Include="../LakeCode.Catalog.Generator/LakeCode.Catalog.Generator.csproj" ReferenceOutputAssembly="false" />
         <PackageReference Include="Microsoft.Agents.AI" Version="1.26.0" />
         <PackageReference Include="Microsoft.Agents.AI.OpenAI" Version="1.26.0" />
