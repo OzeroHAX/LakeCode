@@ -180,7 +180,7 @@ internal sealed class AssistantMessageComponent : CollapsiblePanel
         EnableSelection = true
     };
 
-    public void Complete()
+    public void Complete(string? retainedToolCallId = null)
     {
         FinishThinking();
         if (!_continuation && !_hasResponse && _toolCalls.Count == 0 && _evalCalls.Count == 0 && _bashCalls.Count == 0)
@@ -188,6 +188,8 @@ internal sealed class AssistantMessageComponent : CollapsiblePanel
             _body!.Visible = true;
             _body.Text = "[grey]Модель завершила ответ без текста.[/]";
         }
+
+        ReleaseStreamingState(retainedToolCallId);
     }
 
     public void ShowError(string message)
@@ -205,5 +207,31 @@ internal sealed class AssistantMessageComponent : CollapsiblePanel
         if (!_hasResponse && _body is not null)
             _body.Visible = false;
         AddControl(error);
+        ReleaseStreamingState();
+    }
+
+    /// <summary>
+    /// Releases indexes that are needed only while the response is streaming. The rendered child controls
+    /// remain in the transcript, but completed messages no longer retain duplicate call-id lookups or the
+    /// mutable source buffer used to assemble the stream. A plan tool call may be retained because its
+    /// action remains available after the turn has completed.
+    /// </summary>
+    private void ReleaseStreamingState(string? retainedToolCallId = null)
+    {
+        _activeToolGroup = null;
+        _bashCalls.Clear();
+        _evalCalls.Clear();
+
+        if (retainedToolCallId is null)
+        {
+            _toolCalls.Clear();
+        }
+        else
+        {
+            foreach (var callId in _toolCalls.Keys.Where(callId => callId != retainedToolCallId).ToArray())
+                _toolCalls.Remove(callId);
+        }
+
+        _response.Clear();
     }
 }
