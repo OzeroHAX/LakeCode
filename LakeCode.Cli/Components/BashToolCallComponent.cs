@@ -18,6 +18,9 @@ internal sealed class BashToolCallComponent : CollapsiblePanel
     private readonly ExecutionAssessmentComponent _assessment = new();
     private ExecutionApprovalComponent? _approval;
     private readonly MarkupControl _output = new(new List<string>());
+    private readonly MarkupControl _activity = new(new List<string>()) { Visible = false };
+    private readonly CollapsiblePanel _details = new();
+    private readonly MarkupControl _detailsBody = new(new List<string>());
     private readonly MarkupControl _note = new(new List<string>()) { Visible = false };
     private readonly ScrollablePanelControl _viewport = new();
     private readonly ButtonControl _follow = new();
@@ -52,15 +55,8 @@ internal sealed class BashToolCallComponent : CollapsiblePanel
         using var arguments = JsonDocument.Parse(update.Arguments);
         var root = arguments.RootElement;
         var described = root.TryGetProperty("description", out var description) && description.ValueKind == JsonValueKind.String;
-        if (described)
-            AddControl(new MarkupControl(new List<string> { MarkupParser.Escape(description.GetString() ?? "") })
-            {
-                Wrap = true, EnableSelection = true, HorizontalAlignment = HorizontalAlignment.Stretch,
-                ForegroundColor = ToolCardStyle.Description
-            });
         var command = root.TryGetProperty("command", out var value) ? value.GetString() ?? "" : "";
         var directory = root.TryGetProperty("workingDirectory", out var directoryValue) ? directoryValue.GetString() ?? "." : ".";
-        // The prompt carries the directory, so the card needs no separate activity line.
         AddControl(new MarkupControl(new List<string>
         {
             $"[{ToolCardStyle.Prompt.ToMarkup()}]{MarkupParser.Escape(directory)} $[/] " +
@@ -69,8 +65,40 @@ internal sealed class BashToolCallComponent : CollapsiblePanel
         {
             Wrap = true, EnableSelection = true, HorizontalAlignment = HorizontalAlignment.Stretch,
             BackgroundColor = ToolCardStyle.CommandSurface, Padding = new Padding(1, 0, 1, 0),
-            ForegroundColor = ToolCardStyle.Command, Margin = new Margin(0, described ? 1 : 0, 0, 1)
+            ForegroundColor = ToolCardStyle.Command, Margin = new Margin(0, 0, 0, 0)
         });
+
+        if (described)
+        {
+            _activity.Text = MarkupParser.Escape(ExtractActivity(description.GetString() ?? ""));
+            _activity.Wrap = true;
+            _activity.EnableSelection = true;
+            _activity.HorizontalAlignment = HorizontalAlignment.Stretch;
+            _activity.ForegroundColor = ToolCardStyle.Description;
+            _activity.Margin = new Margin(1, 1, 1, 1);
+            AddControl(_activity);
+
+            _details = new CollapsiblePanel
+            {
+                HeaderStyle = CollapsibleHeaderStyle.Borderless,
+                Collapsible = true,
+                IsExpanded = false,
+                ShowHeader = true,
+                Title = "[grey]▸ Обоснование[/]",
+                HorizontalAlignment = HorizontalAlignment.Stretch,
+                ForegroundColor = ToolCardStyle.Muted,
+                FocusedForegroundColor = ToolCardStyle.Description,
+                BackgroundColor = ToolCardStyle.Surface,
+                Margin = new Margin(0, 1, 0, 1),
+                Padding = new Padding(1, 0, 1, 0)
+            };
+            _detailsBody.Wrap = true;
+            _detailsBody.EnableSelection = true;
+            _detailsBody.HorizontalAlignment = HorizontalAlignment.Stretch;
+            _detailsBody.ForegroundColor = ToolCardStyle.Description;
+            _detailsBody.Text = MarkupParser.Escape(ToolCallGroupComponent.FormatDescription(description.GetString() ?? ""));
+            _details.AddControl(_detailsBody);
+        }
 
         // Same bounded auto-sizing viewport as UserMessageComponent; no fixed Height.
         _viewport.BorderStyle = BorderStyle.None;
@@ -87,6 +115,7 @@ internal sealed class BashToolCallComponent : CollapsiblePanel
         _output.Padding = new Padding(1, 0, 1, 0);
         _viewport.AddControl(_output);
         AddControl(_viewport);
+        if (described) AddControl(_details);
         AddControl(_assessment);
 
         // Warnings and failures live below the output instead of being glued into it.
@@ -199,6 +228,8 @@ internal sealed class BashToolCallComponent : CollapsiblePanel
         var notes = new List<string>();
         if (_execution?.Truncated == true)
             notes.Add($"[{ToolCardStyle.Warning.ToMarkup()}]вывод ограничен 32 000 символами[/]");
+        if (_status == ToolCallStatus.Completed)
+            notes.Add("[green]✓ Команда завершена[/]");
         if (_status == ToolCallStatus.Failed && _execution is not null && _result is not null &&
             !_result.StartsWith("Error: Exit code:", StringComparison.Ordinal))
             notes.Add($"[{ToolCardStyle.Error.ToMarkup()}]{MarkupParser.Escape(BashOutputText.Normalize(_result).Trim())}[/]");
@@ -221,6 +252,20 @@ internal sealed class BashToolCallComponent : CollapsiblePanel
         _follow.Visible = _paused || !_viewport.AutoScroll;
         _pause.Visible = _status == ToolCallStatus.Running || _paused;
         _pause.Text = _paused ? "Продолжить" : "Пауза";
+    }
+
+    private static string ExtractActivity(string description)
+    {
+        foreach (var line in description.Replace("\r\n", "\n", StringComparison.Ordinal).Split('\n'))
+        {
+            var text = line.Trim();
+            if (text.StartsWith("Action:", StringComparison.OrdinalIgnoreCase) ||
+                text.StartsWith("Intent:", StringComparison.OrdinalIgnoreCase))
+                return text[(text.IndexOf(':') + 1)..].Trim();
+        }
+
+        return description.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .FirstOrDefault() ?? "Выполняю команду";
     }
 
     private async Task TickAsync(CancellationToken cancellationToken)

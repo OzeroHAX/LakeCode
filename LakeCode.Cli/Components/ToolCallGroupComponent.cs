@@ -24,6 +24,8 @@ internal sealed class ToolCallGroupComponent : CollapsiblePanel
         public ExternalReadPermissionComponent? Permission { get; set; }
         public ExecutionApprovalComponent? Approval { get; set; }
         public ScrollablePanelControl? Viewport { get; set; }
+        public CollapsiblePanel? Details { get; set; }
+        public MarkupControl? DetailsBody { get; set; }
         public ButtonControl? ExecutePlan { get; set; }
         public Action? ExecutePlanAction { get; set; }
     }
@@ -110,8 +112,44 @@ internal sealed class ToolCallGroupComponent : CollapsiblePanel
                 panel.AddControl(viewport);
             }
             else panel.AddControl(body);
-            var summary = _alwaysVisible ? $"{ToolName}: {Summarize(update)}" : Summarize(update);
-            entry = new Entry(summary, FormatArguments(update), panel, body) { Viewport = viewport };
+            CollapsiblePanel? details = null;
+            MarkupControl? detailsBody = null;
+            if (_alwaysVisible && ToolName is ("edit_file" or "write_file"))
+            {
+                detailsBody = new MarkupControl(new List<string>())
+                {
+                    Wrap = true,
+                    HorizontalAlignment = HorizontalAlignment.Stretch,
+                    EnableSelection = true,
+                    ForegroundColor = new Color(150, 150, 150),
+                    Margin = new Margin(0, 0, 0, 0)
+                };
+                details = new CollapsiblePanel
+                {
+                    HeaderStyle = CollapsibleHeaderStyle.Borderless,
+                    Collapsible = true,
+                    IsExpanded = false,
+                    ShowHeader = true,
+                    Title = "[grey]▸ Обоснование[/]",
+                    HorizontalAlignment = HorizontalAlignment.Stretch,
+                    ForegroundColor = new Color(150, 150, 150),
+                    FocusedForegroundColor = new Color(185, 195, 205),
+                    BackgroundColor = BackgroundColor,
+                    Margin = new Margin(0, 1, 0, 0),
+                    Padding = new Padding(0, 0, 0, 0)
+                };
+                details.AddControl(detailsBody);
+            }
+            if (details is not null) panel.AddControl(details);
+            var summary = _alwaysVisible
+                ? $"{ToolName switch { "edit_file" => "Edit", "write_file" => "Write", _ => ToolName }} · {Summarize(update)}"
+                : Summarize(update);
+            entry = new Entry(summary, FormatArguments(update), panel, body)
+            {
+                Viewport = viewport,
+                Details = details,
+                DetailsBody = detailsBody
+            };
             if (update.Delegation is { } delegation) _delegations.Add(delegation.TaskId, entry);
             _calls.Add(update.CallId, entry);
             AddControl(panel);
@@ -135,9 +173,12 @@ internal sealed class ToolCallGroupComponent : CollapsiblePanel
             entry.Body.Header = MarkupParser.Escape($"{ToolName}: {entry.Summary} · {StatusLabel(update.Status)}");
         entry.Body.Text = update.Delegation is { } research
             ? MarkupParser.Escape(FormatDelegation(entry.Arguments, research))
-            : update.Status == ToolCallStatus.Completed && update.FileChange is { } change
-            ? FileDiffPreview.Format(change)
+            : _alwaysVisible && update.FileChange is { } change
+            ? FormatFileBody(update, change)
+            : update.Status == ToolCallStatus.Completed && update.FileChange is { } completedChange
+            ? FileDiffPreview.Format(completedChange)
             : MarkupParser.Escape(FormatBody(entry.Arguments, update.Result ?? "Running…"));
+        UpdateDetails(entry, update);
         if (ToolName == "submit_plan" && update.Status == ToolCallStatus.Completed)
         {
             using var planArgs = JsonDocument.Parse(update.Arguments);
@@ -286,19 +327,72 @@ internal sealed class ToolCallGroupComponent : CollapsiblePanel
         _ => throw new ArgumentOutOfRangeException(nameof(status))
     };
 
+    private static void UpdateDetails(Entry entry, ToolCallUpdate update)
+    {
+        if (entry.Details is null || entry.DetailsBody is null) return;
+        var description = ExtractDescription(update.Arguments);
+        entry.DetailsBody.Text = MarkupParser.Escape(FormatDescription(description));
+        entry.Details.Visible = description.Length > 0;
+    }
+
+    private static string FormatFileBody(ToolCallUpdate update, FileChange change)
+    {
+        var activity = ExtractActivity(ExtractDescription(update.Arguments));
+        var diff = FileDiffPreview.Format(change);
+        return activity.Length == 0 ? diff : $"{MarkupParser.Escape(activity)}\n\n{diff}";
+    }
+
+    private static string ExtractActivity(string description)
+    {
+        foreach (var line in description.Replace("\r\n", "\n", StringComparison.Ordinal).Split('\n'))
+        {
+            var text = line.Trim();
+            if (text.StartsWith("Action:", StringComparison.OrdinalIgnoreCase) ||
+                text.StartsWith("Intent:", StringComparison.OrdinalIgnoreCase))
+                return text[(text.IndexOf(':') + 1)..].Trim();
+        }
+
+        return description.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .FirstOrDefault() ?? "";
+    }
+
+    private static string ExtractDescription(string arguments)
+    {
+        using var document = JsonDocument.Parse(arguments);
+        var root = document.RootElement;
+        if (root.TryGetProperty("description", out var description) && description.ValueKind == JsonValueKind.String)
+            return description.GetString() ?? "";
+
+        var fields = new[]
+        {
+            (Name: "intent", Label: "Intent:"),
+            (Name: "whyThisFile", Label: "Why this file:"),
+            (Name: "evidence", Label: "Evidence:"),
+            (Name: "expectedChange", Label: "Expected change:"),
+            (Name: "alternativesConsidered", Label: "Alternatives considered:"),
+            (Name: "risksAndSideEffects", Label: "Risks and side effects:"),
+            (Name: "verification", Label: "Verification:")
+        };
+        return string.Join("\n", fields
+            .Where(field => root.TryGetProperty(field.Name, out var value) && value.ValueKind == JsonValueKind.String)
+            .Select(field => $"{field.Label} {root.GetProperty(field.Name).GetString()}"));
+    }
+
     internal static string FormatArguments(ToolCallUpdate update)
     {
         using var arguments = JsonDocument.Parse(update.Arguments);
         return string.Join("\n", arguments.RootElement.EnumerateObject()
             .Where(property => update.Name != "bash" || property.Name != "command")
             .Where(property => update.Name is not ("edit_file" or "write_file") ||
-                               property.Name is not ("oldText" or "newText" or "content"))
+                               property.Name is not ("oldText" or "newText" or "content" or "intent" or
+                                   "whyThisFile" or "evidence" or "expectedChange" or "alternativesConsidered" or
+                                   "risksAndSideEffects" or "verification"))
             .Select(property => property.Name == "description" && property.Value.ValueKind == JsonValueKind.String
                 ? FormatDescription(property.Value.GetString()!)
                 : $"{property.Name}: {property.Value}"));
     }
 
-    private static string FormatDescription(string description)
+    internal static string FormatDescription(string description)
     {
         var headings = new[]
         {

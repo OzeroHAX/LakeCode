@@ -18,24 +18,24 @@ internal sealed class ToolExecutionApproval
         using var args = JsonDocument.Parse(call.Arguments);
         var root = args.RootElement;
         var descriptionText = manualDescription;
-        if (descriptionText is null && (!root.TryGetProperty("description", out var description) || description.ValueKind != JsonValueKind.String ||
-            string.IsNullOrWhiteSpace(descriptionText = description.GetString())))
-            return "Error: description is required: explain the action, purpose, necessity, alternatives, expected result, and side effects.";
-        if (descriptionText is not null)
+        if (descriptionText is null && call.Name is ("edit_file" or "write_file"))
         {
-            var requiredSections = call.Name switch
+            descriptionText = StructuredFileDescription(root);
+            if (descriptionText is null)
+                return "Error: file changes require all seven rationale fields: intent, whyThisFile, evidence, expectedChange, alternativesConsidered, risksAndSideEffects, and verification.";
+        }
+        else if (descriptionText is null &&
+                 (!root.TryGetProperty("description", out var description) || description.ValueKind != JsonValueKind.String ||
+                  string.IsNullOrWhiteSpace(descriptionText = description.GetString())))
+        {
+            return "Error: description is required: explain the action, purpose, necessity, alternatives, expected result, and side effects.";
+        }
+        if (descriptionText is not null && call.Name is ("bash" or "eval"))
+        {
+            var requiredSections = new[]
             {
-                "bash" or "eval" => new[]
-                {
-                    "Action:", "Purpose:", "Why needed now:", "Alternatives considered:",
-                    "Expected result:", "Side effects:"
-                },
-                "edit_file" or "write_file" => new[]
-                {
-                    "Intent:", "Why this file:", "Evidence:", "Expected change:",
-                    "Alternatives considered:", "Risks and side effects:", "Verification:"
-                },
-                _ => []
+                "Action:", "Purpose:", "Why needed now:", "Alternatives considered:",
+                "Expected result:", "Side effects:"
             };
             var missingSections = requiredSections
                 .Where(section => descriptionText.IndexOf(section, StringComparison.OrdinalIgnoreCase) < 0)
@@ -75,5 +75,29 @@ internal sealed class ToolExecutionApproval
         cancellationToken.ThrowIfCancellationRequested();
         if (error.Length == 0) publish(call with { Status = ToolCallStatus.Running });
         return error;
+    }
+
+    private static string? StructuredFileDescription(JsonElement root)
+    {
+        var fields = new[]
+        {
+            (Label: "Intent:", Name: "intent"),
+            (Label: "Why this file:", Name: "whyThisFile"),
+            (Label: "Evidence:", Name: "evidence"),
+            (Label: "Expected change:", Name: "expectedChange"),
+            (Label: "Alternatives considered:", Name: "alternativesConsidered"),
+            (Label: "Risks and side effects:", Name: "risksAndSideEffects"),
+            (Label: "Verification:", Name: "verification")
+        };
+        var values = fields.Select(field =>
+        {
+            if (!root.TryGetProperty(field.Name, out var value) || value.ValueKind != JsonValueKind.String)
+                return (field.Label, Value: (string?)null);
+            var text = value.GetString()?.Trim();
+            return (field.Label, Value: string.IsNullOrWhiteSpace(text) ? null : text);
+        }).ToArray();
+        return values.Any(value => value.Value is null)
+            ? null
+            : string.Join("\n", values.Select(value => $"{value.Label} {value.Value}"));
     }
 }

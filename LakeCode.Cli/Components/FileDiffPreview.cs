@@ -32,32 +32,31 @@ internal static class FileDiffPreview
         var tail = Math.Min(ContextLines, suffix);
         var width = Math.Max(before.Count, after.Count).ToString().Length;
         var output = new StringBuilder();
-        output.AppendLine($"[bold]{MarkupParser.Escape(change.Path)}[/]  [green]+{added}[/] [red]−{removed}[/]");
-        output.AppendLine($"[grey]@@ -{(before.Count == 0 ? 0 : start + 1)},{prefix - start + removed + tail} +{(after.Count == 0 ? 0 : start + 1)},{prefix - start + added + tail} @@[/]");
+        output.AppendLine(MarkupParser.Escape(change.Path));
+        output.AppendLine($"[green]+{added}[/] [red]−{removed}[/]");
         var truncated = false;
 
         void Append(string text, int? oldLine, int? newLine, char sign, string? color)
         {
             if (truncated) return;
-            var oldNumber = oldLine?.ToString().PadLeft(width) ?? new string(' ', width);
-            var newNumber = newLine?.ToString().PadLeft(width) ?? new string(' ', width);
-            var line = $"{oldNumber} {newNumber} {sign} {text.TrimEnd('\r', '\n')}";
+            var number = (newLine ?? oldLine)?.ToString().PadLeft(width) ?? new string(' ', width);
+            var line = $"{number} │{sign} {text.TrimEnd('\r', '\n')}";
             var escaped = MarkupParser.Escape(line);
             if (output.Length + escaped.Length + 100 > MaxCharacters)
             {
-                output.AppendLine("[grey]… Diff preview truncated; the file change is complete.[/]");
+                output.AppendLine("[grey]… diff сокращён; файл изменён полностью.[/]");
                 truncated = true;
                 return;
             }
             output.AppendLine(color is null ? escaped : $"[{color}]{escaped}[/]");
             if (!text.EndsWith('\n'))
-                output.AppendLine("[grey]\\ No newline at end of file[/]");
+                output.AppendLine("[grey]\\ нет перевода строки в конце файла[/]");
         }
 
         for (var i = start; i < prefix && !truncated; i++)
             Append(before[i], i + 1, i + 1, ' ', "grey");
         for (var i = prefix; i < before.Count - suffix && !truncated; i++)
-            Append(before[i], i + 1, null, '-', "red");
+            Append(before[i], i + 1, null, '−', "red");
         for (var i = prefix; i < after.Count - suffix && !truncated; i++)
             Append(after[i], null, i + 1, '+', "green");
         for (var i = 0; i < tail && !truncated; i++)
