@@ -10,7 +10,7 @@
     <ItemGroup>
       <ProjectReference Include="../LakeCode.Core/LakeCode.Core.csproj" />
       <ProjectReference Include="../LakeCode.Eval.Worker/LakeCode.Eval.Worker.csproj" ReferenceOutputAssembly="false" />
-      <ProjectReference Include="../third_party/ConsoleEx/SharpConsoleUI/SharpConsoleUI.csproj" />
+      <PackageReference Include="SharpConsoleUI" Version="2.10.8" />
     </ItemGroup>
 
     <Target Name="CopyEvalWorker" AfterTargets="Build">
