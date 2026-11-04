@@ -10,11 +10,10 @@ internal sealed class HeaderComponent : PanelControl
 {
     private readonly MarkupControl _label;
     private readonly string _title;
-    private readonly string _subtitle;
     private readonly ButtonControl _subagents;
     public event Action? SubagentsRequested;
 
-    public HeaderComponent(string title, string subtitle)
+    public HeaderComponent(string title)
     {
         BorderStyle = BorderStyle.Rounded;
         BorderColor = new (85, 85, 85);
@@ -25,7 +24,6 @@ internal sealed class HeaderComponent : PanelControl
         HorizontalAlignment = HorizontalAlignment.Stretch;
 
         _title = title;
-        _subtitle = subtitle;
         _label = new MarkupControl(new List<string>())
         {
             Height = 1,
@@ -64,7 +62,7 @@ internal sealed class HeaderComponent : PanelControl
 
     public void SetSessionTitle(string? sessionTitle)
     {
-        _label.Text = $"[bold cyan]{Markup.Escape(_title)}[/]  [grey70]{Markup.Escape(_subtitle)}[/]" +
+        _label.Text = $"[bold cyan]{Markup.Escape(_title)}" +
             (string.IsNullOrWhiteSpace(sessionTitle)
                 ? ""
                 : $"  [grey50]│[/]  {Markup.Escape(sessionTitle)}");

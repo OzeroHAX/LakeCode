@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text;
 using LakeCode.Core.Agent;
 using LakeCode.Core.Providers;
 using LakeCode.Core.Attachments;
@@ -55,7 +56,7 @@ internal sealed class SessionTurn
     public void AppendText(string kind, string text, bool startsNewBlock = false)
     {
         if (!startsNewBlock && Events.LastOrDefault() is { } previous && previous.Kind == kind)
-            previous.Text += text;
+            previous.AppendText(text);
         else
             Events.Add(new ResponseEvent { Kind = kind, Text = text, StartsNewBlock = startsNewBlock });
     }
@@ -73,8 +74,28 @@ internal sealed record SavedImage(string Name, byte[] Data)
 
 internal sealed class ResponseEvent
 {
+    private string? _text;
+    private StringBuilder? _textBuilder;
     public string Kind { get; set; } = "";
-    public string? Text { get; set; }
+    public string? Text
+    {
+        get
+        {
+            if (_textBuilder is not null)
+            {
+                _text = _textBuilder.ToString();
+                _textBuilder = null;
+            }
+            return _text;
+        }
+        set { _text = value; _textBuilder = null; }
+    }
+    internal void AppendText(string text)
+    {
+        _textBuilder ??= new StringBuilder(_text);
+        _text = null;
+        _textBuilder.Append(text);
+    }
     public bool StartsNewBlock { get; set; }
     public ToolCallUpdate? ToolCall { get; set; }
 }

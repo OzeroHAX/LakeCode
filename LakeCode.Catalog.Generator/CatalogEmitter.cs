@@ -113,25 +113,46 @@ internal static class CatalogEmitter
 
     private static void AppendCatalog(StringBuilder builder, List<Provider> providers)
     {
-        Line(builder, "    public static FrozenDictionary<string, ModelsDevProvider> Providers { get; } =");
-        Line(builder, "        new Dictionary<string, ModelsDevProvider>(StringComparer.Ordinal)");
-        Line(builder, "        {");
-        foreach (var provider in providers)
+        // Keep each JIT compilation small even when a provider has thousands of models.
+        const int modelsPerMethod = 32;
+        Line(builder, "    public static FrozenDictionary<string, ModelsDevProvider> Providers { get; } = CreateProviders();");
+        Line(builder);
+        Line(builder, "    private static FrozenDictionary<string, ModelsDevProvider> CreateProviders()");
+        Line(builder, "    {");
+        Line(builder, "        var providers = new Dictionary<string, ModelsDevProvider>(StringComparer.Ordinal);");
+        for (var index = 0; index < providers.Count; index++)
+            Line(builder, $"        AddProvider{index}(providers);");
+        Line(builder, "        return providers.ToFrozenDictionary(StringComparer.Ordinal);");
+        Line(builder, "    }");
+        for (var index = 0; index < providers.Count; index++)
         {
-            Line(builder, $"            [{Quote(provider.Id)}] = new(");
-            Line(builder, $"                {Quote(provider.Id)},");
-            Line(builder, $"                {Quote(GetString(provider.Value, "name") ?? provider.Id)},");
-            Line(builder, $"                {Quote(GetString(provider.Value, "npm"))},");
-            Line(builder, $"                {Quote(GetString(provider.Value, "api"))},");
-            Line(builder, $"                {Quote(GetString(provider.Value, "doc"))},");
-            Line(builder, $"                {StringArray(GetStringArray(provider.Value, "env"))},");
-            Line(builder, "                new Dictionary<string, ModelsDevModel>(StringComparer.Ordinal)");
-            Line(builder, "                {");
-            foreach (var model in provider.Models)
-                Line(builder, $"                    [{Quote(model.Id)}] = {RenderModel(model.Id, model.Value)},");
-            Line(builder, "                }.ToImmutableDictionary(StringComparer.Ordinal)),");
+            var provider = providers[index];
+            var batches = (provider.Models.Count + modelsPerMethod - 1) / modelsPerMethod;
+            Line(builder);
+            Line(builder, $"    private static void AddProvider{index}(Dictionary<string, ModelsDevProvider> providers)");
+            Line(builder, "    {");
+            Line(builder, "        var models = new Dictionary<string, ModelsDevModel>(StringComparer.Ordinal);");
+            for (var batch = 0; batch < batches; batch++)
+                Line(builder, $"        AddModels{index}_{batch}(models);");
+            Line(builder, $"        providers[{Quote(provider.Id)}] = new(");
+            Line(builder, $"            {Quote(provider.Id)},");
+            Line(builder, $"            {Quote(GetString(provider.Value, "name") ?? provider.Id)},");
+            Line(builder, $"            {Quote(GetString(provider.Value, "npm"))},");
+            Line(builder, $"            {Quote(GetString(provider.Value, "api"))},");
+            Line(builder, $"            {Quote(GetString(provider.Value, "doc"))},");
+            Line(builder, $"            {StringArray(GetStringArray(provider.Value, "env"))},");
+            Line(builder, "            models.ToImmutableDictionary(StringComparer.Ordinal));");
+            Line(builder, "    }");
+            for (var batch = 0; batch < batches; batch++)
+            {
+                Line(builder);
+                Line(builder, $"    private static void AddModels{index}_{batch}(Dictionary<string, ModelsDevModel> models)");
+                Line(builder, "    {");
+                foreach (var model in provider.Models.Skip(batch * modelsPerMethod).Take(modelsPerMethod))
+                    Line(builder, $"        models[{Quote(model.Id)}] = {RenderModel(model.Id, model.Value)};");
+                Line(builder, "    }");
+            }
         }
-        Line(builder, "        }.ToFrozenDictionary(StringComparer.Ordinal);");
         Line(builder);
         Line(builder, "    public static ModelsDevProvider? FindProvider(string providerId) =>");
         Line(builder, "        Providers.TryGetValue(providerId, out var provider) ? provider : null;");

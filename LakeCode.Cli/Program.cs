@@ -41,7 +41,7 @@ var windowSystem = new ConsoleWindowSystem(
     new NetConsoleDriver(RenderMode.Buffer),
     options: new ConsoleWindowSystemOptions(ShowTopPanel: false, ShowBottomPanel: false));
 
-var header = new HeaderComponent("LakeCode", "Coding agent");
+var header = new HeaderComponent("LakeCode");
 var mainContent = new MainContentComponent();
 using var input = new InputComponent(windowSystem, shutdown.Token);
 var footer = new FooterComponent(windowSystem, modelStore, statisticsStore, workspaceRoot);

@@ -59,5 +59,6 @@ internal sealed class SubagentRunner : IDisposable
         _components.Loop.RunAsync(new AgentRunRequest(message, model, effort, provider), cancellationToken);
 
     public void PreserveInterruptedHistory() => _components.History.PreserveInterruptedHistory(_components.Invocations);
+    public void ReleaseCapturedResponse() => _components.History.Capture.Reset();
     public void Dispose() => _components.Dispose();
 }

@@ -1,4 +1,5 @@
 using System.Collections.Immutable;
+using System.Text;
 using LakeCode.Core.Agent;
 using LakeCode.Core.Conversations;
 using LakeCode.Cli.Components;
@@ -6,6 +7,7 @@ using LakeCode.Cli.State;
 using SharpConsoleUI;
 using SharpConsoleUI.Controls;
 using SharpConsoleUI.Extensions;
+using SharpConsoleUI.Layout;
 
 namespace LakeCode.Cli;
 
@@ -42,8 +44,16 @@ internal sealed class ChatController : IDisposable
     private Guid? _questionId;
     private readonly Dictionary<Guid, (AssistantMessageComponent Response, string CallId)> _permissions = [];
     private bool _disposed;
-    private readonly object _bashOutputGate = new();
-    private readonly Dictionary<string, ConversationEventEnvelope> _pendingBashOutput = new(StringComparer.Ordinal);
+    private readonly object _eventGate = new();
+    private readonly List<PendingEvent> _pendingEvents = [];
+    private bool _eventDrainScheduled;
+
+    private sealed class PendingEvent(ConversationEventEnvelope? envelope, StringBuilder? text = null, ConversationState? state = null)
+    {
+        public ConversationEventEnvelope? Envelope { get; set; } = envelope;
+        public StringBuilder? Text { get; } = text;
+        public ConversationState? State { get; } = state;
+    }
 
     public bool CanRewind => _state.CanRewind && !_input.IsImporting &&
         string.IsNullOrWhiteSpace(_input.Editor.Input) && !_input.HasAttachments && !_btw.IsOpen;
@@ -244,30 +254,80 @@ internal sealed class ChatController : IDisposable
         }
     }
 
-    private void OnStateChanged(ConversationState state) => Enqueue(() => ApplyState(state));
+    private void OnStateChanged(ConversationState state)
+    {
+        lock (_eventGate)
+        {
+            if (_disposed) return;
+            _pendingEvents.Add(new PendingEvent(null, state: state));
+            if (_eventDrainScheduled) return;
+            _eventDrainScheduled = true;
+        }
+        _ = ScheduleEventDrainAsync();
+    }
     private void OnEvent(ConversationEventEnvelope envelope)
     {
-        if (envelope.Event is not BashOutputChanged bash)
+        lock (_eventGate)
         {
-            Enqueue(() => ApplyEvent(envelope));
-            return;
-        }
-        lock (_bashOutputGate)
-        {
-            var queued = _pendingBashOutput.ContainsKey(bash.Update.CallId);
-            _pendingBashOutput[bash.Update.CallId] = envelope;
-            if (queued) return;
-        }
-        // One pending UI notification per command, even if rendering temporarily falls behind.
-        Enqueue(() =>
-        {
-            ConversationEventEnvelope latest;
-            lock (_bashOutputGate)
+            if (_disposed) return;
+            var last = _pendingEvents.LastOrDefault();
+            if (last?.Envelope is not null && last.Envelope.SessionId == envelope.SessionId &&
+                last.Envelope.RequestId == envelope.RequestId && last.Text is not null &&
+                ((last.Envelope.Event is TextDelta && envelope.Event is TextDelta) ||
+                 (last.Envelope.Event is ReasoningDelta && envelope.Event is ReasoningDelta { StartsNewBlock: false })))
             {
-                if (!_pendingBashOutput.Remove(bash.Update.CallId, out latest!)) return;
+                last.Text.Append(envelope.Event is TextDelta text ? text.Text : ((ReasoningDelta)envelope.Event).Text);
             }
-            ApplyEvent(latest);
-        });
+            else if (last?.Envelope?.Event is BashOutputChanged oldBash && envelope.Event is BashOutputChanged newBash &&
+                     last.Envelope.SessionId == envelope.SessionId && last.Envelope.RequestId == envelope.RequestId &&
+                     oldBash.Update.CallId == newBash.Update.CallId)
+                last.Envelope = envelope;
+            else
+                _pendingEvents.Add(new PendingEvent(envelope, envelope.Event switch
+                {
+                    TextDelta text => new StringBuilder(text.Text),
+                    ReasoningDelta reasoning => new StringBuilder(reasoning.Text),
+                    _ => null
+                }));
+            if (_eventDrainScheduled) return;
+            _eventDrainScheduled = true;
+        }
+        _ = ScheduleEventDrainAsync();
+    }
+
+    private async Task ScheduleEventDrainAsync()
+    {
+        await Task.Delay(33).ConfigureAwait(false);
+        Enqueue(DrainEvents);
+    }
+
+    private void DrainEvents()
+    {
+        List<PendingEvent> events;
+        lock (_eventGate)
+        {
+            events = [.. _pendingEvents];
+            _pendingEvents.Clear();
+            _eventDrainScheduled = false;
+        }
+        foreach (var pending in events)
+        {
+            if (pending.State is { } state)
+            {
+                try { ApplyState(state); }
+                catch (Exception error) { _input.ShowError($"Не удалось обновить состояние: {error.Message}"); }
+                continue;
+            }
+            var envelope = pending.Envelope!;
+            if (pending.Text is { } text)
+                envelope = envelope with { Event = envelope.Event switch
+                {
+                    TextDelta => new TextDelta(text.ToString()),
+                    ReasoningDelta reasoning => new ReasoningDelta(text.ToString(), reasoning.StartsNewBlock),
+                    _ => envelope.Event
+                } };
+            ApplyEvent(envelope);
+        }
     }
     private void Enqueue(Action action) => _windowSystem.EnqueueOnUIThread(() =>
     {
@@ -353,6 +413,10 @@ internal sealed class ChatController : IDisposable
                     _sessionsWindow.ShowError(failed.Error);
                     break;
                 case TurnStarted started:
+                    // Keep the completed-message window mounted while the live turn is appended. The
+                    // window is frozen during streaming and rebuilt from the committed conversation
+                    // after TurnFinished, so a delta cannot disable virtualization for the whole session.
+                    _content.BeginStreaming();
                     _content.AddControl(CreateModeNotice(started.AgentMode));
                     if (started.IsBackgroundContinuation) _content.AddControl(CreateBackgroundNotice());
                     else _content.AddUserMessage(started.Text, started.Images.Select(ImageInput.CreatePreview).ToArray(), started.Files, started.Mentions);
@@ -387,10 +451,27 @@ internal sealed class ChatController : IDisposable
                     break;
                 case TurnFinished finished when IsActive(envelope):
                     foreach (var segment in _turnSegments) segment.FinishThinking();
-                    if (finished.Status == "completed") _response!.Complete();
+                    string? retainedPlanCallId = _planActionCallId is { } planCallId &&
+                        _responsesByCallId.TryGetValue(planCallId, out var planOwner) &&
+                        ReferenceEquals(planOwner, _response)
+                        ? planCallId
+                        : null;
+                    if (finished.Status == "completed") _response!.Complete(retainedPlanCallId);
                     else _response!.ShowError(finished.Error ?? "Запрос прерван.");
                     _response = null;
                     _responseRequestId = null;
+                    foreach (var callId in _responsesByCallId.Keys
+                                 .Where(callId => callId != _planActionCallId)
+                                 .ToArray())
+                        _responsesByCallId.Remove(callId);
+                    // The segments are still owned by the transcript controls, but this controller-side
+                    // list is only needed while the turn is active. Do not retain every completed turn
+                    // through this duplicate reference path.
+                    _turnSegments.Clear();
+                    _content.EndStreaming();
+                    var completedConversation = _conversation.GetConversation();
+                    if (completedConversation.Turns.Length >= 6)
+                        ReplaceConversationVirtualized(completedConversation);
                     break;
                 case SideQuestionsChanged side:
                     _btw.Apply(side.State);
@@ -485,70 +566,185 @@ internal sealed class ChatController : IDisposable
     private bool IsActive(ConversationEventEnvelope envelope) =>
         _response is not null && _responseRequestId == envelope.RequestId;
 
-    private void ReplaceConversation(ConversationView view)
+    private void ReplaceConversationVirtualized(ConversationView view)
     {
-        // Construct first, so failed preview/rendering doesn't clear the previous transcript.
-        var controls = new List<IWindowControl>();
         var restoredOwners = new Dictionary<string, AssistantMessageComponent>(StringComparer.Ordinal);
         var exchanges = new HashSet<string>(StringComparer.Ordinal);
         var tasks = new List<LakeCode.Core.Agent.Delegation.DelegationSnapshot>();
-        foreach (var turn in view.Turns)
-        {
-            controls.Add(CreateModeNotice(turn.AgentMode));
-            if (turn.IsBackgroundContinuation) controls.Add(CreateBackgroundNotice());
-            else controls.Add(new UserMessageComponent(turn.Text, turn.Images.Select(ImageInput.CreatePreview).ToArray(), turn.Files, turn.Mentions));
-            var response = new AssistantMessageComponent(_windowSystem);
-            controls.Add(response);
-            var segments = new List<AssistantMessageComponent> { response };
-            var owners = new Dictionary<string, AssistantMessageComponent>(StringComparer.Ordinal);
-            foreach (var item in turn.Items)
-            {
-                if (item.Kind == "thinking") response.AppendReasoning(item.Text!, item.StartsNewBlock);
-                else if (item.Kind == "text") response.AppendResponse(item.Text!);
-                else if (item.ToolCall?.Delegation is { } task)
-                {
-                    tasks.Add(task);
-                    if (SubagentsWindowComponent.ProjectExchange(task, exchanges) is not { } exchange) continue;
-                    response.SuspendForDelegation();
-                    controls.Add(CreateDelegationBlock(task, exchange.Kind, exchange.Text));
-                    response = new AssistantMessageComponent(_windowSystem) { Visible = false };
-                    response.SuspendForDelegation();
-                    segments.Add(response);
-                    controls.Add(response);
-                }
-                else if (item.ToolCall is { } call)
-                {
-                    if (!owners.TryGetValue(call.CallId, out var owner)) owners.Add(call.CallId, owner = response);
-                    owner.UpdateToolCall(call);
-                    restoredOwners[call.CallId] = owner;
-                }
-            }
-            foreach (var segment in segments) segment.FinishThinking();
-            if (turn.Status == "completed") response.Complete();
-            else response.ShowError(turn.Error ?? "Запрос не завершён.");
-        }
-        var draftImages = view.DraftImages.Select(ImageInput.CreatePreview).ToArray();
+
         _subagents.Reset();
-        foreach (var task in tasks.GroupBy(task => task.TaskId).Select(group => group.Last()))
-            _subagents.Apply(task.Status is LakeCode.Core.Agent.Delegation.DelegationStatus.Running or
-                LakeCode.Core.Agent.Delegation.DelegationStatus.WaitingForParent
-                ? task with { Status = LakeCode.Core.Agent.Delegation.DelegationStatus.Cancelled,
-                    Error = "Сабагент не восстановлен после открытия сессии или отката истории." }
-                : task);
-        _header.SetDelegations(_subagents.Tasks);
         _delegationBlocks.Clear();
         _delegationPermissions.Clear();
         _turnSegments.Clear();
         _responsesByCallId.Clear();
         _planActionCallId = null;
-        foreach (var pair in restoredOwners) _responsesByCallId.Add(pair.Key, pair.Value);
-        ((IControlHost)_content).ClearControls();
         _compactionCard = null;
         _compactionNotice = null;
-        foreach (var control in controls) _content.AddControl(control);
+
+        var rows = new List<VirtualizedMessageRow>(view.Turns.Length * 2);
+        foreach (var turn in view.Turns)
+        {
+            rows.Add(new VirtualizedMessageRow(
+                () => BuildUserMessageControl(turn),
+                EstimatedHeight: 4));
+            rows.Add(new VirtualizedMessageRow(
+                () => BuildAssistantMessageControl(turn, restoredOwners, exchanges, tasks),
+                EstimatedHeight: Math.Max(6, turn.Items.Length * 2)));
+        }
+
+        _content.SetVirtualizedRows(rows,
+            () =>
+            {
+                restoredOwners.Clear();
+                exchanges.Clear();
+                tasks.Clear();
+                _responsesByCallId.Clear();
+                _delegationBlocks.Clear();
+            });
+
+        foreach (var task in tasks.GroupBy(task => task.TaskId).Select(group => group.Last()))
+            _subagents.Apply(task.Status is LakeCode.Core.Agent.Delegation.DelegationStatus.Running or
+                LakeCode.Core.Agent.Delegation.DelegationStatus.WaitingForParent
+                ? task with
+                {
+                    Status = LakeCode.Core.Agent.Delegation.DelegationStatus.Cancelled,
+                    Error = "Сабагент не восстановлен после открытия сессии или отката истории."
+                }
+                : task);
+        _header.SetDelegations(_subagents.Tasks);
+        foreach (var pair in restoredOwners)
+            _responsesByCallId[pair.Key] = pair.Value;
         UpdatePlanAction();
-        _response = null;
-        _responseRequestId = null;
+        ApplyRestoredDraft(view);
+    }
+
+    private PanelControl BuildUserMessageControl(TurnView turn)
+    {
+        var host = new PanelControl
+        {
+            BorderStyle = BorderStyle.None,
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            Margin = new Margin(0, 0, 0, 0)
+        };
+        host.AddControl(CreateModeNotice(turn.AgentMode));
+        if (turn.IsBackgroundContinuation)
+            host.AddControl(CreateBackgroundNotice());
+        else
+            host.AddControl(new UserMessageComponent(turn.Text,
+                turn.Images.Select(ImageInput.CreatePreview).ToArray(), turn.Files, turn.Mentions));
+        return host;
+    }
+
+    private PanelControl BuildAssistantMessageControl(TurnView turn,
+        Dictionary<string, AssistantMessageComponent> restoredOwners,
+        HashSet<string> exchanges,
+        List<LakeCode.Core.Agent.Delegation.DelegationSnapshot> tasks)
+    {
+        var host = new PanelControl
+        {
+            BorderStyle = BorderStyle.None,
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            Margin = new Margin(0, 0, 0, 0)
+        };
+        var response = new AssistantMessageComponent(_windowSystem);
+        host.AddControl(response);
+        var segments = new List<AssistantMessageComponent> { response };
+        var owners = new Dictionary<string, AssistantMessageComponent>(StringComparer.Ordinal);
+        foreach (var item in turn.Items)
+        {
+            if (item.Kind == "thinking") response.AppendReasoning(item.Text!, item.StartsNewBlock);
+            else if (item.Kind == "text") response.AppendResponse(item.Text!);
+            else if (item.ToolCall?.Delegation is { } task)
+            {
+                tasks.Add(task);
+                if (SubagentsWindowComponent.ProjectExchange(task, exchanges) is not { } exchange)
+                    continue;
+                response.SuspendForDelegation();
+                var block = CreateDelegationBlock(task, exchange.Kind, exchange.Text);
+                _delegationBlocks[item.ToolCall.CallId] = block;
+                host.AddControl(block);
+                response = new AssistantMessageComponent(_windowSystem) { Visible = false };
+                response.SuspendForDelegation();
+                segments.Add(response);
+                host.AddControl(response);
+            }
+            else if (item.ToolCall is { } call)
+            {
+                if (!owners.TryGetValue(call.CallId, out var owner))
+                    owners.Add(call.CallId, owner = response);
+                owner.UpdateToolCall(call);
+                restoredOwners[call.CallId] = owner;
+            }
+        }
+        foreach (var segment in segments)
+            segment.FinishThinking();
+        if (turn.Status == "completed")
+            response.Complete(_state.PlanCallId);
+        else
+            response.ShowError(turn.Error ?? "Запрос не завершён.");
+        return host;
+    }
+
+    private PanelControl BuildTurnControl(TurnView turn,
+        Dictionary<string, AssistantMessageComponent> restoredOwners,
+        HashSet<string> exchanges,
+        List<LakeCode.Core.Agent.Delegation.DelegationSnapshot> tasks)
+    {
+        var host = new PanelControl
+        {
+            BorderStyle = BorderStyle.None,
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            Margin = new Margin(0, 0, 0, 0)
+        };
+        host.AddControl(CreateModeNotice(turn.AgentMode));
+        if (turn.IsBackgroundContinuation)
+            host.AddControl(CreateBackgroundNotice());
+        else
+            host.AddControl(new UserMessageComponent(turn.Text,
+                turn.Images.Select(ImageInput.CreatePreview).ToArray(), turn.Files, turn.Mentions));
+
+        var response = new AssistantMessageComponent(_windowSystem);
+        host.AddControl(response);
+        var segments = new List<AssistantMessageComponent> { response };
+        var owners = new Dictionary<string, AssistantMessageComponent>(StringComparer.Ordinal);
+        foreach (var item in turn.Items)
+        {
+            if (item.Kind == "thinking") response.AppendReasoning(item.Text!, item.StartsNewBlock);
+            else if (item.Kind == "text") response.AppendResponse(item.Text!);
+            else if (item.ToolCall?.Delegation is { } task)
+            {
+                tasks.Add(task);
+                if (SubagentsWindowComponent.ProjectExchange(task, exchanges) is not { } exchange)
+                    continue;
+                response.SuspendForDelegation();
+                var block = CreateDelegationBlock(task, exchange.Kind, exchange.Text);
+                _delegationBlocks[item.ToolCall.CallId] = block;
+                host.AddControl(block);
+                response = new AssistantMessageComponent(_windowSystem) { Visible = false };
+                response.SuspendForDelegation();
+                segments.Add(response);
+                host.AddControl(response);
+            }
+            else if (item.ToolCall is { } call)
+            {
+                if (!owners.TryGetValue(call.CallId, out var owner))
+                    owners.Add(call.CallId, owner = response);
+                owner.UpdateToolCall(call);
+                restoredOwners[call.CallId] = owner;
+            }
+        }
+
+        foreach (var segment in segments)
+            segment.FinishThinking();
+        if (turn.Status == "completed")
+            response.Complete(_state.PlanCallId);
+        else
+            response.ShowError(turn.Error ?? "Запрос не завершён.");
+        return host;
+    }
+
+    private void ApplyRestoredDraft(ConversationView view)
+    {
         if (!string.IsNullOrEmpty(view.ModelId))
         {
             try
@@ -556,16 +752,25 @@ internal sealed class ChatController : IDisposable
                 _models.SelectModel(view.ProviderId!, view.ModelId);
                 _models.SelectReasoningEffort(view.ReasoningEffort!);
             }
-            catch (Exception error) { _input.ShowError($"История открыта, но подключение недоступно: {error.Message}"); }
+            catch (Exception error)
+            {
+                _input.ShowError($"История открыта, но подключение недоступно: {error.Message}");
+            }
         }
-        SetMode(view.Turns.LastOrDefault()?.AgentMode ?? AgentMode.Build);
+
         _input.ClearDraft();
+        var draftImages = view.DraftImages.Select(ImageInput.CreatePreview).ToArray();
         _input.SetDraft(view.DraftText, draftImages);
         _input.Editor.Restore(view.DraftText, view.DraftMentions);
         foreach (var file in view.DraftFiles.Where(file => !view.DraftMentions.Any(mention => mention.Path == file.Path)))
             _input.AddFile(file.Path, _input.Editor.Input.Length, 0);
-        _content.ScrollToBottom();
+        SetMode(view.Turns.LastOrDefault()?.AgentMode ?? AgentMode.Build);
         _focusInput();
+    }
+
+    private void ReplaceConversation(ConversationView view)
+    {
+        ReplaceConversationVirtualized(view);
     }
 
     private static MarkupControl CreateModeNotice(AgentMode mode) => new(new List<string>
@@ -628,7 +833,11 @@ internal sealed class ChatController : IDisposable
 
     public void Dispose()
     {
-        _disposed = true;
+        lock (_eventGate)
+        {
+            _disposed = true;
+            _pendingEvents.Clear();
+        }
         _input.Submitted -= SendMessage;
         _conversation.StateChanged -= OnStateChanged;
         _conversation.EventOccurred -= OnEvent;
