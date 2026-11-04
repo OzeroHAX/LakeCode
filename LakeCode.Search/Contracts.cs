@@ -45,7 +45,20 @@ public sealed record TraceRequest(string Subject, TraceRelation Relation)
     public int ContextLines { get; init; } = 3;
     public int FullRegionLines { get; init; } = 40;
 }
+public enum DuplicateUnitKind { Any, Callable, Type, Declaration, Block }
+public enum DuplicateComparison { Exact, Normalized }
+public sealed record DuplicateRequest
+{
+    public SearchFilter Filter { get; init; } = new();
+    public DuplicateUnitKind UnitKind { get; init; } = DuplicateUnitKind.Callable;
+    public DuplicateComparison Comparison { get; init; } = DuplicateComparison.Normalized;
+    public bool CrossLanguage { get; init; }
+    public int MinLines { get; init; } = 3;
+    public int Top { get; init; } = 50;
+}
 public sealed record StructureItem(string Kind, string Label, int StartLine, int EndLine, int Depth);
+public sealed record DuplicateUnit(string Path, string? Language, string Kind, string Label, int StartLine, int EndLine);
+public sealed record DuplicateGroup(string Key, string? Language, string Kind, double Similarity, IReadOnlyList<DuplicateUnit> Units);
 public sealed record FileOutline(string Path, string? Language, int LineCount, bool HasSyntaxErrors,
     IReadOnlyList<StructureItem> Items);
 public sealed record SearchIssue(string Path, string Reason);

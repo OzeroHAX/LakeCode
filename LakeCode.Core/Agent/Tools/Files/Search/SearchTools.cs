@@ -13,6 +13,7 @@ internal sealed class SearchTools(WorkspaceFiles files)
         yield return AIFunctionFactory.Create(FindFilesAsync, name: "find_files");
         yield return AIFunctionFactory.Create(OutlineFileAsync, name: "outline_file");
         yield return AIFunctionFactory.Create(TraceCodeAsync, name: "trace_code");
+        yield return AIFunctionFactory.Create(FindDuplicatesAsync, name: "find_duplicate_units");
     }
 
     [Description("Exact UTF-8 literal or per-line regex search with file/syntax grouping. Scope with path and glob. External paths require permission; hidden configured directories and symlinks are skipped. Reports skipped files and output truncation. Budget overflow is an error: narrow the scope. Use instead of shell grep/rg.")]
@@ -110,6 +111,52 @@ internal sealed class SearchTools(WorkspaceFiles files)
                 var lines = region.Text.Split('\n');
                 for (var i = 0; i < lines.Length; i++) output.Add($"  @{region.StartLine + i}: {lines[i]}");
             }
+        }
+        return output.ToString();
+    });
+
+    [Description("Find repeated language-neutral code units using Tree-sitter structure. Supports callable, type, declaration, block, or any units across all recognized grammars. Comparison is exact or whitespace-normalized; crossLanguage is opt-in and heuristic. Use this instead of broad regex searches for duplicate code.")]
+    public Task<string> FindDuplicatesAsync(
+        [Description("Workspace-relative or absolute directory path; external paths require confirmation.")] string path = ".",
+        [Description("Relative path glob, for example **/*.py or **/*.{cs,java}. The default scans all supported text files.")] string glob = "**/*",
+        [Description("Unit category: any, callable, type, declaration, or block.")] string unitKind = "callable",
+        [Description("Comparison: exact or normalized. Normalized ignores whitespace only.")] string comparison = "normalized",
+        [Description("Allow grouping units from different grammars. This is structural and heuristic.")] bool crossLanguage = false,
+        [Description("Minimum unit size in source lines.")] int minLines = 3,
+        [Description("Maximum duplicate groups to return, from 1 to 50.")] int top = 50,
+        CancellationToken cancellationToken = default) => ExecuteAsync(async () =>
+    {
+        if (!Enum.TryParse<DuplicateUnitKind>(unitKind, true, out var parsedKind))
+            throw new ArgumentException("unitKind must be any, callable, type, declaration, or block.");
+        if (!Enum.TryParse<DuplicateComparison>(comparison, true, out var parsedComparison))
+            throw new ArgumentException("comparison must be exact or normalized.");
+        var source = new WorkspaceSearchSource(files, path);
+        var result = await Engine(source).FindDuplicatesAsync(new DuplicateRequest
+        {
+            Filter = new SearchFilter { Include = [glob] },
+            UnitKind = parsedKind,
+            Comparison = parsedComparison,
+            CrossLanguage = crossLanguage,
+            MinLines = minLines,
+            Top = top
+        }, cancellationToken);
+        var output = new StringBuilder();
+        output.AppendLine($"Duplicate groups: {result.Items.Count}; complete: {result.Complete}; comparison: {parsedComparison}; crossLanguage: {crossLanguage}.");
+        foreach (var group in result.Items)
+        {
+            output.AppendLine($"{group.Kind}, language={(group.Language ?? "mixed")}, units={group.Units.Count}, similarity={group.Similarity:0.###}");
+            foreach (var unit in group.Units)
+                output.AppendLine($"  {source.Display(unit.Path)}:{unit.StartLine}-{unit.EndLine} {unit.Label}");
+            if (output.Length >= WorkspaceFiles.MaxOutputCharacters - 256)
+            {
+                output.AppendLine("[Output truncated; reduce top or narrow glob.]");
+                break;
+            }
+        }
+        if (result.Issues.Count > 0)
+        {
+            output.AppendLine($"[Analysis incomplete: {result.Issues.Count} skipped files.]");
+            foreach (var issue in result.Issues.Take(10)) output.AppendLine($"  skipped {source.Display(issue.Path)}: {issue.Reason}");
         }
         return output.ToString();
     });

@@ -158,6 +158,69 @@ public sealed class SearchEngine
         }, cancellationToken);
     }
 
+    public Task<SearchResult<DuplicateGroup>> FindDuplicatesAsync(DuplicateRequest request, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        if (request.MinLines < 1 || request.Top <= 0 || request.Top > _limits.MaxResults)
+            throw new ArgumentOutOfRangeException(nameof(request));
+        var filter = Filter(request.Filter);
+        return Execute(async op =>
+        {
+            var units = new List<(DuplicateUnit Unit, string Body, string? Language)>();
+            await foreach (var path in op.Paths(filter))
+            {
+                var text = await op.Read(path);
+                if (text is null) continue;
+                var outline = op.Outline(path, text);
+                var lines = Lines(text);
+                foreach (var item in outline.Items)
+                {
+                    op.Check();
+                    if (item.EndLine - item.StartLine + 1 < request.MinLines || !MatchesUnitKind(item.Kind, request.UnitKind)) continue;
+                    var body = string.Join('\n', lines[(item.StartLine - 1)..item.EndLine]);
+                    var key = request.Comparison == DuplicateComparison.Exact ? body : NormalizeUnit(body);
+                    if (key.Length == 0) continue;
+                    units.Add((new DuplicateUnit(path, outline.Language, item.Kind, item.Label, item.StartLine, item.EndLine), key, outline.Language));
+                }
+            }
+
+            var groups = units.GroupBy(item => (Language: request.CrossLanguage ? null : item.Language, item.Body), EqualityComparer<(string? Language, string Body)>.Default)
+                .Where(group => group.Count() > 1)
+                .Select(group => new DuplicateGroup(
+                    group.Key.Body,
+                    group.Key.Language,
+                    group.Select(item => item.Unit.Kind).GroupBy(kind => kind).OrderByDescending(kinds => kinds.Count()).First().Key,
+                    1.0,
+                    group.Select(item => item.Unit).ToArray()))
+                .OrderByDescending(group => group.Units.Count)
+                .ThenBy(group => group.Units[0].Path, StringComparer.Ordinal)
+                .Take(request.Top)
+                .ToList();
+            foreach (var group in groups) op.Result();
+            return op.Finish(groups);
+        }, cancellationToken);
+    }
+
+    private static bool MatchesUnitKind(string kind, DuplicateUnitKind requested) => requested switch
+    {
+        DuplicateUnitKind.Any => true,
+        DuplicateUnitKind.Callable => kind.Contains("function", StringComparison.OrdinalIgnoreCase) ||
+            kind.Contains("method", StringComparison.OrdinalIgnoreCase) || kind.Contains("lambda", StringComparison.OrdinalIgnoreCase),
+        DuplicateUnitKind.Type => kind.Contains("class", StringComparison.OrdinalIgnoreCase) ||
+            kind.Contains("struct", StringComparison.OrdinalIgnoreCase) || kind.Contains("interface", StringComparison.OrdinalIgnoreCase) ||
+            kind.Contains("enum", StringComparison.OrdinalIgnoreCase) || kind.Contains("module", StringComparison.OrdinalIgnoreCase),
+        DuplicateUnitKind.Declaration => kind.Contains("declaration", StringComparison.OrdinalIgnoreCase) || kind.Contains("definition", StringComparison.OrdinalIgnoreCase),
+        DuplicateUnitKind.Block => kind.EndsWith("_item", StringComparison.OrdinalIgnoreCase) || kind.Contains("block", StringComparison.OrdinalIgnoreCase),
+        _ => false
+    };
+
+    private static string NormalizeUnit(string value)
+    {
+        // Keep punctuation and literals: this is a conservative structural comparison,
+        // not a language-specific parser or semantic equivalence check.
+        return string.Concat(value.Where(character => !char.IsWhiteSpace(character)));
+    }
+
     private void ValidateTop(int top)
     {
         if (top <= 0 || top > _limits.MaxResults) throw new ArgumentOutOfRangeException(nameof(top));
