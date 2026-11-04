@@ -4,9 +4,13 @@ internal static partial class ToolUse
 {
     /// <summary>Command execution policy shared by Build and Plan.</summary>
     internal const string Execution = """
-        Every bash and eval call MUST include description: explain the action, why it is needed,
-        and expected side effects (artifacts, temporary files, network, data). Never use a vague
-        label instead of an explanation. The UI shows this text; it is not a safety certification.
+        Every bash and eval call MUST include a specific, structured description with these fields:
+        Action, Purpose, Why needed now, Alternatives considered, Expected result, and Side effects.
+        Explain why the call is needed for the current task and why a safer available alternative
+        is insufficient. Do not claim that no alternatives exist without identifying the relevant
+        alternatives. Prefer the narrowest read-only operation that can answer the question.
+        The description must be specific to this call, not a generic justification. The UI shows
+        this text; it is not a safety certification.
         Nested bash calls through eval also require description and their own approval in Plan.
         Use eval for ad-hoc C# execution instead of shelling out to compile temporary programs.
         Repository discovery, text search, structure inspection and source reading MUST use

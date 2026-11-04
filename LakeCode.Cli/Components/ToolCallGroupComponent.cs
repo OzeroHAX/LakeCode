@@ -1,3 +1,4 @@
+using System.Text;
 using System.Text.Json;
 using LakeCode.Core.Agent;
 using LakeCode.Core.Agent.Delegation;
@@ -292,7 +293,51 @@ internal sealed class ToolCallGroupComponent : CollapsiblePanel
             .Where(property => update.Name != "bash" || property.Name != "command")
             .Where(property => update.Name is not ("edit_file" or "write_file") ||
                                property.Name is not ("oldText" or "newText" or "content"))
-            .Select(property => $"{property.Name}: {property.Value}"));
+            .Select(property => property.Name == "description" && property.Value.ValueKind == JsonValueKind.String
+                ? FormatDescription(property.Value.GetString()!)
+                : $"{property.Name}: {property.Value}"));
+    }
+
+    private static string FormatDescription(string description)
+    {
+        var headings = new[]
+        {
+            "Action:", "Purpose:", "Why needed now:", "Intent:", "Why this file:",
+            "Evidence:", "Expected result:", "Expected change:", "Alternatives considered:",
+            "Side effects:", "Risks and side effects:", "Verification:"
+        };
+        var output = new StringBuilder();
+        var atSectionStart = true;
+        foreach (var rawLine in description.Replace("\r\n", "\n", StringComparison.Ordinal).Split('\n'))
+        {
+            var line = rawLine.Trim();
+            if (line.Length == 0) continue;
+            var heading = headings.FirstOrDefault(candidate => line.StartsWith(candidate, StringComparison.OrdinalIgnoreCase));
+            if (heading is not null)
+            {
+                if (output.Length > 0) output.Append("\n\n");
+                output.Append(heading);
+                var remainder = line[heading.Length..].Trim();
+                output.Append('\n');
+                if (remainder.Length > 0)
+                {
+                    output.Append("  ");
+                    output.Append(remainder);
+                    atSectionStart = false;
+                }
+                else
+                {
+                    atSectionStart = true;
+                }
+                continue;
+            }
+
+            if (!atSectionStart) output.Append('\n');
+            output.Append("  ");
+            output.Append(line);
+            atSectionStart = false;
+        }
+        return output.ToString();
     }
 
     private static string FormatBody(string arguments, string result) =>

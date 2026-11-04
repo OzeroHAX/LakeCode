@@ -12,7 +12,7 @@ internal sealed class BashTool(WorkspaceFiles files, Action<BashExecution> repor
     [Description("Run a permitted non-interactive command and return exit code/stdout/stderr. No background jobs or interactive input. Search/file-reading commands (grep/rg/find/awk/sed/cat and equivalents), Python/JS/other interpreters, nested shells, wrappers, expansions and redirections are blocked. Use retrieval tools for source investigation. Build/package scripts may run when otherwise permitted, but must not be used to bypass restrictions. Command filtering is NOT an OS sandbox. Output is limited to 32000 characters.")]
     public Task<string> RunAsync(
         [Description("Command to execute. No retrieval commands, interpreters, wrappers, substitutions, redirections or background execution.")] string command,
-        [Description("Required: explain the action, its purpose for this task, and expected side effects (files, network, data). Shown to the user before execution.")] string description,
+        [Description("Required structured justification shown to the user before execution. Include: Action, Purpose, Why needed now, Alternatives considered, Expected result, and Side effects (files, network, data, processes, and persistence). Explain why safer available alternatives are insufficient and keep it specific to this call.")] string description,
         [Description("Working directory relative to the workspace root.")] string workingDirectory = ".",
         CancellationToken cancellationToken = default) => WorkspaceFiles.ExecuteAsync(async () =>
     {

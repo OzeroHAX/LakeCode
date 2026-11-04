@@ -121,7 +121,7 @@ internal sealed class ToolInvocationRunner(
                 if (arguments.RootElement.TryGetProperty("command", out var command) && command.ValueKind == JsonValueKind.String)
                     accessError = BashCommandPolicy.Check(command.GetString()!) ?? "";
             }
-            if (accessError.Length == 0 && (requiresApproval || name is "bash" or "eval"))
+            if (accessError.Length == 0 && (requiresApproval || name is "bash" or "eval" or "edit_file" or "write_file"))
                 accessError = await approval.CheckAsync(call, requiresApproval, getEval(),
                     update => call = update, Publish, cancellationToken, manualApproval ? registration.ApprovalDescription : null);
             if (accessError.Length == 0 && call.Name is "load_skill" or "read_skill_resource")

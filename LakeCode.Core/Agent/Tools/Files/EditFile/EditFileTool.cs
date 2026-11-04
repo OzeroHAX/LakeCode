@@ -7,13 +7,15 @@ internal sealed class EditFileTool(WorkspaceFiles files, Action<FileChange> onCh
     public Microsoft.Extensions.AI.AIFunction AgentTool() =>
         Microsoft.Extensions.AI.AIFunctionFactory.Create(EditAsync, name: "edit_file");
 
-    [Description("Edit a workspace UTF-8 text file by replacing exactly one occurrence of oldText with newText. The match is case-sensitive and includes whitespace and line endings. No match or multiple matches leave the file unchanged. Read the file first and include enough context for a unique match. Maximum size is 1 MiB. Symbolic links are not supported.")]
+    [Description("Edit a workspace UTF-8 text file by replacing exactly one occurrence of oldText with newText. The match is case-sensitive and includes whitespace and line endings. No match or multiple matches leave the file unchanged. Read the file first and include enough context for a unique match. Provide a structured description with Intent, Why this file, Evidence, Expected change, Alternatives considered, Risks and side effects, and Verification. Maximum size is 1 MiB. Symbolic links are not supported.")]
     public Task<string> EditAsync(
         [Description("File path relative to the workspace root.")] string path,
         [Description("Exact nonempty text to replace; must occur once in the file.")] string oldText,
         [Description("Replacement text; may be empty to delete the matched fragment.")] string newText,
+        [Description("Required structured rationale for this file change. Include: Intent, Why this file, Evidence, Expected change, Alternatives considered, Risks and side effects, and Verification.")] string description,
         CancellationToken cancellationToken = default) => WorkspaceFiles.ExecuteAsync(async () =>
     {
+        ArgumentException.ThrowIfNullOrWhiteSpace(description);
         ArgumentException.ThrowIfNullOrEmpty(oldText);
         ArgumentNullException.ThrowIfNull(newText);
         var content = await files.ReadTextAsync(path, cancellationToken, preserveBom: true);

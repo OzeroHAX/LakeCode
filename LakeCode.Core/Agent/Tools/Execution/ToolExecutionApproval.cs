@@ -20,7 +20,29 @@ internal sealed class ToolExecutionApproval
         var descriptionText = manualDescription;
         if (descriptionText is null && (!root.TryGetProperty("description", out var description) || description.ValueKind != JsonValueKind.String ||
             string.IsNullOrWhiteSpace(descriptionText = description.GetString())))
-            return "Error: description is required: explain action, purpose and expected side effects.";
+            return "Error: description is required: explain the action, purpose, necessity, alternatives, expected result, and side effects.";
+        if (descriptionText is not null)
+        {
+            var requiredSections = call.Name switch
+            {
+                "bash" or "eval" => new[]
+                {
+                    "Action:", "Purpose:", "Why needed now:", "Alternatives considered:",
+                    "Expected result:", "Side effects:"
+                },
+                "edit_file" or "write_file" => new[]
+                {
+                    "Intent:", "Why this file:", "Evidence:", "Expected change:",
+                    "Alternatives considered:", "Risks and side effects:", "Verification:"
+                },
+                _ => []
+            };
+            var missingSections = requiredSections
+                .Where(section => descriptionText.IndexOf(section, StringComparison.OrdinalIgnoreCase) < 0)
+                .ToArray();
+            if (missingSections.Length > 0)
+                return "Error: description must include these sections: " + string.Join(", ", missingSections);
+        }
         if (call.Name is ("bash" or "eval") &&
             (!root.TryGetProperty(call.Name == "bash" ? "command" : "code", out var code) ||
              code.ValueKind != JsonValueKind.String || string.IsNullOrWhiteSpace(code.GetString())))
