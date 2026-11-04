@@ -15,11 +15,10 @@ Supports Linux with glibc on x64 and ARM64. Requires Bash, the .NET 10 SDK, and 
 From the repository root:
 
 ```bash
-git submodule update --init --recursive
 bash scripts/install.sh
 ```
 
-LakeCode temporarily builds SharpConsoleUI from the ConsoleEx Git submodule. Initialize the submodule after cloning or updating the repository before building.
+SharpConsoleUI is restored from NuGet as package version 2.10.8 during the build.
 
 The command is installed in `~/.local/bin`, and the .NET Runtime is bundled with the application. If that directory isn't already in your `PATH`, add this to `~/.bashrc` and open a new terminal:
 
