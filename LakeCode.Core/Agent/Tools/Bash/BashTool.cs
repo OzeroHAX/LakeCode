@@ -12,12 +12,22 @@ internal sealed class BashTool(WorkspaceFiles files, Action<BashExecution> repor
     [Description("Run a permitted non-interactive command and return exit code/stdout/stderr. No background jobs or interactive input. Search/file-reading commands (grep/rg/find/awk/sed/cat and equivalents), Python/JS/other interpreters, nested shells, wrappers, expansions and redirections are blocked. Use retrieval tools for source investigation. Build/package scripts may run when otherwise permitted, but must not be used to bypass restrictions. Command filtering is NOT an OS sandbox. Output is limited to 32000 characters.")]
     public Task<string> RunAsync(
         [Description("Command to execute. No retrieval commands, interpreters, wrappers, substitutions, redirections or background execution.")] string command,
-        [Description("Required structured justification shown to the user before execution. Include: Action, Purpose, Why needed now, Alternatives considered, Expected result, and Side effects (files, network, data, processes, and persistence). Explain why safer available alternatives are insufficient and keep it specific to this call.")] string description,
+        [Description("What the command does.")] string action,
+        [Description("Why the command is useful for the current task.")] string purpose,
+        [Description("Why this command is needed now.")] string whyNeededNow,
+        [Description("Why a safer or narrower alternative was not chosen.")] string alternativesConsidered,
+        [Description("Concrete result expected from the command.")] string expectedResult,
+        [Description("Relevant files, network, data, processes, and persistence side effects, or none.")] string sideEffects,
         [Description("Working directory relative to the workspace root.")] string workingDirectory = ".",
         CancellationToken cancellationToken = default) => WorkspaceFiles.ExecuteAsync(async () =>
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(command);
-        ArgumentException.ThrowIfNullOrWhiteSpace(description);
+        ArgumentException.ThrowIfNullOrWhiteSpace(action);
+        ArgumentException.ThrowIfNullOrWhiteSpace(purpose);
+        ArgumentException.ThrowIfNullOrWhiteSpace(whyNeededNow);
+        ArgumentException.ThrowIfNullOrWhiteSpace(alternativesConsidered);
+        ArgumentException.ThrowIfNullOrWhiteSpace(expectedResult);
+        ArgumentException.ThrowIfNullOrWhiteSpace(sideEffects);
         if (BashCommandPolicy.Check(command) is { } policyError) return policyError;
         var directory = files.Resolve(workingDirectory);
         if (!Directory.Exists(directory))

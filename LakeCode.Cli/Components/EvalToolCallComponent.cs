@@ -37,11 +37,12 @@ internal sealed class EvalToolCallComponent : CollapsiblePanel
 
         using var arguments = JsonDocument.Parse(update.Arguments);
         var root = arguments.RootElement;
-        var described = root.TryGetProperty("description", out var description) && description.ValueKind == JsonValueKind.String;
+        var descriptionText = ExtractDescription(root);
+        var described = descriptionText.Length > 0;
         if (described)
         {
             var explanation = CreateBody(ToolCardStyle.Description);
-            explanation.Text = MarkupParser.Escape(description.GetString() ?? "");
+            explanation.Text = MarkupParser.Escape(ToolCallGroupComponent.FormatDescription(descriptionText));
             AddControl(explanation);
         }
 
@@ -57,7 +58,8 @@ internal sealed class EvalToolCallComponent : CollapsiblePanel
 
         // Only non-default options are worth a line; the defaults are the tool's contract, not news.
         var parameters = root.EnumerateObject()
-            .Where(property => property.Name is not ("code" or "description"))
+            .Where(property => property.Name is not ("code" or "action" or "purpose" or "whyNeededNow" or
+                "alternativesConsidered" or "expectedResult" or "sideEffects"))
             .Where(property => !IsDefaultParameter(property))
             .Select(FormatParameter)
             .ToList();
@@ -139,6 +141,22 @@ internal sealed class EvalToolCallComponent : CollapsiblePanel
         if (length == result.Length) return (result, false);
         if (length > 0 && char.IsHighSurrogate(result[length - 1])) length--;
         return (result[..length], true);
+    }
+
+    private static string ExtractDescription(JsonElement root)
+    {
+        var fields = new[]
+        {
+            (Name: "action", Label: "Action:"),
+            (Name: "purpose", Label: "Purpose:"),
+            (Name: "whyNeededNow", Label: "Why needed now:"),
+            (Name: "alternativesConsidered", Label: "Alternatives considered:"),
+            (Name: "expectedResult", Label: "Expected result:"),
+            (Name: "sideEffects", Label: "Side effects:")
+        };
+        return string.Join("\n", fields
+            .Where(field => root.TryGetProperty(field.Name, out var value) && value.ValueKind == JsonValueKind.String)
+            .Select(field => $"{field.Label} {root.GetProperty(field.Name).GetString()}"));
     }
 
     private static bool IsDefaultParameter(JsonProperty property) => property.Name switch

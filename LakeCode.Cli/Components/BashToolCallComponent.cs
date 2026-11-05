@@ -32,6 +32,7 @@ internal sealed class BashToolCallComponent : CollapsiblePanel
     private BashExecution? _execution;
     private ToolCallStatus _status;
     private string? _result;
+    private string _activityText = "";
     private string _frame = "";
     private string _displayed = "";
     private double? _finishedSeconds;
@@ -54,7 +55,8 @@ internal sealed class BashToolCallComponent : CollapsiblePanel
 
         using var arguments = JsonDocument.Parse(update.Arguments);
         var root = arguments.RootElement;
-        var described = root.TryGetProperty("description", out var description) && description.ValueKind == JsonValueKind.String;
+        var descriptionText = ExtractDescription(root);
+        var described = descriptionText.Length > 0;
         var command = root.TryGetProperty("command", out var value) ? value.GetString() ?? "" : "";
         var directory = root.TryGetProperty("workingDirectory", out var directoryValue) ? directoryValue.GetString() ?? "." : ".";
         AddControl(new MarkupControl(new List<string>
@@ -70,12 +72,14 @@ internal sealed class BashToolCallComponent : CollapsiblePanel
 
         if (described)
         {
-            _activity.Text = MarkupParser.Escape(ExtractActivity(description.GetString() ?? ""));
+            _activityText = ExtractActivity(descriptionText);
+            _activity.Text = MarkupParser.Escape(_activityText);
             _activity.Wrap = true;
             _activity.EnableSelection = true;
             _activity.HorizontalAlignment = HorizontalAlignment.Stretch;
             _activity.ForegroundColor = ToolCardStyle.Description;
             _activity.Margin = new Margin(1, 1, 1, 1);
+            _activity.Visible = true;
             AddControl(_activity);
 
             _details = new CollapsiblePanel
@@ -84,19 +88,19 @@ internal sealed class BashToolCallComponent : CollapsiblePanel
                 Collapsible = true,
                 IsExpanded = false,
                 ShowHeader = true,
-                Title = "[grey]▸ Обоснование[/]",
+                Title = "[grey]Обоснование[/]",
                 HorizontalAlignment = HorizontalAlignment.Stretch,
                 ForegroundColor = ToolCardStyle.Muted,
                 FocusedForegroundColor = ToolCardStyle.Description,
                 BackgroundColor = ToolCardStyle.Surface,
-                Margin = new Margin(0, 1, 0, 1),
-                Padding = new Padding(1, 0, 1, 0)
+                Margin = new Margin(0, 0, 0, 0),
+                Padding = new Padding(0, 0, 0, 0)
             };
             _detailsBody.Wrap = true;
             _detailsBody.EnableSelection = true;
             _detailsBody.HorizontalAlignment = HorizontalAlignment.Stretch;
             _detailsBody.ForegroundColor = ToolCardStyle.Description;
-            _detailsBody.Text = MarkupParser.Escape(ToolCallGroupComponent.FormatDescription(description.GetString() ?? ""));
+            _detailsBody.Text = MarkupParser.Escape(ToolCallGroupComponent.FormatDescription(descriptionText));
             _details.AddControl(_detailsBody);
         }
 
@@ -228,8 +232,6 @@ internal sealed class BashToolCallComponent : CollapsiblePanel
         var notes = new List<string>();
         if (_execution?.Truncated == true)
             notes.Add($"[{ToolCardStyle.Warning.ToMarkup()}]вывод ограничен 32 000 символами[/]");
-        if (_status == ToolCallStatus.Completed)
-            notes.Add("[green]✓ Команда завершена[/]");
         if (_status == ToolCallStatus.Failed && _execution is not null && _result is not null &&
             !_result.StartsWith("Error: Exit code:", StringComparison.Ordinal))
             notes.Add($"[{ToolCardStyle.Error.ToMarkup()}]{MarkupParser.Escape(BashOutputText.Normalize(_result).Trim())}[/]");
@@ -247,11 +249,34 @@ internal sealed class BashToolCallComponent : CollapsiblePanel
         var exit = _status != ToolCallStatus.Running && _execution?.ExitCode is { } code
             ? $" · [{(code == 0 ? "green" : "red")}]exit {code}[/]"
             : "";
-        Title = $"[bold]Bash[/] · [{color}]{label}{(_status == ToolCallStatus.Running && _frame.Length > 0 ? " " + _frame : "")}[/]" +
+        Title = $"[bold]Bash[/] · [{color}]{label}{(!_activity.Visible && _status == ToolCallStatus.Running && _frame.Length > 0 ? " " + _frame : "")}[/]" +
             (_execution is null ? "" : $" · [grey70]{ToolCardStyle.Duration(seconds)}[/]") + exit;
+        if (_activity.Visible)
+        {
+            var indicator = _status == ToolCallStatus.Running && _frame.Length > 0
+                ? $"[cyan]{MarkupParser.Escape(_frame)}[/] "
+                : _status == ToolCallStatus.Completed ? "[green]✓[/] " : "";
+            _activity.Text = indicator + MarkupParser.Escape(_activityText);
+        }
         _follow.Visible = _paused || !_viewport.AutoScroll;
         _pause.Visible = _status == ToolCallStatus.Running || _paused;
         _pause.Text = _paused ? "Продолжить" : "Пауза";
+    }
+
+    private static string ExtractDescription(JsonElement root)
+    {
+        var fields = new[]
+        {
+            (Name: "action", Label: "Action:"),
+            (Name: "purpose", Label: "Purpose:"),
+            (Name: "whyNeededNow", Label: "Why needed now:"),
+            (Name: "alternativesConsidered", Label: "Alternatives considered:"),
+            (Name: "expectedResult", Label: "Expected result:"),
+            (Name: "sideEffects", Label: "Side effects:")
+        };
+        return string.Join("\n", fields
+            .Where(field => root.TryGetProperty(field.Name, out var value) && value.ValueKind == JsonValueKind.String)
+            .Select(field => $"{field.Label} {root.GetProperty(field.Name).GetString()}"));
     }
 
     private static string ExtractActivity(string description)

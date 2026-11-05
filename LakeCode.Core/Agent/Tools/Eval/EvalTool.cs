@@ -53,12 +53,20 @@ internal sealed class EvalTool(string root, Func<string, JsonElement, Cancellati
     [Description("Execute one C# script in a persistent worker. Variables survive later calls. No security sandbox: code has user OS permissions. Repository retrieval must use search_text, find_files, outline_file, trace_code, read_file and list_directory through the tool bridge, not direct filesystem/process APIs. Do not bypass bash command/interpreter restrictions. Use Display(value), Console.WriteLine, and await Tools.CallAsync(toolName, new { arguments }); ReadFileAsync and ListDirectoryAsync shortcuts are available. Tools.ListToolsAsync() returns tool names, descriptions and schemas as JSON. Tools.TryCallAsync(name, arguments) returns Output/IsError without throwing for tool errors. Bridge calls are serialized, even with Task.WhenAll. Tool results are strings; read_file includes line numbers. Display prints readable JSON and tuples as arrays. Errors distinguish compilation (state preserved), runtime (state may be partially mutated), and worker failure (state discarded). Calls must be awaited before the cell ends; do not leave background work. Tools cannot call eval recursively. Runtime state is not restored from saved history. Output is limited to 32000 characters.")]
     public async Task<string> RunAsync(
         [Description("C# script; top-level await is supported. Default imports: System, System.IO, System.Linq, System.Collections.Generic, System.Threading.Tasks, System.Text.Json and System.Text.Json.Nodes.")] string code,
-        [Description("Required structured justification shown to the user before execution. Include: Action, Purpose, Why needed now, Alternatives considered, Expected result, and Side effects (files, network, data, processes, and persistent worker state). Explain why safer available alternatives are insufficient and keep it specific to this call.")] string description,
+        [Description("What the script does.")] string action,
+        [Description("Why the script is useful for the current task.")] string purpose,
+        [Description("Why this script is needed now.")] string whyNeededNow,
+        [Description("Why a safer or narrower alternative was not chosen.")] string alternativesConsidered,
+        [Description("Concrete result expected from the script.")] string expectedResult,
+        [Description("Relevant files, network, data, processes, worker state, and persistence side effects, or none.")] string sideEffects,
         [Description("Execution timeout in seconds, including tool execution and worker startup, excluding classifier and manual execution-approval waits; 1–3600, default 30. Timeout destroys worker state.")] int timeout = 30,
         [Description("Restart the C# worker before execution, discarding previous variables.")] bool reset = false,
         CancellationToken cancellationToken = default)
     {
-        if (string.IsNullOrWhiteSpace(description)) return "Error: description is required.";
+        if (string.IsNullOrWhiteSpace(action) || string.IsNullOrWhiteSpace(purpose) ||
+            string.IsNullOrWhiteSpace(whyNeededNow) || string.IsNullOrWhiteSpace(alternativesConsidered) ||
+            string.IsNullOrWhiteSpace(expectedResult) || string.IsNullOrWhiteSpace(sideEffects))
+            return "Error: all six rationale fields are required.";
         if (string.IsNullOrWhiteSpace(code)) return "Error: code must not be empty.";
         if (timeout is < 1 or > 3600) return "Error: timeout must be between 1 and 3600 seconds.";
         await _gate.WaitAsync(cancellationToken);

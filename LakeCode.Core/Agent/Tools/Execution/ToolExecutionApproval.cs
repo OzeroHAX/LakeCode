@@ -18,7 +18,13 @@ internal sealed class ToolExecutionApproval
         using var args = JsonDocument.Parse(call.Arguments);
         var root = args.RootElement;
         var descriptionText = manualDescription;
-        if (descriptionText is null && call.Name is ("edit_file" or "write_file"))
+        if (descriptionText is null && call.Name is ("bash" or "eval"))
+        {
+            descriptionText = StructuredExecutionDescription(root);
+            if (descriptionText is null)
+                return $"Error: {call.Name} calls require all six rationale fields: action, purpose, whyNeededNow, alternativesConsidered, expectedResult, and sideEffects.";
+        }
+        else if (descriptionText is null && call.Name is ("edit_file" or "write_file"))
         {
             descriptionText = StructuredFileDescription(root);
             if (descriptionText is null)
@@ -30,7 +36,7 @@ internal sealed class ToolExecutionApproval
         {
             return "Error: description is required: explain the action, purpose, necessity, alternatives, expected result, and side effects.";
         }
-        if (descriptionText is not null && call.Name is ("bash" or "eval"))
+        if (descriptionText is not null && call.Name == "eval")
         {
             var requiredSections = new[]
             {
@@ -75,6 +81,29 @@ internal sealed class ToolExecutionApproval
         cancellationToken.ThrowIfCancellationRequested();
         if (error.Length == 0) publish(call with { Status = ToolCallStatus.Running });
         return error;
+    }
+
+    private static string? StructuredExecutionDescription(JsonElement root)
+    {
+        var fields = new[]
+        {
+            (Label: "Action:", Name: "action"),
+            (Label: "Purpose:", Name: "purpose"),
+            (Label: "Why needed now:", Name: "whyNeededNow"),
+            (Label: "Alternatives considered:", Name: "alternativesConsidered"),
+            (Label: "Expected result:", Name: "expectedResult"),
+            (Label: "Side effects:", Name: "sideEffects")
+        };
+        var values = fields.Select(field =>
+        {
+            if (!root.TryGetProperty(field.Name, out var value) || value.ValueKind != JsonValueKind.String)
+                return (field.Label, Value: (string?)null);
+            var text = value.GetString()?.Trim();
+            return (field.Label, Value: string.IsNullOrWhiteSpace(text) ? null : text);
+        }).ToArray();
+        return values.Any(value => value.Value is null)
+            ? null
+            : string.Join("\n", values.Select(value => $"{value.Label} {value.Value}"));
     }
 
     private static string? StructuredFileDescription(JsonElement root)

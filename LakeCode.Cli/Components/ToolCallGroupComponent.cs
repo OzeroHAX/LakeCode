@@ -130,12 +130,12 @@ internal sealed class ToolCallGroupComponent : CollapsiblePanel
                     Collapsible = true,
                     IsExpanded = false,
                     ShowHeader = true,
-                    Title = "[grey]▸ Обоснование[/]",
+                    Title = "[grey]Обоснование[/]",
                     HorizontalAlignment = HorizontalAlignment.Stretch,
                     ForegroundColor = new Color(150, 150, 150),
                     FocusedForegroundColor = new Color(185, 195, 205),
                     BackgroundColor = BackgroundColor,
-                    Margin = new Margin(0, 1, 0, 0),
+                    Margin = new Margin(0, 0, 0, 0),
                     Padding = new Padding(0, 0, 0, 0)
                 };
                 details.AddControl(detailsBody);
