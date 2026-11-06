@@ -32,7 +32,8 @@ public abstract record AnthropicCompatibleProvider(
         request.Headers.Add("anthropic-version", "2023-06-01");
     }
 
-    internal override IChatClient CreateChatClient(ProviderProfile profile, ModelInfo model, string sessionId)
+    internal override IChatClient CreateChatClient(ProviderProfile profile, ModelInfo model, string sessionId,
+        Action<ProviderResponseRouting>? responseReceived = null)
     {
         profile.Validate();
         if (!HasCredentials(profile)) throw new InvalidOperationException("Не задан API-ключ. Настройте подключение через /providers.");

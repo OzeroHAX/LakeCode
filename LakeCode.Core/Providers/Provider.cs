@@ -100,7 +100,8 @@ public abstract record Provider(
         return text;
     }
 
-    internal virtual IChatClient CreateChatClient(ProviderProfile profile, ModelInfo model, string sessionId) =>
+    internal virtual IChatClient CreateChatClient(ProviderProfile profile, ModelInfo model, string sessionId,
+        Action<ProviderResponseRouting>? responseReceived = null) =>
         throw new InvalidOperationException("Провайдер не поддерживает чат.");
     internal virtual ChatOptions Options(ProviderProfile profile, ModelInfo model, string effort, string sessionId, bool title = false) =>
         throw new InvalidOperationException("Провайдер не поддерживает чат.");

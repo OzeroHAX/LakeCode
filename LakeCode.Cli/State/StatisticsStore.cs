@@ -9,6 +9,7 @@ internal sealed class StatisticsStore(ModelInfo model) : INotifyPropertyChanged
 {
     public ModelInfo Model => Current?.Model ?? model;
     public RequestStatistics? Current { get; private set; }
+    public ResponseRoutingInfo? ResponseRouting { get; private set; }
     public double? TokensPerSecond { get; private set; }
     public bool IsGenerating { get; private set; }
 
@@ -18,6 +19,11 @@ internal sealed class StatisticsStore(ModelInfo model) : INotifyPropertyChanged
     {
         model = state.StatisticsModel;
         SetCurrent(state.Statistics);
+        if (ResponseRouting != state.ResponseRouting)
+        {
+            ResponseRouting = state.ResponseRouting;
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(ResponseRouting)));
+        }
         if (TokensPerSecond != state.TokensPerSecond)
         {
             TokensPerSecond = state.TokensPerSecond;

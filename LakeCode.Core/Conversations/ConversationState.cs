@@ -1,12 +1,13 @@
 using System.Collections.Immutable;
 using LakeCode.Core.Agent;
-using LakeCode.Core.Providers;
 using LakeCode.Core.Attachments;
 
 namespace LakeCode.Core.Conversations;
 
 public sealed record RequestStatistics(ModelInfo Model, long? InputTokens, long? OutputTokens,
     long? TotalTokens, long? CachedInputTokens, long? ReasoningTokens);
+
+public sealed record ResponseRoutingInfo(string RequestedModelId, string EffectiveModelId);
 public sealed record PendingMessageState(string Text, int ImageCount, string ModelId,
     string ReasoningEffort, SubmissionMode Mode, string ProviderId, int FileCount, AgentMode AgentMode = AgentMode.Build);
 
@@ -28,6 +29,7 @@ public sealed record ConversationState(long Revision, string? SessionId, string?
     public string? PlanCallId { get; init; }
     public SideQuestionState SideQuestions { get; init; } = new(0, false, []);
     public ImmutableArray<Agent.Delegation.DelegationSnapshot> Delegations { get; init; } = [];
+    public ResponseRoutingInfo? ResponseRouting { get; init; }
 }
 
 public sealed record TranscriptItem(string Kind, string? Text, ToolCallUpdate? ToolCall, bool StartsNewBlock = false);

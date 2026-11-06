@@ -13,11 +13,12 @@ internal sealed class ProviderChatClient : IChatClient
     private string? _modelId;
     private string? _sessionId;
     private long _credentialVersion;
+    internal event Action<ProviderResponseRouting>? ResponseMetadataReceived;
 
     public bool Configure(ProviderProfile profile, ModelInfo model, string sessionId)
     {
         if (ReferenceEquals(profile, _profile) && model.Id == _modelId && sessionId == _sessionId) return false;
-        var next = profile.Definition.CreateChatClient(profile, model, sessionId);
+        var next = profile.Definition.CreateChatClient(profile, model, sessionId, metadata => ResponseMetadataReceived?.Invoke(metadata));
         _client?.Dispose();
         _client = next;
         _profile = profile;
@@ -37,7 +38,7 @@ internal sealed class ProviderChatClient : IChatClient
         await profile.Definition.PrepareAsync(profile, cancellationToken).ConfigureAwait(false);
         var version = profile.Definition.CredentialVersion(profile);
         if (version == _credentialVersion) return;
-        var next = profile.Definition.CreateChatClient(profile, _model!, _sessionId!);
+        var next = profile.Definition.CreateChatClient(profile, _model!, _sessionId!, metadata => ResponseMetadataReceived?.Invoke(metadata));
         _client?.Dispose();
         _client = next;
         _credentialVersion = version;

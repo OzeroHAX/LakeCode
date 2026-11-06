@@ -58,6 +58,7 @@ public sealed class ConversationService
     private int _boundaryStopRequested;
     private ModelInfo _statisticsModel;
     private RequestStatistics? _statistics;
+    private ResponseRoutingInfo? _responseRouting;
     private double? _tokensPerSecond;
     private long _revision, _sequence;
     private readonly ConversationQuestions _questions = new();
@@ -177,6 +178,7 @@ public sealed class ConversationService
             _statisticsModel, _statistics, _tokensPerSecond)
             { AllowAllExternalReads = _allowAllExternalReads, CanCompact = CanCompact(), IsCompacting = _compactionCancellation is not null, Compaction = _agent?.History.Projection.View,
                  SideQuestions = CreateSideState(), Delegations = delegations, ActiveMode = _activeTurn?.AgentMode,
+                 ResponseRouting = _responseRouting,
                 Plan = plan, PlanCallId = planCallId, CanExecutePlan = CanExecutePlan() };
     }
 
@@ -274,6 +276,7 @@ public sealed class ConversationService
         var agent = AgentFactory.CreateMain(_workspaceRoot, ConfirmExternalReadAsync, sessionId, AskUserAsync,
             _sessions.EnsureWorkspace(sessionId), approval, SavePlan);
         agent.Files.AllowAllExternalReads = _allowAllExternalReads;
+        agent.ProviderClient.ResponseMetadataReceived += metadata => OnProviderResponseMetadata(agent, sessionId, metadata);
         agent.Delegation!.Updated += update =>
         {
             lock (_gate)
@@ -309,6 +312,19 @@ public sealed class ConversationService
             }
         };
         return agent;
+    }
+
+    private void OnProviderResponseMetadata(AgentComponents source, string sessionId, ProviderResponseRouting metadata)
+    {
+        lock (_gate)
+        {
+            if (!ReferenceEquals(_agent, source) || _snapshot?.Id != sessionId || _activeTurn is null) return;
+            if (metadata.IsFallback && metadata.EffectiveModelId is { } effectiveModelId)
+            {
+                _responseRouting = new ResponseRoutingInfo(metadata.RequestedModelId, effectiveModelId);
+                PublishState();
+            }
+        }
     }
 
     // These explicit session operations preserve the original reset order. Archive code owns no workers.
@@ -452,6 +468,7 @@ public sealed class ConversationService
                 {
                     _statisticsModel = selectedModel;
                     _statistics = null;
+                    _responseRouting = null;
                     _tokensPerSecond = null;
                     _agent = null;
                     _snapshot = null;
@@ -706,6 +723,7 @@ public sealed class ConversationService
         _generation = generation;
         _requestId = Guid.NewGuid();
         _activeTurn = turn;
+        _responseRouting = null;
         Emit(new TurnStarted(pending.Text, images.ToImmutableArray(), pending.Files.ToImmutableArray(), pending.Mentions.ToImmutableArray(), pending.IsBackgroundContinuation, pending.AgentMode));
         PublishState();
         _operation = Task.Run(async () =>
@@ -822,6 +840,7 @@ public sealed class ConversationService
                     _contextFailed = false;
                     _statisticsModel = model;
                     _statistics = null;
+                    _responseRouting = null;
                     _tokensPerSecond = null;
                     if (snapshot.Turns.LastOrDefault(turn => turn.Usage is not null) is { Usage: { } usage } last &&
                         (last.ModelMetadata ?? FindSavedModel(last.ProviderId, last.ModelId)) is { } usageModel)
@@ -883,6 +902,7 @@ public sealed class ConversationService
                     _backgroundOwners.Clear();
                     _lastRequest = null;
                     _statistics = null;
+                    _responseRouting = null;
                     _tokensPerSecond = null;
                     Emit(new ConversationReplaced(CreateView()));
                     Emit(new RewindFinished(null));

@@ -4,6 +4,7 @@ using LakeCode.Core.Agent.Session.History;
 using LakeCode.Core.Agent.Tools;
 using LakeCode.Core.Agent.Tools.Eval;
 using LakeCode.Core.Agent.Tools.Execution;
+using LakeCode.Core.Providers;
 
 namespace LakeCode.Core.Agent.Composition;
 
@@ -12,6 +13,7 @@ internal sealed class AgentComponents(
     string cacheSessionId,
     WorkspaceFiles files,
     AgentLoop loop,
+    ProviderChatClient providerClient,
     AgentSessionState session,
     AgentHistory history,
     ToolInvocationRunner invocations,
@@ -22,6 +24,7 @@ internal sealed class AgentComponents(
     public string CacheSessionId { get; } = cacheSessionId;
     public WorkspaceFiles Files { get; } = files;
     public AgentLoop Loop { get; } = loop;
+    public ProviderChatClient ProviderClient { get; } = providerClient;
     public AgentSessionState Session { get; } = session;
     public AgentHistory History { get; } = history;
     public ToolInvocationRunner Invocations { get; } = invocations;
@@ -42,7 +45,11 @@ internal sealed class AgentComponents(
             finally
             {
                 try { Eval?.Dispose(); }
-                finally { History.Capture.Dispose(); }
+                finally
+                {
+                    try { ProviderClient.Dispose(); }
+                    finally { History.Capture.Dispose(); }
+                }
             }
         }
     }
@@ -57,7 +64,11 @@ internal sealed class AgentComponents(
             finally
             {
                 try { Eval?.Dispose(); }
-                finally { History.Capture.Dispose(); }
+                finally
+                {
+                    try { ProviderClient.Dispose(); }
+                    finally { History.Capture.Dispose(); }
+                }
             }
         }
     }

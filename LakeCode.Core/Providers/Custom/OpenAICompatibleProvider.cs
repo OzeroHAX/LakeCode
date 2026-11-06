@@ -31,7 +31,8 @@ public abstract record OpenAICompatibleProvider(
     internal virtual void ConfigureOpenAI(OpenAIClientOptions options, ProviderProfile profile, string sessionId) { }
 
 #pragma warning disable OPENAI001, SCME0001
-    internal override IChatClient CreateChatClient(ProviderProfile profile, ModelInfo model, string sessionId)
+    internal override IChatClient CreateChatClient(ProviderProfile profile, ModelInfo model, string sessionId,
+        Action<ProviderResponseRouting>? responseReceived = null)
     {
         profile.Validate();
         if (!HasCredentials(profile)) throw new InvalidOperationException("Не задан API-ключ. Настройте подключение через /providers.");
@@ -41,12 +42,17 @@ public abstract record OpenAICompatibleProvider(
         };
         if (ApiMode == OpenAIApiMode.Responses)
             options.AddPolicy(new CodexSessionHeadersPolicy(sessionId), PipelinePosition.PerCall);
+        if (CreateResponseHeadersPolicy(profile, model, responseReceived) is { } responsePolicy)
+            options.AddPolicy(responsePolicy, PipelinePosition.PerCall);
         ConfigureOpenAI(options, profile, sessionId);
         var client = new OpenAIClient(new ApiKeyCredential(Credential(profile)), options);
         return ApiMode == OpenAIApiMode.Responses
             ? client.GetResponsesClient().AsIChatClient()
             : client.GetChatClient(model.Id).AsIChatClient();
     }
+
+    internal virtual PipelinePolicy? CreateResponseHeadersPolicy(ProviderProfile profile, ModelInfo model,
+        Action<ProviderResponseRouting>? responseReceived) => null;
 
     internal override ChatOptions Options(ProviderProfile profile, ModelInfo model, string effort, string sessionId, bool title = false)
     {

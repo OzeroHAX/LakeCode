@@ -55,6 +55,12 @@ internal sealed record OpenAIProvider(ModelsDevProvider Catalog, string Endpoint
         profile.Discovery?.Ids.Contains(id, StringComparer.Ordinal) == true;
     internal override bool RequiresKnownCapabilities(ProviderProfile profile) => IsCodex(profile);
 
+    internal override PipelinePolicy? CreateResponseHeadersPolicy(ProviderProfile profile, ModelInfo model,
+        Action<ProviderResponseRouting>? responseReceived) =>
+        IsCodex(profile) && responseReceived is not null
+            ? new CodexResponseHeadersPolicy(model.Id, responseReceived)
+            : null;
+
     internal override void ConfigureOpenAI(OpenAIClientOptions options, ProviderProfile profile, string sessionId)
     {
         if (IsCodex(profile)) options.AddPolicy(new CodexAccountHeaders(Current(profile)["account_id"]), PipelinePosition.PerCall);

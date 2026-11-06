@@ -76,8 +76,11 @@ internal sealed class FooterComponent : PanelControl
         string RenderModel() => Markup.Escape(store.HasSelection
             ? store.SelectedProviderName + " · " + store.SelectedModel.Name
             : "Нет подключения — /providers");
-        string Render() =>
-            $"   [grey50]│[/]   [cyan]{Markup.Escape(store.SelectedReasoningEffort)}[/]   [grey50]│[/]   {Markup.Escape(directory)}   [grey50]│[/]   {FormatStatistics(statistics)}   [grey50]│[/]   {statistics.TokensPerSecond?.ToString("0.0", CultureInfo.InvariantCulture) ?? "—"} tok/s";
+        string Render()
+        {
+            var routing = FormatResponseRouting(statistics);
+            return $"   [grey50]│[/]   [cyan]{Markup.Escape(store.SelectedReasoningEffort)}[/]   [grey50]│[/]   {Markup.Escape(directory)}   [grey50]│[/]   {FormatStatistics(statistics)}   [grey50]│[/]   {statistics.TokensPerSecond?.ToString("0.0", CultureInfo.InvariantCulture) ?? "—"} tok/s{routing}";
+        }
         _model.Click += (_, _) => ModelsRequested?.Invoke();
 
         _scanner = new SpinnerTextAnimator(windowSystem, ScannerFrames, value =>
@@ -92,6 +95,7 @@ internal sealed class FooterComponent : PanelControl
         _details.Bind(store, state => state.SelectedReasoningEffort, control => control.Text, _ => Render());
         _details.Bind(statistics, state => state.Model, control => control.Text, _ => Render());
         _details.Bind(statistics, state => state.Current, control => control.Text, _ => Render());
+        _details.Bind(statistics, state => state.ResponseRouting, control => control.Text, _ => Render());
         _details.Bind(statistics, state => state.TokensPerSecond, control => control.Text, _ => Render());
         _details.Bind(statistics, state => state.IsGenerating, control => control.Text, active =>
         {
@@ -144,6 +148,10 @@ internal sealed class FooterComponent : PanelControl
         }
         return frames;
     }
+
+    private static string FormatResponseRouting(StatisticsStore store) => store.ResponseRouting is not { } routing
+        ? string.Empty
+        : $"   [grey50]│[/]   [yellow]Модель: {Markup.Escape(routing.RequestedModelId)} → {Markup.Escape(routing.EffectiveModelId)} ⚠[/]";
 
     private static string FormatStatistics(StatisticsStore store)
     {

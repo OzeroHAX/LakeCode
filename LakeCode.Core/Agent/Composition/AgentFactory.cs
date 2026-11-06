@@ -56,7 +56,7 @@ internal static class AgentFactory
             var roles = new AgentRoleFactory(context, instructions, researchFiles, services, savePlan);
             preparer = new AgentRunPreparer(roles.Get(AgentMode.Build).Configuration, roles, skills,
                 invocations, delegation, client, history, sessionId);
-            var components = Complete("LakeCode", sessionId, files, history, preparer, invocations,
+            var components = Complete("LakeCode", sessionId, files, history, preparer, client, invocations,
                 skills, eval, delegation, allowMultipleToolCalls: null, mcp);
             session = components.Session;
             return components;
@@ -67,7 +67,11 @@ internal static class AgentFactory
             finally
             {
                 try { eval?.Dispose(); }
-                finally { history.Capture.Dispose(); }
+                finally
+                {
+                    try { history.Capture.Dispose(); }
+                    finally { client.Dispose(); }
+                }
             }
             throw;
         }
@@ -85,20 +89,22 @@ internal static class AgentFactory
             var invocations = new ToolInvocationRunner(() => preparer!.Configuration, () => null, () => null,
                 () => preparer!.ImageGeneration, () => { }, new ToolExecutionApproval());
             preparer = new AgentRunPreparer(configuration, null, null, invocations, null, client, history, sessionId);
-            var components = Complete("LakeCodeResearch", sessionId, files, history, preparer, invocations,
+            var components = Complete("LakeCodeResearch", sessionId, files, history, preparer, client, invocations,
                 null, null, null, configuration.AllowMultipleToolCalls);
             session = components.Session;
             return components;
         }
         catch
         {
-            history.Capture.Dispose();
+            try { history.Capture.Dispose(); }
+            finally { client.Dispose(); }
             throw;
         }
     }
 
     private static AgentComponents Complete(string name, string sessionId, WorkspaceFiles files,
-        AgentHistory history, AgentRunPreparer preparer, ToolInvocationRunner invocations,
+        AgentHistory history, AgentRunPreparer preparer, ProviderChatClient providerClient,
+        ToolInvocationRunner invocations,
         AgentSkills? skills, EvalTool? eval, DelegationCoordinator? delegation, bool? allowMultipleToolCalls, Mcp.McpSession? mcp = null)
     {
         IChatClient pipeline = mcp is null ? history.Capture : new Mcp.McpToolsChatClient(history.Capture, mcp, () => preparer.Configuration);
@@ -114,6 +120,6 @@ internal static class AgentFactory
         }).AsBuilder().Use(invocations.ObserveToolCallAsync).Build();
         var session = new AgentSessionState(agent, history, mcp);
         var loop = new AgentLoop(agent, session, preparer, delegation, mcp);
-        return new AgentComponents(sessionId, files, loop, session, history, invocations, eval, delegation, mcp);
+        return new AgentComponents(sessionId, files, loop, providerClient, session, history, invocations, eval, delegation, mcp);
     }
 }
