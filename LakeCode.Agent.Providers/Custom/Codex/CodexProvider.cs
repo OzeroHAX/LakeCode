@@ -1,11 +1,11 @@
 using System.ClientModel;
 using System.ClientModel.Primitives;
 using System.Net.Http.Headers;
+using System.Text.Json;
 using LakeCode.Agent;
 using LakeCode.Agent.Providers;
 using LakeCode.Agent.Providers.Base;
 using OpenAI;
-using OpenAI.Models;
 using OpenAI.Responses;
 
 namespace LakeCode.Agent.Providers.Custom;
@@ -15,23 +15,35 @@ namespace LakeCode.Agent.Providers.Custom;
 public sealed class CodexProvider : IProvider
 {
     private const string Endpoint = "https://chatgpt.com/backend-api/codex";
+    // Protocol compatibility target: Codex CLI 0.166.0.
+    private const string ClientVersion = "0.166.0";
+    private const string ModelsEndpoint = $"{Endpoint}/models";
+    private readonly HttpClient _httpClient;
     private readonly OpenAIClient _openAiClient;
     private readonly ResponsesClient _responsesClient;
 
     public CodexProvider()
+        : this(new ProviderConfigFileSource(), null)
     {
-        CodexConfig config = ProviderConfig.Load<CodexConfig>();
+    }
+
+    public CodexProvider(IProviderConfigSource configSource, HttpMessageHandler? handler)
+    {
+        ArgumentNullException.ThrowIfNull(configSource);
+
+        CodexConfig config = configSource.Load<CodexConfig>();
         ArgumentException.ThrowIfNullOrWhiteSpace(config.AccessToken);
         ArgumentException.ThrowIfNullOrWhiteSpace(config.AccountId);
 
-        HttpClient httpClient = new(new CodexAuthHandler(config.AccessToken, config.AccountId)
+        HttpClient httpClient = new(new CodexAuthHandler(config.AccessToken, config.AccountId, ClientVersion)
         {
-            InnerHandler = new SocketsHttpHandler(),
+            InnerHandler = handler ?? new SocketsHttpHandler(),
         })
         {
             // Request timeouts are enforced by the SDK pipeline.
             Timeout = Timeout.InfiniteTimeSpan,
         };
+        _httpClient = httpClient;
 
         OpenAIClientOptions options = new()
         {
@@ -52,14 +64,47 @@ public sealed class CodexProvider : IProvider
     public async ValueTask<IReadOnlyList<ProviderModel>> GetModelsAsync(
         CancellationToken cancellationToken = default)
     {
-        OpenAIModelClient modelsClient = _openAiClient.GetOpenAIModelClient();
-        OpenAIModelCollection models = await modelsClient
-            .GetModelsAsync(cancellationToken)
+        using HttpRequestMessage request = new(HttpMethod.Get, ModelsEndpoint);
+        using HttpResponseMessage response = await _httpClient
+            .SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken)
             .ConfigureAwait(false);
+        response.EnsureSuccessStatusCode();
 
-        return models
-            .Select(model => new ProviderModel(Id, model.Id, model.Id))
-            .ToArray();
+        string body = await response.Content
+            .ReadAsStringAsync(cancellationToken)
+            .ConfigureAwait(false);
+        using JsonDocument document = JsonDocument.Parse(body);
+
+        if (!document.RootElement.TryGetProperty("models", out JsonElement models) ||
+            models.ValueKind != JsonValueKind.Array)
+        {
+            throw new InvalidDataException(
+                "Codex model catalog response does not contain a 'models' array.");
+        }
+
+        List<ProviderModel> result = [];
+
+        foreach (JsonElement model in models.EnumerateArray())
+        {
+            if (model.ValueKind != JsonValueKind.Object ||
+                !model.TryGetProperty("slug", out JsonElement slugElement) ||
+                slugElement.ValueKind != JsonValueKind.String ||
+                slugElement.GetString() is not { Length: > 0 } slug)
+            {
+                continue;
+            }
+
+            string displayName =
+                model.TryGetProperty("display_name", out JsonElement nameElement) &&
+                nameElement.ValueKind == JsonValueKind.String &&
+                nameElement.GetString() is { Length: > 0 } name
+                    ? name
+                    : slug;
+
+            result.Add(new ProviderModel(Id, slug, displayName));
+        }
+
+        return result;
     }
 
     public IAgentModel GetModel(string modelId)
@@ -72,7 +117,7 @@ public sealed class CodexProvider : IProvider
             modelId);
     }
 
-    private sealed class CodexAuthHandler(string accessToken, string accountId) : DelegatingHandler
+    private sealed class CodexAuthHandler(string accessToken, string accountId, string clientVersion) : DelegatingHandler
     {
         protected override Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,
@@ -84,7 +129,26 @@ public sealed class CodexProvider : IProvider
             request.Headers.TryAddWithoutValidation("ChatGPT-Account-Id", accountId);
             request.Headers.Remove("originator");
             request.Headers.TryAddWithoutValidation("originator", "lakecode");
+            AddClientVersion(request);
             return base.SendAsync(request, cancellationToken);
+        }
+
+        private void AddClientVersion(HttpRequestMessage request)
+        {
+            if (request.RequestUri is not { } uri ||
+                !uri.AbsolutePath.EndsWith("/models", StringComparison.Ordinal) ||
+                uri.Query.Contains("client_version", StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            UriBuilder builder = new(uri)
+            {
+                Query = uri.Query.Length > 1
+                    ? $"{uri.Query.TrimStart('?')}&client_version={Uri.EscapeDataString(clientVersion)}"
+                    : $"client_version={Uri.EscapeDataString(clientVersion)}",
+            };
+            request.RequestUri = builder.Uri;
         }
     }
 }

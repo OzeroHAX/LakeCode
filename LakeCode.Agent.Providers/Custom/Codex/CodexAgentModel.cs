@@ -1,5 +1,6 @@
 using System.ClientModel;
 using System.Runtime.CompilerServices;
+using System.Text;
 using System.Text.Json;
 using LakeCode.Agent;
 using OpenAI.Responses;
@@ -23,12 +24,51 @@ internal sealed class CodexAgentModel(
         CancellationToken cancellationToken)
     {
         List<ResponseItem> input = CreateInput(messages);
-        CreateResponseOptions options = CreateOptions(input, tools, streaming: false);
-        ResponseResult response = await client
-            .CreateResponseAsync(options, cancellationToken)
+        CreateResponseOptions options = CreateOptions(input, tools);
+        AsyncStreamingResult<StreamingResponseUpdate> updates = await client
+            .CreateResponseStreamingAsync(options, cancellationToken)
             .ConfigureAwait(false);
 
-        return CreateResponse(response);
+        StringBuilder text = new();
+        Dictionary<string, (string Name, StringBuilder Arguments)> calls = new(StringComparer.Ordinal);
+        List<string> order = [];
+
+        await foreach (StreamingResponseUpdate update in updates
+            .WithCancellation(cancellationToken)
+            .ConfigureAwait(false))
+        {
+            switch (update)
+            {
+                case StreamingResponseOutputTextDeltaUpdate delta:
+                    text.Append(delta.Delta);
+                    break;
+
+                case StreamingResponseOutputItemAddedUpdate added
+                    when added.Item is FunctionCallResponseItem call:
+                    Track(calls, order, call);
+                    break;
+
+                case StreamingResponseFunctionCallArgumentsDeltaUpdate arguments:
+                    if (calls.TryGetValue(arguments.ItemId, out var tracked))
+                    {
+                        tracked.Arguments.Append(arguments.Delta.ToString());
+                    }
+                    break;
+            }
+        }
+
+        List<AgentToolCall> toolCalls = [];
+
+        foreach (string id in order)
+        {
+            (string name, StringBuilder arguments) = calls[id];
+            toolCalls.Add(new AgentToolCall(
+                id,
+                name,
+                ParseArguments(arguments.ToString())));
+        }
+
+        return new AgentModelResponse(text.ToString(), toolCalls);
     }
 
     public async IAsyncEnumerable<AgentModelUpdate> RespondStreamingAsync(
@@ -36,7 +76,7 @@ internal sealed class CodexAgentModel(
         IReadOnlyList<AgentToolDefinition> tools,
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
-        CreateResponseOptions options = CreateOptions(CreateInput(messages), tools, streaming: true);
+        CreateResponseOptions options = CreateOptions(CreateInput(messages), tools);
         AsyncStreamingResult<StreamingResponseUpdate> updates =
             await client.CreateResponseStreamingAsync(options, cancellationToken)
                 .ConfigureAwait(false);
@@ -102,13 +142,17 @@ internal sealed class CodexAgentModel(
 
     private CreateResponseOptions CreateOptions(
         List<ResponseItem> input,
-        IReadOnlyList<AgentToolDefinition> tools,
-        bool streaming)
+        IReadOnlyList<AgentToolDefinition> tools)
     {
         CreateResponseOptions options = new(modelId, input)
         {
-            StreamingEnabled = streaming,
+            StreamingEnabled = true,
             StoredOutputEnabled = false,
+            ReasoningOptions = new ResponseReasoningOptions
+            {
+                ReasoningEffortLevel = ResponseReasoningEffortLevel.Medium,
+                ReasoningSummaryVerbosity = ResponseReasoningSummaryVerbosity.Auto,
+            },
         };
 
         foreach (AgentToolDefinition tool in tools)
@@ -172,23 +216,18 @@ internal sealed class CodexAgentModel(
         return input;
     }
 
-    private static AgentModelResponse CreateResponse(ResponseResult response)
+    private static void Track(
+        Dictionary<string, (string Name, StringBuilder Arguments)> calls,
+        List<string> order,
+        FunctionCallResponseItem call)
     {
-        string text = response.GetOutputText();
-        List<AgentToolCall> toolCalls = [];
-
-        foreach (ResponseItem item in response.OutputItems)
+        if (calls.ContainsKey(call.Id))
         {
-            if (item is FunctionCallResponseItem functionCall)
-            {
-                toolCalls.Add(new AgentToolCall(
-                    functionCall.CallId,
-                    functionCall.FunctionName,
-                    ParseArguments(functionCall.FunctionArguments.ToString())));
-            }
+            return;
         }
 
-        return new AgentModelResponse(text, toolCalls);
+        calls.Add(call.Id, (call.FunctionName, new StringBuilder()));
+        order.Add(call.Id);
     }
 
     private static JsonElement ParseArguments(string arguments)
