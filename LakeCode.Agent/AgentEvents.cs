@@ -12,6 +12,9 @@ public sealed record AgentCompleted : AgentEvent;
 public sealed record AgentFailed(string Error) : AgentEvent;
 public sealed record AgentCanceled : AgentEvent;
 
+
+public sealed record AgentStopped(string Reason) : AgentEvent;
+
 public sealed record TurnStarted(string TurnId) : AgentEvent;
 public sealed record TurnCompleted(string TurnId) : AgentEvent;
 
