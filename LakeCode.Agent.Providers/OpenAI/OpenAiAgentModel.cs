@@ -9,11 +9,23 @@ public sealed class OpenAiAgentModel : IAgentModel, IStreamingAgentModel
 {
     private readonly ChatClient _client;
 
-    public OpenAiAgentModel(ChatClient client)
+    public OpenAiAgentModel(
+        ChatClient client,
+        string providerId,
+        string modelId)
     {
         ArgumentNullException.ThrowIfNull(client);
+        ArgumentException.ThrowIfNullOrWhiteSpace(providerId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(modelId);
+
         _client = client;
+        ProviderId = providerId;
+        ModelId = modelId;
     }
+
+    public string ProviderId { get; }
+
+    public string ModelId { get; }
 
     public async ValueTask<AgentModelResponse> RespondAsync(
         IReadOnlyList<AgentMessage> messages,

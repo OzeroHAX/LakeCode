@@ -2,6 +2,10 @@ namespace LakeCode.Agent;
 
 public interface IAgentModel
 {
+    string ProviderId { get; }
+
+    string ModelId { get; }
+
     ValueTask<AgentModelResponse> RespondAsync(
         IReadOnlyList<AgentMessage> messages,
         IReadOnlyList<AgentToolDefinition> tools,

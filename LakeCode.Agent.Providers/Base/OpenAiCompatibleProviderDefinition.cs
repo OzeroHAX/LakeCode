@@ -2,40 +2,54 @@ using System.ClientModel;
 using LakeCode.Agent;
 using LakeCode.Agent.Providers.OpenAI;
 using OpenAI;
-using OpenAI.Chat;
+using OpenAI.Models;
 
 namespace LakeCode.Agent.Providers.Base;
 
-public abstract class OpenAiCompatibleProvider : Provider
+public abstract class OpenAiCompatibleProvider : IProvider
 {
-    protected abstract string Endpoint { get; }
+    private readonly OpenAIClient _client;
 
-    protected abstract string ApiKey { get; }
+    public abstract string Id { get; }
 
-    public override IAgentModel GetModel(string modelId)
+    public abstract string Name { get; }
+
+    protected OpenAiCompatibleProvider(string endpoint, string apiKey)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(modelId);
-        var apiKey = ApiKey;
+        ArgumentException.ThrowIfNullOrWhiteSpace(endpoint);
         ArgumentException.ThrowIfNullOrWhiteSpace(apiKey);
 
-        if (!Uri.TryCreate(Endpoint, UriKind.Absolute, out var endpoint) ||
-            endpoint.Scheme is not ("http" or "https") ||
-            !string.IsNullOrEmpty(endpoint.UserInfo) ||
-            !string.IsNullOrEmpty(endpoint.Query) ||
-            !string.IsNullOrEmpty(endpoint.Fragment))
-        {
-            throw new InvalidOperationException(
-                $"Provider '{Id}' has an invalid inference endpoint.");
-        }
-
-        var client = new ChatClient(
-            modelId,
+        _client = new(
             new ApiKeyCredential(apiKey),
             new OpenAIClientOptions
             {
-                Endpoint = new Uri(endpoint.ToString().TrimEnd('/'))
+                Endpoint = new Uri(endpoint, UriKind.Absolute),
             });
-
-        return new OpenAiAgentModel(client);
     }
+
+    public async ValueTask<IReadOnlyList<ProviderModel>> GetModelsAsync(
+        CancellationToken cancellationToken = default)
+    {
+        OpenAIModelClient modelsClient = _client.GetOpenAIModelClient();
+        OpenAIModelCollection models = await modelsClient.GetModelsAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        return models
+            .Select(model => new ProviderModel(
+                Id,
+                model.Id,
+                model.Id))
+            .ToArray();
+    }
+
+    public IAgentModel GetModel(string modelId)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(modelId);
+
+        return new OpenAiAgentModel(
+            _client.GetChatClient(modelId),
+            Id,
+            modelId);
+    }
+
 }
