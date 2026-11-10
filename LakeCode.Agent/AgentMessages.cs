@@ -21,7 +21,8 @@ public sealed record ToolResultMessage(
     string ToolCallId,
     string ToolName,
     bool IsError,
-    string Result)
+    string Result,
+    IReadOnlyList<AgentImage>? Images = null)
     : AgentMessage(MessageId, AgentMessageRole.ToolResult);
 
 public sealed record AgentToolCall(

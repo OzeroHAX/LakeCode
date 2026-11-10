@@ -409,7 +409,8 @@ public sealed class AgentRunner
             toolCall.ToolCallId,
             toolCall.ToolName,
             result.IsError,
-            result.Result);
+            result.Result,
+            result.Images);
 
         PublishMessageStart(publish, toolResultMessage.MessageId, AgentMessageRole.ToolResult);
         history.Add(toolResultMessage);

@@ -103,9 +103,18 @@ public sealed class OpenAiAgentModel : IAgentModel, IStreamingAgentModel
     private static List<ChatMessage> CreateMessages(IReadOnlyList<AgentMessage> messages)
     {
         List<ChatMessage> result = [];
+        var pendingImages = new List<ChatMessageContentPart>();
+
+        void FlushImages()
+        {
+            if (pendingImages.Count == 0) return;
+            result.Add(ChatMessage.CreateUserMessage(pendingImages));
+            pendingImages = [];
+        }
 
         foreach (AgentMessage message in messages)
         {
+            if (message is not ToolResultMessage) FlushImages();
             switch (message)
             {
                 case UserMessage userMessage:
@@ -124,6 +133,24 @@ public sealed class OpenAiAgentModel : IAgentModel, IStreamingAgentModel
                     result.Add(ChatMessage.CreateToolMessage(
                         toolResultMessage.ToolCallId,
                         toolResultMessage.Result));
+
+                    // Tool messages accept text only, so the images follow as a separate user message.
+                    if (toolResultMessage.Images is { Count: > 0 } images)
+                    {
+                        pendingImages.Add(ChatMessageContentPart.CreateTextPart(
+                                $"Images returned by tool '{toolResultMessage.ToolName}'."));
+
+                        foreach (AgentImage image in images)
+                        {
+                            pendingImages.Add(ChatMessageContentPart.CreateImagePart(
+                                BinaryData.FromBytes(image.Data),
+                                image.MediaType,
+                                ChatImageDetailLevel.Auto));
+                        }
+
+                        // Flush only after the complete contiguous batch of tool outputs.
+                    }
+
                     break;
 
                 default:
@@ -132,6 +159,7 @@ public sealed class OpenAiAgentModel : IAgentModel, IStreamingAgentModel
             }
         }
 
+        FlushImages();
         return result;
     }
 

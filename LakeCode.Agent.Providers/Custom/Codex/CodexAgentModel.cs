@@ -173,9 +173,18 @@ internal sealed class CodexAgentModel(
         IReadOnlyList<AgentMessage> messages)
     {
         List<ResponseItem> input = [];
+        var pendingImages = new List<ResponseContentPart>();
+
+        void FlushImages()
+        {
+            if (pendingImages.Count == 0) return;
+            input.Add(ResponseItem.CreateUserMessageItem(pendingImages));
+            pendingImages = [];
+        }
 
         foreach (AgentMessage message in messages)
         {
+            if (message is not ToolResultMessage) FlushImages();
             switch (message)
             {
                 case UserMessage user:
@@ -205,6 +214,23 @@ internal sealed class CodexAgentModel(
                     input.Add(new FunctionCallOutputResponseItem(
                         toolResult.ToolCallId,
                         toolResult.Result));
+
+                    // Function output carries text only in SDK 2.15.0, so images follow as a user message.
+                    if (toolResult.Images is { Count: > 0 } images)
+                    {
+                        pendingImages.Add(ResponseContentPart.CreateInputTextPart(
+                                $"Images returned by tool '{toolResult.ToolName}'."));
+
+                        foreach (AgentImage image in images)
+                        {
+                            pendingImages.Add(ResponseContentPart.CreateInputImagePart(
+                                BinaryData.FromBytes(image.Data, image.MediaType),
+                                ResponseImageDetailLevel.Auto));
+                        }
+
+                        // Flush only after the complete contiguous batch of tool outputs.
+                    }
+
                     break;
 
                 default:
@@ -213,6 +239,7 @@ internal sealed class CodexAgentModel(
             }
         }
 
+        FlushImages();
         return input;
     }
 

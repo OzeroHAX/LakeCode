@@ -21,9 +21,25 @@ public sealed record AgentToolDefinition(
     string Description = "",
     JsonElement? ParametersSchema = null);
 
+/// <summary>
+/// Image produced by a tool. The bytes are already normalized for model input; the host decides which
+/// models may receive them and never re-encodes them.
+/// </summary>
+public sealed record AgentImage(
+    string MediaType,
+    ReadOnlyMemory<byte> Data,
+    int Width,
+    int Height,
+    string? SourcePath = null);
+
+/// <summary>
+/// Outcome of one tool call. Text travels separately from images, so a tool result never inlines base64
+/// and the model sees the picture as image content.
+/// </summary>
 public sealed record AgentToolResult(
     bool IsError,
-    string Result);
+    string Result,
+    IReadOnlyList<AgentImage>? Images = null);
 
 public sealed class AgentToolContext
 {

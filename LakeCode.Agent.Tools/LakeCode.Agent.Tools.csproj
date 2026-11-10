@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../LakeCode.Agent/LakeCode.Agent.csproj" />
+    <ProjectReference Include="../LakeCode.Eval.Contracts/LakeCode.Eval.Contracts.csproj" />
+    <ProjectReference Include="../LakeCode.Search/LakeCode.Search.csproj" />
+    <PackageReference Include="StbImageSharp" Version="2.30.16" />
+    <PackageReference Include="StbImageWriteSharp" Version="1.16.7" />
+  </ItemGroup>
+</Project>
