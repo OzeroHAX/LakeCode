@@ -1,0 +1,7 @@
+{
+  "version": "1.0.4",
+  "category": "Core",
+  "packages": [
+    "FSharp.Core"
+  ]
+}
