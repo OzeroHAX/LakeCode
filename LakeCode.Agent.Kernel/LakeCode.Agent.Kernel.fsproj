@@ -9,11 +9,10 @@
     <Compile Include="Identity.fs" />
     <Compile Include="Conversation.fs" />
     <Compile Include="Tools.fs" />
-    <Compile Include="Model.fs" />
     <Compile Include="History.fs" />
-    <Compile Include="Policy.fs" />
-    <Compile Include="Run.fs" />
-    <Compile Include="SessionState.fs" />
+    <Compile Include="Model.fs" />
+    <Compile Include="Events.fs" />
+    <Compile Include="Execution.fs" />
     <Compile Include="Session.fs" />
   </ItemGroup>
 

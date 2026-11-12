@@ -12,6 +12,11 @@ type Image =
       Height: int
       SourcePath: string option }
 
+/// Text and images: one content shape for user, assistant and tool messages.
+type Content =
+    { Text: string
+      Images: Image list }
+
 type ToolCall =
     { Id: CallId
       Name: string
@@ -30,14 +35,10 @@ module ToolCall =
         else
             Ok { call with Arguments = call.Arguments.Clone() }
 
-type ToolOutput =
-    { Text: string
-      Images: Image list }
-
 [<RequireQualifiedAccess>]
 type ToolResult =
-    | Success of ToolOutput
-    | Failure of ToolOutput
+    | Success of Content
+    | Failure of Content
     | Skipped of reason: string
     | Interrupted of reason: string
 
@@ -46,25 +47,13 @@ module ToolResult =
     let success text = ToolResult.Success { Text = text; Images = [] }
     let failure text = ToolResult.Failure { Text = text; Images = [] }
 
-    let text = function
-        | ToolResult.Success output | ToolResult.Failure output -> output.Text
-        | ToolResult.Skipped reason | ToolResult.Interrupted reason -> reason
-
-    let images = function
-        | ToolResult.Success output | ToolResult.Failure output -> output.Images
-        | ToolResult.Skipped _ | ToolResult.Interrupted _ -> []
-
-    let isError = function
-        | ToolResult.Success _ -> false
-        | ToolResult.Failure _ | ToolResult.Skipped _ | ToolResult.Interrupted _ -> true
-
 [<RequireQualifiedAccess>]
 type ReplyStatus =
     | Complete
     | Interrupted
 
 type AssistantReply =
-    { Text: string
+    { Content: Content
       Calls: ToolCall list
       Status: ReplyStatus }
 
@@ -72,7 +61,7 @@ type AssistantReply =
 [<RequireQualifiedAccess>]
 type Message =
     | System of id: string * text: string
-    | User of id: string * text: string
+    | User of id: string * content: Content
     | Assistant of id: string * reply: AssistantReply
     | Tool of id: string * call: ToolCall * result: ToolResult
 
@@ -81,3 +70,14 @@ module Message =
     let id = function
         | Message.System(id, _) | Message.User(id, _)
         | Message.Assistant(id, _) | Message.Tool(id, _, _) -> id
+
+[<RequireQualifiedAccess>]
+module Content =
+    let text value = { Text = value; Images = [] }
+
+    let internal validate content =
+        if isNull content.Text then Error "Message text cannot be null."
+        elif content.Images |> List.exists (fun image ->
+            String.IsNullOrWhiteSpace image.MediaType || image.Data.IsDefaultOrEmpty || image.Width <= 0 || image.Height <= 0) then
+            Error "Images need original bytes, a media type and positive dimensions."
+        else Ok content

@@ -2,14 +2,14 @@ namespace LakeCode.Agent.Kernel
 
 open System
 
-/// Identifies one accepted run, including its late progress reports.
+/// Identifies one accepted request, including its late progress reports.
 [<Struct>]
-type RunId = private RunId of Guid
+type RequestId = private RequestId of Guid
 
 [<RequireQualifiedAccess>]
-module RunId =
-    let create () = RunId(Guid.NewGuid())
-    let value (RunId id) = id
+module RequestId =
+    let create () = RequestId(Guid.NewGuid())
+    let value (RequestId id) = id
 
 /// A provider call id. Its uniqueness is checked within the retained conversation.
 [<Struct>]

@@ -5,33 +5,43 @@ open System.Text.Json
 open System.Threading
 open System.Threading.Tasks
 
-type ToolDefinition =
+/// Progress is transient and does not enter the model history.
+[<RequireQualifiedAccess>]
+type Progress =
+    | Text of string
+    | Data of JsonElement
+
+/// The model-facing part of a tool, without its implementation.
+type ToolDescription =
     { Name: string
       Description: string
       Parameters: JsonElement option }
 
-[<RequireQualifiedAccess>]
-type ToolProgress =
-    | Text of string
-    | Data of JsonElement
-
-/// Executes exactly one attempt. Decisions, retries and history belong to the kernel.
 type Tool =
-    { Definition: ToolDefinition
-      Execute: ToolCall -> (ToolProgress -> unit) -> CancellationToken -> Task<ToolResult> }
+    { Name: string
+      Description: string
+      Parameters: JsonElement option
+      Execute: ToolCall -> (Progress -> unit) -> CancellationToken -> Task<ToolResult> }
 
 [<RequireQualifiedAccess>]
 module Tool =
+    let description tool =
+        { Name = tool.Name; Description = tool.Description; Parameters = tool.Parameters }
+
     let internal capture tool =
-        if String.IsNullOrWhiteSpace tool.Definition.Name then
+        if String.IsNullOrWhiteSpace tool.Name then
             invalidArg (nameof tool) "A tool name is required."
-
-        let definition =
-            { tool.Definition with
-                Parameters = tool.Definition.Parameters |> Option.map (fun schema -> schema.Clone()) }
-
-        { tool with Definition = definition }
+        { tool with Parameters = tool.Parameters |> Option.map (fun schema -> schema.Clone()) }
 
     let internal captureProgress = function
-        | ToolProgress.Text text -> ToolProgress.Text text
-        | ToolProgress.Data data -> ToolProgress.Data(data.Clone())
+        | Progress.Text text -> Progress.Text text
+        | Progress.Data data -> Progress.Data(data.Clone())
+
+[<RequireQualifiedAccess>]
+type ToolDecision =
+    | Allow
+    | Deny of reason: string
+    | Stop of reason: string
+
+/// Admission only. Preparation and cleanup are owned by the host.
+type ToolPolicy = Message list -> ToolCall -> CancellationToken -> Task<ToolDecision>
