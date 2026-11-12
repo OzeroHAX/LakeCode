@@ -46,9 +46,10 @@ public static class ProviderCatalog
         presets.Add(new TypeSafeProvider());
         presets.Add(new NeuralDeepProvider());
         presets.Add(new WikiVibeProvider());
+        presets.Add(new FreeLLMProvider());
         foreach (var provider in ModelsDevCatalog.Providers.Values)
         {
-            if (provider.Id is "neuraldeep" or "wikivibe") continue;
+            if (provider.Id is "neuraldeep" or "wikivibe" or "freellm") continue;
             if (provider.Models.Count == 0 || !TryMap(provider, out var baseUrl)) continue;
             presets.Add(Overrides.TryGetValue(provider.Id, out var create)
                 ? create(provider, baseUrl, null)
